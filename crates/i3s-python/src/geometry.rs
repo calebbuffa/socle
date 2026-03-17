@@ -6,7 +6,7 @@
 
 use glam::{DMat4, DVec2, DVec3};
 use numpy::ndarray::{Array1, Array2};
-use numpy::{IntoPyArray, PyArray1, PyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 
 use i3s_geometry::aabb::AxisAlignedBoundingBox;
@@ -21,9 +21,6 @@ use i3s_geometry::transforms::{Axis, Transforms};
 
 use crate::numpy_conv;
 
-// ============================================================================
-// CullingResult enum
-// ============================================================================
 
 #[pyclass(name = "CullingResult", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
@@ -43,9 +40,6 @@ impl From<CullingResult> for PyCullingResult {
     }
 }
 
-// ============================================================================
-// Plane
-// ============================================================================
 
 #[pyclass(name = "Plane", skip_from_py_object)]
 #[derive(Clone)]
@@ -107,7 +101,12 @@ impl PyPlane {
             return Ok(result.into_any().unbind());
         }
         let p = numpy_conv::to_dvec3(point)?;
-        Ok(self.inner.signed_distance(p).into_pyobject(py)?.into_any().unbind())
+        Ok(self
+            .inner
+            .signed_distance(p)
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     /// Project a point onto this plane. Returns closest point.
@@ -123,19 +122,25 @@ impl PyPlane {
     /// XY plane through origin (normal = +Z).
     #[staticmethod]
     fn origin_xy() -> Self {
-        Self { inner: Plane::ORIGIN_XY_PLANE }
+        Self {
+            inner: Plane::ORIGIN_XY_PLANE,
+        }
     }
 
     /// YZ plane through origin (normal = +X).
     #[staticmethod]
     fn origin_yz() -> Self {
-        Self { inner: Plane::ORIGIN_YZ_PLANE }
+        Self {
+            inner: Plane::ORIGIN_YZ_PLANE,
+        }
     }
 
     /// ZX plane through origin (normal = +Y).
     #[staticmethod]
     fn origin_zx() -> Self {
-        Self { inner: Plane::ORIGIN_ZX_PLANE }
+        Self {
+            inner: Plane::ORIGIN_ZX_PLANE,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -147,9 +152,6 @@ impl PyPlane {
     }
 }
 
-// ============================================================================
-// BoundingSphere
-// ============================================================================
 
 #[pyclass(name = "BoundingSphere", skip_from_py_object)]
 #[derive(Clone)]
@@ -178,11 +180,7 @@ impl PyBoundingSphere {
     }
 
     /// Test point containment. (3,) -> bool or (N,3) -> (N,) bool.
-    fn contains<'py>(
-        &self,
-        py: Python<'py>,
-        point: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn contains<'py>(&self, py: Python<'py>, point: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         if numpy_conv::is_points_array(point, 3) {
             let sphere = self.inner;
             let result = numpy_conv::batch_predicate(py, point, 3, move |inp| {
@@ -191,7 +189,13 @@ impl PyBoundingSphere {
             return Ok(result.into_any().unbind());
         }
         let p = numpy_conv::to_dvec3(point)?;
-        Ok(self.inner.contains(p).into_pyobject(py)?.to_owned().into_any().unbind())
+        Ok(self
+            .inner
+            .contains(p)
+            .into_pyobject(py)?
+            .to_owned()
+            .into_any()
+            .unbind())
     }
 
     /// Squared distance to point. (3,) -> f64 or (N,3) -> (N,) f64.
@@ -208,7 +212,12 @@ impl PyBoundingSphere {
             return Ok(result.into_any().unbind());
         }
         let p = numpy_conv::to_dvec3(point)?;
-        Ok(self.inner.distance_squared_to(p).into_pyobject(py)?.into_any().unbind())
+        Ok(self
+            .inner
+            .distance_squared_to(p)
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     /// Test against a plane.
@@ -217,8 +226,11 @@ impl PyBoundingSphere {
     }
 
     /// Transform by a 4x4 matrix. Returns new BoundingSphere.
-    fn transform(&self, transformation: Vec<Vec<f64>>) -> PyResult<PyBoundingSphere> {
-        let mat = mat4_from_nested(&transformation)?;
+    ///
+    /// Accepts a ``(4, 4)`` float64 numpy array (e.g. ``np.eye(4)``) or a
+    /// nested Python list ``[[...], ...]``.
+    fn transform(&self, transformation: &Bound<'_, PyAny>) -> PyResult<PyBoundingSphere> {
+        let mat = mat4_from_any(transformation)?;
         Ok(PyBoundingSphere {
             inner: self.inner.transform(&mat),
         })
@@ -233,9 +245,6 @@ impl PyBoundingSphere {
     }
 }
 
-// ============================================================================
-// OrientedBoundingBox
-// ============================================================================
 
 #[pyclass(name = "OrientedBoundingBox", skip_from_py_object)]
 #[derive(Clone)]
@@ -265,11 +274,7 @@ impl PyOrientedBoundingBox {
 
     /// Construct from I3S-format arrays (center[3], half_size[3], quaternion[4]).
     #[staticmethod]
-    fn from_i3s(
-        center: [f64; 3],
-        half_size: [f64; 3],
-        quaternion: [f64; 4],
-    ) -> Self {
+    fn from_i3s(center: [f64; 3], half_size: [f64; 3], quaternion: [f64; 4]) -> Self {
         Self {
             inner: OrientedBoundingBox::from_i3s(center, half_size, quaternion),
         }
@@ -330,11 +335,7 @@ impl PyOrientedBoundingBox {
     }
 
     /// Test point containment. (3,) -> bool or (N,3) -> (N,) bool.
-    fn contains<'py>(
-        &self,
-        py: Python<'py>,
-        point: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn contains<'py>(&self, py: Python<'py>, point: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         if numpy_conv::is_points_array(point, 3) {
             let obb = self.inner;
             let result = numpy_conv::batch_predicate(py, point, 3, move |inp| {
@@ -343,7 +344,13 @@ impl PyOrientedBoundingBox {
             return Ok(result.into_any().unbind());
         }
         let p = numpy_conv::to_dvec3(point)?;
-        Ok(self.inner.contains(p).into_pyobject(py)?.to_owned().into_any().unbind())
+        Ok(self
+            .inner
+            .contains(p)
+            .into_pyobject(py)?
+            .to_owned()
+            .into_any()
+            .unbind())
     }
 
     /// Squared distance to a point. (3,) -> f64 or (N,3) -> (N,) f64.
@@ -360,7 +367,12 @@ impl PyOrientedBoundingBox {
             return Ok(result.into_any().unbind());
         }
         let p = numpy_conv::to_dvec3(point)?;
-        Ok(self.inner.distance_squared_to(p).into_pyobject(py)?.into_any().unbind())
+        Ok(self
+            .inner
+            .distance_squared_to(p)
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     /// Test against a plane.
@@ -369,7 +381,10 @@ impl PyOrientedBoundingBox {
     }
 
     /// To an axis-aligned bounding box. Returns (min[3], max[3]) as a tuple.
-    fn to_aabb<'py>(&self, py: Python<'py>) -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>) {
+    fn to_aabb<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>) {
         let aabb = self.inner.to_aabb();
         (
             numpy_conv::dvec3_to_numpy(py, aabb.min),
@@ -395,8 +410,11 @@ impl PyOrientedBoundingBox {
     }
 
     /// Transform by a 4x4 matrix. Returns new OrientedBoundingBox.
-    fn transform(&self, transformation: Vec<Vec<f64>>) -> PyResult<PyOrientedBoundingBox> {
-        let mat = mat4_from_nested(&transformation)?;
+    ///
+    /// Accepts a ``(4, 4)`` float64 numpy array (e.g. ``np.eye(4)``) or a
+    /// nested Python list ``[[...], ...]``.
+    fn transform(&self, transformation: &Bound<'_, PyAny>) -> PyResult<PyOrientedBoundingBox> {
+        let mat = mat4_from_any(transformation)?;
         Ok(PyOrientedBoundingBox {
             inner: self.inner.transform(&mat),
         })
@@ -423,9 +441,6 @@ impl PyOrientedBoundingBox {
     }
 }
 
-// ============================================================================
-// Ray
-// ============================================================================
 
 #[pyclass(name = "Ray", skip_from_py_object)]
 #[derive(Clone)]
@@ -460,8 +475,11 @@ impl PyRay {
     }
 
     /// Transform by a 4x4 matrix. Returns new Ray.
-    fn transform(&self, transformation: Vec<Vec<f64>>) -> PyResult<PyRay> {
-        let mat = mat4_from_nested(&transformation)?;
+    ///
+    /// Accepts a ``(4, 4)`` float64 numpy array (e.g. ``np.eye(4)``) or a
+    /// nested Python list ``[[...], ...]``.
+    fn transform(&self, transformation: &Bound<'_, PyAny>) -> PyResult<PyRay> {
+        let mat = mat4_from_any(transformation)?;
         Ok(PyRay {
             inner: self.inner.transform(&mat),
         })
@@ -484,9 +502,6 @@ impl PyRay {
     }
 }
 
-// ============================================================================
-// Module registration
-// ============================================================================
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCullingResult>()?;
@@ -512,22 +527,45 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-// ============================================================================
-// Helper: convert nested list to DMat4
-// ============================================================================
 
 fn mat4_from_nested(rows: &[Vec<f64>]) -> PyResult<DMat4> {
     use pyo3::exceptions::PyValueError;
     if rows.len() != 4 || rows.iter().any(|r| r.len() != 4) {
-        return Err(PyValueError::new_err("Expected 4x4 matrix as list of lists"));
+        return Err(PyValueError::new_err(
+            "Expected 4x4 matrix as list of lists",
+        ));
     }
     // Input is row-major, DMat4 is column-major
     Ok(DMat4::from_cols_array(&[
-        rows[0][0], rows[1][0], rows[2][0], rows[3][0],
-        rows[0][1], rows[1][1], rows[2][1], rows[3][1],
-        rows[0][2], rows[1][2], rows[2][2], rows[3][2],
-        rows[0][3], rows[1][3], rows[2][3], rows[3][3],
+        rows[0][0], rows[1][0], rows[2][0], rows[3][0], rows[0][1], rows[1][1], rows[2][1],
+        rows[3][1], rows[0][2], rows[1][2], rows[2][2], rows[3][2], rows[0][3], rows[1][3],
+        rows[2][3], rows[3][3],
     ]))
+}
+
+/// Extract a 4x4 matrix from either a (4,4) float64 numpy array or a nested
+/// Python list-of-lists.  `np.eye(4)`, `np.array(...)`, and `[[...], ...]`
+/// all work.
+fn mat4_from_any(obj: &Bound<'_, PyAny>) -> PyResult<DMat4> {
+    use pyo3::exceptions::PyValueError;
+    // Fast path: numpy (4, 4) float64
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray2<f64>>() {
+        let s = arr.shape();
+        if s[0] != 4 || s[1] != 4 {
+            return Err(PyValueError::new_err("Expected (4, 4) matrix"));
+        }
+        let v = arr.as_array();
+        // Row-major → column-major for DMat4
+        return Ok(DMat4::from_cols_array(&[
+            v[[0, 0]], v[[1, 0]], v[[2, 0]], v[[3, 0]],
+            v[[0, 1]], v[[1, 1]], v[[2, 1]], v[[3, 1]],
+            v[[0, 2]], v[[1, 2]], v[[2, 2]], v[[3, 2]],
+            v[[0, 3]], v[[1, 3]], v[[2, 3]], v[[3, 3]],
+        ]));
+    }
+    // Fallback: nested list-of-lists
+    let nested: Vec<Vec<f64>> = obj.extract()?;
+    mat4_from_nested(&nested)
 }
 
 fn mat4_to_nested<'py>(py: Python<'py>, m: &DMat4) -> Bound<'py, PyArray2<f64>> {
@@ -540,9 +578,6 @@ fn mat4_to_nested<'py>(py: Python<'py>, m: &DMat4) -> Bound<'py, PyArray2<f64>> 
     arr.into_pyarray(py)
 }
 
-// ============================================================================
-// Rectangle
-// ============================================================================
 
 #[pyclass(name = "Rectangle", skip_from_py_object)]
 #[derive(Clone)]
@@ -560,18 +595,30 @@ impl PyRectangle {
     }
 
     #[getter]
-    fn minimum_x(&self) -> f64 { self.inner.minimum_x }
+    fn minimum_x(&self) -> f64 {
+        self.inner.minimum_x
+    }
     #[getter]
-    fn minimum_y(&self) -> f64 { self.inner.minimum_y }
+    fn minimum_y(&self) -> f64 {
+        self.inner.minimum_y
+    }
     #[getter]
-    fn maximum_x(&self) -> f64 { self.inner.maximum_x }
+    fn maximum_x(&self) -> f64 {
+        self.inner.maximum_x
+    }
     #[getter]
-    fn maximum_y(&self) -> f64 { self.inner.maximum_y }
+    fn maximum_y(&self) -> f64 {
+        self.inner.maximum_y
+    }
 
     #[getter]
-    fn width(&self) -> f64 { self.inner.width() }
+    fn width(&self) -> f64 {
+        self.inner.width()
+    }
     #[getter]
-    fn height(&self) -> f64 { self.inner.height() }
+    fn height(&self) -> f64 {
+        self.inner.height()
+    }
 
     fn center(&self) -> (f64, f64) {
         let c = self.inner.center();
@@ -595,25 +642,25 @@ impl PyRectangle {
     }
 
     fn intersection(&self, other: &PyRectangle) -> Option<PyRectangle> {
-        self.inner.intersection(&other.inner).map(|r| PyRectangle { inner: r })
+        self.inner
+            .intersection(&other.inner)
+            .map(|r| PyRectangle { inner: r })
     }
 
     fn union(&self, other: &PyRectangle) -> PyRectangle {
-        PyRectangle { inner: self.inner.union(&other.inner) }
+        PyRectangle {
+            inner: self.inner.union(&other.inner),
+        }
     }
 
     fn __repr__(&self) -> String {
         format!(
             "Rectangle({}, {}, {}, {})",
-            self.inner.minimum_x, self.inner.minimum_y,
-            self.inner.maximum_x, self.inner.maximum_y
+            self.inner.minimum_x, self.inner.minimum_y, self.inner.maximum_x, self.inner.maximum_y
         )
     }
 }
 
-// ============================================================================
-// Axis enum
-// ============================================================================
 
 #[pyclass(name = "Axis", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
@@ -633,9 +680,6 @@ impl From<PyAxis> for Axis {
     }
 }
 
-// ============================================================================
-// Intersection test free functions
-// ============================================================================
 
 /// Intersect a ray with a plane. Returns parametric t, or None.
 #[pyfunction]
@@ -654,7 +698,11 @@ fn py_ray_sphere(ray: &PyRay, sphere: &PyBoundingSphere) -> Option<f64> {
 /// Intersect a ray with an AABB (min, max). Returns parametric t, or None.
 #[pyfunction]
 #[pyo3(name = "ray_aabb")]
-fn py_ray_aabb(ray: &PyRay, aabb_min: &Bound<'_, PyAny>, aabb_max: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
+fn py_ray_aabb(
+    ray: &PyRay,
+    aabb_min: &Bound<'_, PyAny>,
+    aabb_max: &Bound<'_, PyAny>,
+) -> PyResult<Option<f64>> {
     let mn = numpy_conv::to_dvec3(aabb_min)?;
     let mx = numpy_conv::to_dvec3(aabb_max)?;
     let aabb = AxisAlignedBoundingBox::new(mn, mx);
@@ -695,10 +743,14 @@ fn py_ray_ellipsoid(ray: &PyRay, radii: &Bound<'_, PyAny>) -> PyResult<Option<(f
 #[pyfunction]
 #[pyo3(name = "point_in_triangle_2d")]
 fn py_point_in_triangle_2d(
-    px: f64, py_: f64,
-    ax: f64, ay: f64,
-    bx: f64, by: f64,
-    cx: f64, cy: f64,
+    px: f64,
+    py_: f64,
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+    cx: f64,
+    cy: f64,
 ) -> bool {
     intersection::point_in_triangle_2d(
         DVec2::new(px, py_),
@@ -726,9 +778,6 @@ fn py_point_in_triangle_3d<'py>(
         .map(|bary| Array1::from_vec(vec![bary.x, bary.y, bary.z]).into_pyarray(py)))
 }
 
-// ============================================================================
-// Transform free functions
-// ============================================================================
 
 /// Create a translation-rotation-scale matrix.
 #[pyfunction]

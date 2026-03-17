@@ -100,13 +100,7 @@ impl CullingVolume {
     ///
     /// Mirrors cesium-native `createCullingVolume(position, direction, up, fovx, fovy)`.
     /// Produces left, right, bottom, top planes (no near/far).
-    pub fn from_fov(
-        position: DVec3,
-        direction: DVec3,
-        up: DVec3,
-        fov_x: f64,
-        fov_y: f64,
-    ) -> Self {
+    pub fn from_fov(position: DVec3, direction: DVec3, up: DVec3, fov_x: f64, fov_y: f64) -> Self {
         let dir = direction.normalize();
         let right = dir.cross(up).normalize();
         let cam_up = right.cross(dir).normalize();
@@ -171,14 +165,8 @@ impl CullingVolume {
         top: f64,
         near: f64,
     ) -> Self {
-        let proj = Transforms::create_perspective_offcenter(
-            left,
-            right,
-            bottom,
-            top,
-            near,
-            f64::INFINITY,
-        );
+        let proj =
+            Transforms::create_perspective_offcenter(left, right, bottom, top, near, f64::INFINITY);
         let view = Transforms::create_view_matrix(position, direction, up);
         let clip = proj * view;
         Self::from_view_projection(&clip)
@@ -197,14 +185,7 @@ impl CullingVolume {
         top: f64,
         near: f64,
     ) -> Self {
-        let proj = Transforms::create_orthographic(
-            left,
-            right,
-            bottom,
-            top,
-            near,
-            f64::INFINITY,
-        );
+        let proj = Transforms::create_orthographic(left, right, bottom, top, near, f64::INFINITY);
         let view = Transforms::create_view_matrix(position, direction, up);
         let clip = proj * view;
         Self::from_view_projection(&clip)

@@ -222,12 +222,7 @@ pub fn point_in_triangle_2d(point: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool 
 /// Returns `Some((u, v, w))` barycentric coordinates if the point is inside,
 /// or `None` if outside. Mirrors cesium-native `IntersectionTests::pointInTriangle`
 /// (3D overload with barycentric output).
-pub fn point_in_triangle_3d(
-    point: DVec3,
-    a: DVec3,
-    b: DVec3,
-    c: DVec3,
-) -> Option<DVec3> {
+pub fn point_in_triangle_3d(point: DVec3, a: DVec3, b: DVec3, c: DVec3) -> Option<DVec3> {
     let ab = b - a;
     let bc = c - b;
 

@@ -122,8 +122,7 @@ impl TransverseMercatorParams {
         let a8 = 315.0 * e8 / 131072.0;
 
         self.semi_major()
-            * (a0 * phi - a2 * (2.0 * phi).sin() + a4 * (4.0 * phi).sin()
-                - a6 * (6.0 * phi).sin()
+            * (a0 * phi - a2 * (2.0 * phi).sin() + a4 * (4.0 * phi).sin() - a6 * (6.0 * phi).sin()
                 + a8 * (8.0 * phi).sin())
     }
 
@@ -138,8 +137,9 @@ impl TransverseMercatorParams {
         let e1_3 = e1_2 * e1;
         let e1_4 = e1_3 * e1;
 
-        let mu = northing / (self.semi_major() * (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0
-            - 5.0 * e2 * e2 * e2 / 256.0));
+        let mu = northing
+            / (self.semi_major()
+                * (1.0 - e2 / 4.0 - 3.0 * e2 * e2 / 64.0 - 5.0 * e2 * e2 * e2 / 256.0));
 
         let phi1 = mu
             + (3.0 * e1 / 2.0 - 27.0 * e1_3 / 32.0) * (2.0 * mu).sin()
@@ -193,11 +193,8 @@ pub fn from_transverse_mercator(
     // Latitude
     let latitude = phi1
         - (n1 * tan_phi1 / r1)
-            * (d2 / 2.0
-                - (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * ep2) * d4 / 24.0
-                + (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1
-                    - 252.0 * ep2
-                    - 3.0 * c1 * c1)
+            * (d2 / 2.0 - (5.0 + 3.0 * t1 + 10.0 * c1 - 4.0 * c1 * c1 - 9.0 * ep2) * d4 / 24.0
+                + (61.0 + 90.0 * t1 + 298.0 * c1 + 45.0 * t1 * t1 - 252.0 * ep2 - 3.0 * c1 * c1)
                     * d6
                     / 720.0);
 
@@ -245,20 +242,14 @@ pub fn to_transverse_mercator(
             * n
             * (l * cos_phi
                 + (1.0 - t + c) * l3 * cos_phi * cos_phi * cos_phi / 6.0
-                + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2)
-                    * l5
-                    * cos_phi.powi(5)
-                    / 120.0);
+                + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2) * l5 * cos_phi.powi(5) / 120.0);
 
     let northing = params.false_northing
         + params.scale_factor
             * (m - params.meridian_arc(params.latitude_of_origin)
                 + n * tan_phi
                     * (l2 * cos_phi * cos_phi / 2.0
-                        + (5.0 - t + 9.0 * c + 4.0 * c * c)
-                            * l4
-                            * cos_phi.powi(4)
-                            / 24.0
+                        + (5.0 - t + 9.0 * c + 4.0 * c * c) * l4 * cos_phi.powi(4) / 24.0
                         + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2)
                             * l6
                             * cos_phi.powi(6)

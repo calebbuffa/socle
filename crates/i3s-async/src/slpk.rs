@@ -52,7 +52,9 @@ impl AssetAccessor for SlpkAssetAccessor {
 
         // Try gzip-compressed entry first (e.g. "3dSceneLayer.json.gz")
         let gz_name = format!("{uri}.gz");
-        let result = guard.by_name(&gz_name).or_else(|_| guard.by_name(uri));
+        let gz_found = guard.by_name(&gz_name).is_ok();
+        let name = if gz_found { gz_name.as_str() } else { uri };
+        let result = guard.by_name(name);
 
         match result {
             Ok(mut entry) => {

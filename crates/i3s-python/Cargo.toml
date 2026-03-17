@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "i3s"
+name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -18,8 +18,3 @@ i3s-selection = { path = "../i3s-selection" }
 glam = { version = "0.32", features = ["std"] }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
-
-[features]
-default = ["rest"]
-rest = ["i3s-async/rest"]
-slpk = ["i3s-async/slpk"]

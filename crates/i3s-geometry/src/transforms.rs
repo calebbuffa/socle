@@ -21,9 +21,6 @@ pub enum Axis {
 /// - Z maps from 1 to 0 (near to far)
 pub struct Transforms;
 
-// ============================================================================
-// Axis transform constants
-// ============================================================================
 
 /// Y-up to Z-up: rotate +π/2 around X axis.
 pub const Y_UP_TO_Z_UP: DMat4 = DMat4::from_cols(
@@ -77,9 +74,7 @@ impl Transforms {
     /// Get the transform matrix converting from one up-axis to another.
     pub fn get_up_axis_transform(from: Axis, to: Axis) -> &'static DMat4 {
         match (from, to) {
-            (Axis::X, Axis::X) | (Axis::Y, Axis::Y) | (Axis::Z, Axis::Z) => {
-                &DMat4::IDENTITY
-            }
+            (Axis::X, Axis::X) | (Axis::Y, Axis::Y) | (Axis::Z, Axis::Z) => &DMat4::IDENTITY,
             (Axis::Y, Axis::Z) => &Y_UP_TO_Z_UP,
             (Axis::Z, Axis::Y) => &Z_UP_TO_Y_UP,
             (Axis::X, Axis::Z) => &X_UP_TO_Z_UP,
@@ -116,9 +111,7 @@ impl Transforms {
     ///
     /// The scale may be negative (e.g. when switching handedness).
     /// Skew or other non-affine components produce undefined results.
-    pub fn decompose_translation_rotation_scale(
-        matrix: &DMat4,
-    ) -> (DVec3, DQuat, DVec3) {
+    pub fn decompose_translation_rotation_scale(matrix: &DMat4) -> (DVec3, DQuat, DVec3) {
         let translation = matrix.w_axis.truncate();
 
         let rot_scale = DMat3::from_cols(
@@ -180,12 +173,7 @@ impl Transforms {
     ///
     /// Uses symmetric FOV angles. Pass `f64::INFINITY` for `z_far` to
     /// get an infinite far plane.
-    pub fn create_perspective_fov(
-        fov_x: f64,
-        fov_y: f64,
-        z_near: f64,
-        z_far: f64,
-    ) -> DMat4 {
+    pub fn create_perspective_fov(fov_x: f64, fov_y: f64, z_near: f64, z_far: f64) -> DMat4 {
         let (m22, m32) = if z_far.is_infinite() {
             (0.0, z_near)
         } else {
@@ -273,10 +261,7 @@ mod tests {
         for i in 0..4 {
             for j in 0..4 {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (m.col(i)[j] - expected).abs() < 1e-12,
-                    "element [{i}][{j}]"
-                );
+                assert!((m.col(i)[j] - expected).abs() < 1e-12, "element [{i}][{j}]");
             }
         }
     }
@@ -287,19 +272,25 @@ mod tests {
         for i in 0..4 {
             for j in 0..4 {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (m.col(i)[j] - expected).abs() < 1e-12,
-                    "element [{i}][{j}]"
-                );
+                assert!((m.col(i)[j] - expected).abs() < 1e-12, "element [{i}][{j}]");
             }
         }
     }
 
     #[test]
     fn get_up_axis_identity() {
-        assert_eq!(*Transforms::get_up_axis_transform(Axis::X, Axis::X), DMat4::IDENTITY);
-        assert_eq!(*Transforms::get_up_axis_transform(Axis::Y, Axis::Y), DMat4::IDENTITY);
-        assert_eq!(*Transforms::get_up_axis_transform(Axis::Z, Axis::Z), DMat4::IDENTITY);
+        assert_eq!(
+            *Transforms::get_up_axis_transform(Axis::X, Axis::X),
+            DMat4::IDENTITY
+        );
+        assert_eq!(
+            *Transforms::get_up_axis_transform(Axis::Y, Axis::Y),
+            DMat4::IDENTITY
+        );
+        assert_eq!(
+            *Transforms::get_up_axis_transform(Axis::Z, Axis::Z),
+            DMat4::IDENTITY
+        );
     }
 
     #[test]
@@ -312,7 +303,10 @@ mod tests {
         let (t2, r2, s2) = Transforms::decompose_translation_rotation_scale(&m);
 
         assert!((t - t2).length() < 1e-10, "translation mismatch");
-        assert!((r - r2).length() < 1e-10 || (r + r2).length() < 1e-10, "rotation mismatch");
+        assert!(
+            (r - r2).length() < 1e-10 || (r + r2).length() < 1e-10,
+            "rotation mismatch"
+        );
         assert!((s - s2).length() < 1e-10, "scale mismatch");
     }
 

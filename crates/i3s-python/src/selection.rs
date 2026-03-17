@@ -5,21 +5,17 @@
 //! - `SceneLayerExternals` ↔ `TilesetExternals` — user-constructed
 //! - `IPrepareRendererResources` — Python subclass-able base
 //! - `SceneLayer` ↔ `Tileset` — constructed with externals + URL/path
-//!
-//! ## Design: Non-generic wrapper
-//!
-//! `SceneLayer<A>` is generic over `AssetAccessor`. Python can't express
-//! Rust generics, so we monomorphize behind an enum dispatch.
 
 use std::sync::Arc;
 
 use glam::DVec3;
+use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use i3s_async::block_on;
-use i3s_async::resolver::{RestUriResolver, ResourceUriResolver};
+use i3s_async::{I3sAssetAccessor, resolver::{ResourceUriResolver, RestUriResolver, SlpkUriResolver}};
+use i3s_geospatial::crs::SceneCoordinateSystem;
 use i3s_selection::content::NodeContent;
 use i3s_selection::externals::SceneLayerExternals;
 use i3s_selection::node_state::NodeLoadState;
@@ -30,54 +26,10 @@ use i3s_selection::prepare::{
 use i3s_selection::scene_layer::SceneLayer;
 use i3s_selection::update_result::ViewUpdateResult;
 use i3s_selection::view_state::ViewState;
-use i3s_geospatial::crs::SceneCoordinateSystem;
-
-#[cfg(feature = "rest")]
-use i3s_async::rest::RestAssetAccessor;
-
-#[cfg(feature = "slpk")]
-use i3s_async::slpk::SlpkAssetAccessor;
 
 use crate::async_support::{PyAsyncSystem, PyFuture};
 use crate::geospatial::{PyEllipsoid, PyWkidTransform};
 use crate::numpy_conv;
-
-// ============================================================================
-// Enum-dispatch wrapper to erase the generic AssetAccessor
-// ============================================================================
-
-enum SceneLayerInner {
-    #[cfg(feature = "rest")]
-    Rest(SceneLayer<RestAssetAccessor>),
-    #[cfg(feature = "slpk")]
-    Slpk(SceneLayer<SlpkAssetAccessor>),
-}
-
-macro_rules! dispatch {
-    ($self:expr, $layer:ident => $body:expr) => {
-        match $self {
-            #[cfg(feature = "rest")]
-            SceneLayerInner::Rest(ref $layer) => $body,
-            #[cfg(feature = "slpk")]
-            SceneLayerInner::Slpk(ref $layer) => $body,
-        }
-    };
-}
-
-macro_rules! dispatch_mut {
-    ($self:expr, $layer:ident => $body:expr) => {
-        match $self {
-            #[cfg(feature = "rest")]
-            SceneLayerInner::Rest(ref mut $layer) => $body,
-            #[cfg(feature = "slpk")]
-            SceneLayerInner::Slpk(ref mut $layer) => $body,
-        }
-    };
-}
-
-// ============================================================================
-// IPrepareRendererResources — Python-overridable base class
-// ============================================================================
 
 /// Base class for preparing renderer resources from decoded I3S content.
 ///
@@ -127,7 +79,7 @@ impl PrepareRendererResources for PyPrepareRendererResourcesBridge {
     ) -> Option<RendererResources> {
         Python::attach(|py| {
             let py_content = PyNodeContent {
-                inner: content.clone(),
+                inner: Arc::new(content.clone()),
             };
             let result = self
                 .py_obj
@@ -150,7 +102,7 @@ impl PrepareRendererResources for PyPrepareRendererResourcesBridge {
     ) -> Option<RendererResources> {
         Python::attach(|py| {
             let py_content = PyNodeContent {
-                inner: content.clone(),
+                inner: Arc::new(content.clone()),
             };
             let load_result: Py<PyAny> = match load_thread_result {
                 Some(res) => match res.downcast::<Py<PyAny>>() {
@@ -192,9 +144,82 @@ impl PrepareRendererResources for PyPrepareRendererResourcesBridge {
     }
 }
 
-// ============================================================================
-// PySceneLayerExternals — user-constructed (like TilesetExternals)
-// ============================================================================
+/// Bridge: implements the Rust `CrsTransform` trait by calling a Python
+/// object's `to_ecef` method. This allows any Python class with
+/// `def to_ecef(self, positions: ndarray) -> ndarray` to serve as a
+/// CRS transform for the scene layer.
+struct PyCrsTransformBridge {
+    py_obj: Py<PyAny>,
+}
+
+// Safety: Py<PyAny> is Send+Sync when detached from GIL.
+unsafe impl Send for PyCrsTransformBridge {}
+unsafe impl Sync for PyCrsTransformBridge {}
+
+impl i3s_geospatial::crs::CrsTransform for PyCrsTransformBridge {
+    fn to_ecef(&self, positions: &mut [DVec3]) {
+        Python::attach(|py| {
+            let n = positions.len();
+            // SAFETY: DVec3 is #[repr(C)] {x: f64, y: f64, z: f64} —
+            // identical layout to (N, 3) float64.  One flat memcpy.
+            let input_flat: &[f64] =
+                unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const f64, n * 3) };
+            let py_input = Array2::from_shape_vec((n, 3), input_flat.to_vec())
+                .expect("DVec3 layout")
+                .into_pyarray(py);
+
+            let result = match self.py_obj.call_method(py, "to_ecef", (&py_input,), None) {
+                Ok(r) => r,
+                Err(e) => {
+                    e.print(py);
+                    return;
+                }
+            };
+
+            // Read back — contiguous memcpy when possible.
+            if let Ok(arr) = result.extract::<numpy::PyReadonlyArray2<f64>>(py) {
+                let view = arr.as_array();
+                let out_flat: &mut [f64] = unsafe {
+                    std::slice::from_raw_parts_mut(positions.as_mut_ptr() as *mut f64, n * 3)
+                };
+                if let Some(src) = view.as_slice() {
+                    out_flat.copy_from_slice(src);
+                } else {
+                    // Non-contiguous fallback (e.g. Fortran-order)
+                    for i in 0..n.min(view.nrows()) {
+                        out_flat[i * 3] = view[[i, 0]];
+                        out_flat[i * 3 + 1] = view[[i, 1]];
+                        out_flat[i * 3 + 2] = view[[i, 2]];
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// Extract an `Arc<dyn CrsTransform>` from a Python argument.
+///
+/// Accepts either a `WkidTransform` instance (fast, pure-Rust) or any
+/// Python object with a `to_ecef(positions: ndarray) -> ndarray` method
+/// (e.g. `ProjTransform`).
+fn extract_crs_transform(
+    obj: &Bound<'_, PyAny>,
+) -> PyResult<Arc<dyn i3s_geospatial::crs::CrsTransform>> {
+    // Try the fast path: concrete WkidTransform
+    if let Ok(wkid) = obj.extract::<PyRef<PyWkidTransform>>() {
+        return Ok(Arc::new(wkid.inner.clone()));
+    }
+
+    // Protocol path: any object with to_ecef()
+    if obj.hasattr("to_ecef")? {
+        let py_obj: Py<PyAny> = obj.clone().unbind();
+        return Ok(Arc::new(PyCrsTransformBridge { py_obj }));
+    }
+
+    Err(PyRuntimeError::new_err(
+        "crs_transform must be a WkidTransform or an object with a to_ecef(positions) method",
+    ))
+}
 
 /// External dependencies for a ``SceneLayer``.
 ///
@@ -226,10 +251,7 @@ impl PySceneLayerExternals {
     ///     Custom renderer resource preparer. If None, uses a no-op.
     #[new]
     #[pyo3(signature = (async_system, prepare_renderer_resources=None))]
-    fn new(
-        async_system: &PyAsyncSystem,
-        prepare_renderer_resources: Option<Py<PyAny>>,
-    ) -> Self {
+    fn new(async_system: &PyAsyncSystem, prepare_renderer_resources: Option<Py<PyAny>>) -> Self {
         let prepare: Arc<dyn PrepareRendererResources> = match prepare_renderer_resources {
             Some(py_obj) => Arc::new(PyPrepareRendererResourcesBridge { py_obj }),
             None => Arc::new(NoopPrepareRendererResources),
@@ -254,10 +276,6 @@ impl PySceneLayerExternals {
         "SceneLayerExternals(...)".to_string()
     }
 }
-
-// ============================================================================
-// PyViewState
-// ============================================================================
 
 /// Camera view state for LOD selection.
 ///
@@ -329,10 +347,6 @@ impl PyViewState {
         )
     }
 }
-
-// ============================================================================
-// PySelectionOptions
-// ============================================================================
 
 /// LOD selection and loading options.
 ///
@@ -438,10 +452,6 @@ impl PySelectionOptions {
     }
 }
 
-// ============================================================================
-// PyViewUpdateResult
-// ============================================================================
-
 /// Result of a single frame's LOD selection.
 ///
 /// Mirrors cesium-native's ``ViewUpdateResult``.
@@ -509,10 +519,6 @@ impl PyViewUpdateResult {
     }
 }
 
-// ============================================================================
-// PyNodeLoadState
-// ============================================================================
-
 #[pyclass(name = "NodeLoadState", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
 pub enum PyNodeLoadState {
@@ -532,10 +538,6 @@ impl From<NodeLoadState> for PyNodeLoadState {
         }
     }
 }
-
-// ============================================================================
-// PyRenderNode  (snapshot — not a reference)
-// ============================================================================
 
 /// A node selected for rendering, with its OBB transform.
 #[pyclass(name = "RenderNode")]
@@ -582,135 +584,121 @@ impl PyRenderNode {
     }
 }
 
-// ============================================================================
-// PyGeometryData
-// ============================================================================
-
 /// Decoded geometry buffer content: positions, normals, UVs, etc.
 ///
-/// All array properties return numpy arrays. Positions are (N, 3) float32.
+/// All array properties return numpy arrays via contiguous `memcpy`
+/// (no element-by-element copy).  The data is shared via `Arc` so
+/// accessing `NodeContent.geometry` is O(1).
 #[pyclass(name = "GeometryData")]
 pub struct PyGeometryData {
-    inner: i3s_reader::geometry::GeometryData,
+    /// Shared reference — avoids cloning large buffers from NodeContent.
+    _owner: Arc<NodeContent>,
+}
+
+impl PyGeometryData {
+    fn geom(&self) -> &i3s_reader::geometry::GeometryData {
+        &self._owner.geometry
+    }
 }
 
 #[pymethods]
 impl PyGeometryData {
     #[getter]
     fn vertex_count(&self) -> u32 {
-        self.inner.vertex_count
+        self.geom().vertex_count
     }
 
     #[getter]
     fn feature_count(&self) -> u32 {
-        self.inner.feature_count
+        self.geom().feature_count
     }
 
     /// Positions as (N, 3) float32 numpy array.
     #[getter]
     fn positions<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f32>> {
-        let n = self.inner.positions.len();
-        let mut arr = numpy::ndarray::Array2::<f32>::zeros((n, 3));
-        for (i, p) in self.inner.positions.iter().enumerate() {
-            arr[[i, 0]] = p[0];
-            arr[[i, 1]] = p[1];
-            arr[[i, 2]] = p[2];
-        }
-        arr.into_pyarray(py)
+        numpy_conv::f32x3_to_pyarray2(py, &self.geom().positions)
     }
 
     /// Normals as (N, 3) float32 numpy array, or None.
     #[getter]
     fn normals<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f32>>> {
-        self.inner.normals.as_ref().map(|normals| {
-            let n = normals.len();
-            let mut arr = numpy::ndarray::Array2::<f32>::zeros((n, 3));
-            for (i, v) in normals.iter().enumerate() {
-                arr[[i, 0]] = v[0];
-                arr[[i, 1]] = v[1];
-                arr[[i, 2]] = v[2];
-            }
-            arr.into_pyarray(py)
-        })
+        self.geom()
+            .normals
+            .as_ref()
+            .map(|v| numpy_conv::f32x3_to_pyarray2(py, v))
     }
 
     /// UV0 as (N, 2) float32 numpy array, or None.
     #[getter]
     fn uv0<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f32>>> {
-        self.inner.uv0.as_ref().map(|uvs| {
-            let n = uvs.len();
-            let mut arr = numpy::ndarray::Array2::<f32>::zeros((n, 2));
-            for (i, v) in uvs.iter().enumerate() {
-                arr[[i, 0]] = v[0];
-                arr[[i, 1]] = v[1];
-            }
-            arr.into_pyarray(py)
-        })
+        self.geom()
+            .uv0
+            .as_ref()
+            .map(|v| numpy_conv::f32x2_to_pyarray2(py, v))
     }
 
     /// Vertex colors as (N, 4) uint8 numpy array, or None.
     #[getter]
     fn colors<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<u8>>> {
-        self.inner.colors.as_ref().map(|colors| {
-            let n = colors.len();
-            let mut arr = numpy::ndarray::Array2::<u8>::zeros((n, 4));
-            for (i, c) in colors.iter().enumerate() {
-                arr[[i, 0]] = c[0];
-                arr[[i, 1]] = c[1];
-                arr[[i, 2]] = c[2];
-                arr[[i, 3]] = c[3];
-            }
-            arr.into_pyarray(py)
-        })
+        self.geom()
+            .colors
+            .as_ref()
+            .map(|v| numpy_conv::u8x4_to_pyarray2(py, v))
+    }
+
+    /// UV region as (N, 4) uint16 numpy array, or None.
+    #[getter]
+    fn uv_region<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<u16>>> {
+        self.geom()
+            .uv_region
+            .as_ref()
+            .map(|v| numpy_conv::u16x4_to_pyarray2(py, v))
     }
 
     /// Feature IDs as (N,) uint64 numpy array, or None.
     #[getter]
     fn feature_ids<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray1<u64>>> {
-        self.inner.feature_ids.as_ref().map(|fids| {
-            numpy::ndarray::Array1::from_vec(fids.clone()).into_pyarray(py)
-        })
+        self.geom()
+            .feature_ids
+            .as_ref()
+            .map(|fids| numpy::ndarray::Array1::from_vec(fids.clone()).into_pyarray(py))
     }
 
     /// Face ranges as (N, 2) uint32 numpy array, or None.
     #[getter]
     fn face_ranges<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<u32>>> {
-        self.inner.face_ranges.as_ref().map(|ranges| {
-            let n = ranges.len();
-            let mut arr = numpy::ndarray::Array2::<u32>::zeros((n, 2));
-            for (i, r) in ranges.iter().enumerate() {
-                arr[[i, 0]] = r[0];
-                arr[[i, 1]] = r[1];
-            }
-            arr.into_pyarray(py)
-        })
+        self.geom()
+            .face_ranges
+            .as_ref()
+            .map(|v| numpy_conv::u32x2_to_pyarray2(py, v))
     }
 
     fn __repr__(&self) -> String {
         format!(
             "GeometryData(vertices={}, features={})",
-            self.inner.vertex_count, self.inner.feature_count
+            self.geom().vertex_count,
+            self.geom().feature_count
         )
     }
 }
 
-// ============================================================================
-// PyNodeContent
-// ============================================================================
 
 /// Loaded node content: geometry + texture + attribute data.
+///
+/// Content is reference-counted (`Arc`) so accessing sub-fields like
+/// ``geometry`` is O(1) — no deep clone.
 #[pyclass(name = "NodeContent")]
 pub struct PyNodeContent {
-    inner: NodeContent,
+    inner: Arc<NodeContent>,
 }
 
 #[pymethods]
 impl PyNodeContent {
-    /// Get the geometry data.
+    /// Get the geometry data (O(1) — shared reference, no copy).
     #[getter]
     fn geometry(&self) -> PyGeometryData {
         PyGeometryData {
-            inner: self.inner.geometry.clone(),
+            _owner: self.inner.clone(),
         }
     }
 
@@ -736,9 +724,6 @@ impl PyNodeContent {
     }
 }
 
-// ============================================================================
-// PySceneLayer — the main runtime type
-// ============================================================================
 
 /// An I3S scene layer — the central runtime object.
 ///
@@ -762,217 +747,127 @@ impl PyNodeContent {
 /// - ``result = layer.update_view_offline(view_states)`` — blocking
 #[pyclass(name = "SceneLayer")]
 pub struct PySceneLayer {
-    inner: SceneLayerInner,
+    inner: SceneLayer,
     /// Stash the last ViewUpdateResult so Python can iterate render nodes.
     last_result: Option<ViewUpdateResult>,
 }
 
 #[pymethods]
 impl PySceneLayer {
-    // -- Constructors (mirrors Tileset.__init__) ---------------------------
-
-    /// Open a REST-based I3S scene layer.
+    /// Open an I3S scene layer.
+    ///
+    /// Accepts both REST URLs (``http://``, ``https://``) and local SLPK
+    /// file paths.  An optional ``crs_transform`` can be any object with a
+    /// ``to_ecef(positions)`` method (e.g. ``WkidTransform``,
+    /// ``ProjTransform``, or a custom implementation).
     ///
     /// Parameters
     /// ----------
     /// externals : SceneLayerExternals
     ///     External dependencies (async system, renderer resources).
     /// url : str
-    ///     HTTP(S) URL to the I3S layer endpoint.
+    ///     HTTP(S) URL to an I3S layer endpoint, **or** a path to a
+    ///     local ``.slpk`` archive.
+    /// crs_transform : object, optional
+    ///     CRS-to-ECEF transform.  A ``WkidTransform`` (fast, pure-Rust)
+    ///     or any object whose ``to_ecef(ndarray) -> ndarray`` method
+    ///     converts ``(N, 3) float64`` positions to ECEF metres.
     /// options : SelectionOptions, optional
-    ///     LOD selection options.
+    ///     LOD selection and loading options.
     #[new]
-    #[cfg(feature = "rest")]
-    #[pyo3(signature = (externals, url, options=None))]
+    #[pyo3(signature = (externals, url, crs_transform=None, options=None))]
     fn new(
         externals: &PySceneLayerExternals,
         url: &str,
+        crs_transform: Option<&Bound<'_, PyAny>>,
         options: Option<&PySelectionOptions>,
     ) -> PyResult<Self> {
-        let accessor = RestAssetAccessor::new();
-        let resolver: Arc<dyn ResourceUriResolver> = Arc::new(RestUriResolver::new(url));
         let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
+        let transform: Option<Arc<dyn i3s_geospatial::crs::CrsTransform>> =
+            crs_transform.map(extract_crs_transform).transpose()?;
+        let ext = externals.inner.clone();
 
-        let layer = block_on(SceneLayer::open(
-            accessor,
-            resolver,
-            externals.inner.clone(),
-            opts,
-        ))
+        // Detect SLPK vs REST based on the URL/path.
+        let lower = url.to_ascii_lowercase();
+        let is_slpk = lower.ends_with(".slpk")
+            || (!lower.starts_with("http://") && !lower.starts_with("https://"));
+
+        let (accessor, resolver): (I3sAssetAccessor, Arc<dyn ResourceUriResolver>) = if is_slpk {
+            let mut acc = I3sAssetAccessor::new();
+            acc.register_slpk(std::path::Path::new(url))
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            (acc, Arc::new(SlpkUriResolver))
+        } else {
+            (I3sAssetAccessor::new(), Arc::new(RestUriResolver::new(url)))
+        };
+
+        // SAFETY: open() is pure Rust I/O only; no Python objects accessed.
+        // Releasing the GIL lets other Python threads make progress.
+        let layer = unsafe {
+            numpy_conv::without_gil(|| {
+                if let Some(xf) = transform {
+                    SceneLayer::open_with_transform(accessor, resolver, ext, opts, xf)
+                } else {
+                    SceneLayer::open(accessor, resolver, ext, opts)
+                }
+            })
+        }
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         Ok(Self {
-            inner: SceneLayerInner::Rest(layer),
+            inner: layer,
             last_result: None,
         })
     }
 
-    /// Open a REST-based I3S scene layer with a CRS transform.
+    /// Open an I3S scene layer asynchronously.
     ///
-    /// Parameters
-    /// ----------
-    /// externals : SceneLayerExternals
-    ///     External dependencies.
-    /// url : str
-    ///     HTTP(S) URL to the I3S layer endpoint.
-    /// wkid_transform : WkidTransform
-    ///     CRS-to-ECEF transform.
-    /// options : SelectionOptions, optional
-    ///     LOD selection options.
+    /// Same arguments as ``__init__`` but returns a ``Future`` that
+    /// resolves to a ``SceneLayer``.
     #[staticmethod]
-    #[cfg(feature = "rest")]
-    #[pyo3(signature = (externals, url, wkid_transform, options=None))]
-    fn from_url_with_transform(
-        externals: &PySceneLayerExternals,
-        url: &str,
-        wkid_transform: &PyWkidTransform,
-        options: Option<&PySelectionOptions>,
-    ) -> PyResult<Self> {
-        let accessor = RestAssetAccessor::new();
-        let resolver: Arc<dyn ResourceUriResolver> = Arc::new(RestUriResolver::new(url));
-        let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
-        let transform: Arc<dyn i3s_geospatial::crs::CrsTransform> =
-            Arc::new(wkid_transform.inner.clone());
-
-        let layer = block_on(SceneLayer::open_with_transform(
-            accessor,
-            resolver,
-            externals.inner.clone(),
-            opts,
-            transform,
-        ))
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        Ok(Self {
-            inner: SceneLayerInner::Rest(layer),
-            last_result: None,
-        })
-    }
-
-    /// Open an SLPK file.
-    ///
-    /// Parameters
-    /// ----------
-    /// externals : SceneLayerExternals
-    ///     External dependencies.
-    /// path : str
-    ///     Path to the ``.slpk`` archive.
-    /// options : SelectionOptions, optional
-    ///     LOD selection options.
-    #[staticmethod]
-    #[cfg(feature = "slpk")]
-    #[pyo3(signature = (externals, path, options=None))]
-    fn from_slpk(
-        externals: &PySceneLayerExternals,
-        path: &str,
-        options: Option<&PySelectionOptions>,
-    ) -> PyResult<Self> {
-        let accessor = SlpkAssetAccessor::open(std::path::Path::new(path))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let resolver: Arc<dyn ResourceUriResolver> =
-            Arc::new(i3s_async::resolver::SlpkUriResolver);
-        let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
-
-        let layer = block_on(SceneLayer::open(
-            accessor,
-            resolver,
-            externals.inner.clone(),
-            opts,
-        ))
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        Ok(Self {
-            inner: SceneLayerInner::Slpk(layer),
-            last_result: None,
-        })
-    }
-
-    /// Open a REST-based I3S scene layer asynchronously.
-    ///
-    /// Returns a ``Future`` that resolves to a ``SceneLayer``.
-    ///
-    /// Parameters
-    /// ----------
-    /// externals : SceneLayerExternals
-    ///     External dependencies.
-    /// url : str
-    ///     HTTP(S) URL to the I3S layer endpoint.
-    /// options : SelectionOptions, optional
-    ///     LOD selection options.
-    ///
-    /// Returns
-    /// -------
-    /// Future
-    ///     Resolves to ``SceneLayer``.
-    #[staticmethod]
-    #[cfg(feature = "rest")]
-    #[pyo3(signature = (externals, url, options=None))]
+    #[pyo3(signature = (externals, url, crs_transform=None, options=None))]
     fn open_async(
         externals: &PySceneLayerExternals,
         url: &str,
+        crs_transform: Option<&Bound<'_, PyAny>>,
         options: Option<&PySelectionOptions>,
-    ) -> PyFuture {
-        let accessor = RestAssetAccessor::new();
-        let resolver: Arc<dyn ResourceUriResolver> = Arc::new(RestUriResolver::new(url));
+    ) -> PyResult<PyFuture> {
         let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
         let ext = externals.inner.clone();
+        let transform: Option<Arc<dyn i3s_geospatial::crs::CrsTransform>> =
+            crs_transform.map(extract_crs_transform).transpose()?;
+
+        let lower = url.to_ascii_lowercase();
+        let is_slpk = lower.ends_with(".slpk")
+            || (!lower.starts_with("http://") && !lower.starts_with("https://"));
+
+        let (accessor, resolver): (I3sAssetAccessor, Arc<dyn ResourceUriResolver>) = if is_slpk {
+            let mut acc = I3sAssetAccessor::new();
+            acc.register_slpk(std::path::Path::new(url))
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            (acc, Arc::new(SlpkUriResolver))
+        } else {
+            (I3sAssetAccessor::new(), Arc::new(RestUriResolver::new(url)))
+        };
 
         let (promise, future) = ext.async_system.create_promise();
         let tp = ext.async_system.task_processor().clone();
         tp.start_task(Box::new(move || {
             let result = (|| -> Result<Py<PyAny>, String> {
-                let layer = block_on(SceneLayer::open(accessor, resolver, ext, opts))
-                    .map_err(|e| e.to_string())?;
-                Python::attach(|py| {
-                    Py::new(py, PySceneLayer {
-                        inner: SceneLayerInner::Rest(layer),
-                        last_result: None,
-                    })
-                    .map(|obj| obj.into_any())
-                    .map_err(|e: PyErr| e.to_string())
-                })
-            })();
-            match result {
-                Ok(obj) => promise.resolve(obj),
-                Err(e) => promise.reject(e),
-            }
-        }));
-
-        PyFuture::from_rust(future)
-    }
-
-    /// Open a REST-based I3S scene layer with a CRS transform, asynchronously.
-    ///
-    /// Returns a ``Future`` that resolves to a ``SceneLayer``.
-    #[staticmethod]
-    #[cfg(feature = "rest")]
-    #[pyo3(signature = (externals, url, wkid_transform, options=None))]
-    fn open_async_with_transform(
-        externals: &PySceneLayerExternals,
-        url: &str,
-        wkid_transform: &PyWkidTransform,
-        options: Option<&PySelectionOptions>,
-    ) -> PyFuture {
-        let accessor = RestAssetAccessor::new();
-        let resolver: Arc<dyn ResourceUriResolver> = Arc::new(RestUriResolver::new(url));
-        let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
-        let ext = externals.inner.clone();
-        let transform: Arc<dyn i3s_geospatial::crs::CrsTransform> =
-            Arc::new(wkid_transform.inner.clone());
-
-        let (promise, future) = ext.async_system.create_promise();
-        let tp = ext.async_system.task_processor().clone();
-        tp.start_task(Box::new(move || {
-            let result = (|| -> Result<Py<PyAny>, String> {
-                let layer = block_on(SceneLayer::open_with_transform(
-                    accessor, resolver, ext, opts, transform,
-                ))
+                let layer = if let Some(xf) = transform {
+                    SceneLayer::open_with_transform(accessor, resolver, ext, opts, xf)
+                } else {
+                    SceneLayer::open(accessor, resolver, ext, opts)
+                }
                 .map_err(|e| e.to_string())?;
                 Python::attach(|py| {
-                    Py::new(py, PySceneLayer {
-                        inner: SceneLayerInner::Rest(layer),
-                        last_result: None,
-                    })
+                    Py::new(
+                        py,
+                        PySceneLayer {
+                            inner: layer,
+                            last_result: None,
+                        },
+                    )
                     .map(|obj| obj.into_any())
                     .map_err(|e: PyErr| e.to_string())
                 })
@@ -983,15 +878,14 @@ impl PySceneLayer {
             }
         }));
 
-        PyFuture::from_rust(future)
+        Ok(PyFuture::from_rust(future))
     }
 
-    // -- Properties -------------------------------------------------------
 
     /// The layer's coordinate reference system classification.
     #[getter]
     fn crs(&self) -> crate::geospatial::PySceneCoordinateSystem {
-        match dispatch!(self.inner, layer => layer.crs()) {
+        match self.inner.crs() {
             SceneCoordinateSystem::Global => crate::geospatial::PySceneCoordinateSystem::Global,
             SceneCoordinateSystem::Local => crate::geospatial::PySceneCoordinateSystem::Local,
         }
@@ -1000,20 +894,20 @@ impl PySceneLayer {
     /// Current frame counter.
     #[getter]
     fn frame(&self) -> u64 {
-        dispatch!(self.inner, layer => layer.frame())
+        self.inner.frame()
     }
 
     /// Load progress as a fraction [0.0, 1.0].
     #[getter]
     fn load_progress(&self) -> f64 {
-        dispatch!(self.inner, layer => layer.load_progress())
+        self.inner.load_progress()
     }
 
     /// The ellipsoid used for this layer.
     #[getter]
     fn ellipsoid(&self) -> PyEllipsoid {
         PyEllipsoid {
-            inner: dispatch!(self.inner, layer => layer.ellipsoid()),
+            inner: self.inner.ellipsoid(),
         }
     }
 
@@ -1021,24 +915,21 @@ impl PySceneLayer {
     #[getter]
     fn options(&self) -> PySelectionOptions {
         PySelectionOptions {
-            inner: dispatch!(self.inner, layer => layer.options.clone()),
+            inner: self.inner.options.clone(),
         }
     }
 
     #[setter]
     fn set_options(&mut self, opts: &PySelectionOptions) {
-        dispatch_mut!(self.inner, layer => {
-            layer.options = opts.inner.clone();
-        })
+        self.inner.options = opts.inner.clone();
     }
 
     /// Total cached bytes.
     #[getter]
     fn cached_bytes(&mut self) -> usize {
-        dispatch_mut!(self.inner, layer => layer.cache().total_bytes())
+        self.inner.cache().total_bytes()
     }
 
-    // -- Frame loop -------------------------------------------------------
 
     /// Run per-frame LOD selection (sync — pure computation).
     ///
@@ -1052,7 +943,11 @@ impl PySceneLayer {
     /// ViewUpdateResult
     fn update_view(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        let result = dispatch_mut!(self.inner, layer => layer.update_view(&views));
+        // SAFETY: update_view is pure Rust traversal (frustum culling, SSE
+        // tests).  No Python objects are accessed.
+        let result = unsafe {
+            numpy_conv::without_gil(|| self.inner.update_view(&views))
+        };
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
     }
@@ -1061,17 +956,25 @@ impl PySceneLayer {
     ///
     /// Call after ``update_view()`` each frame.
     fn load_nodes(&mut self, result: &PyViewUpdateResult) {
-        dispatch_mut!(self.inner, layer => layer.load_nodes(&result.inner));
+        // SAFETY: load_nodes dispatches I/O to worker threads and collects
+        // completed work.  The prepare_renderer_resources callbacks use
+        // Python::attach() to reacquire the GIL when needed.
+        unsafe {
+            numpy_conv::without_gil(|| self.inner.load_nodes(&result.inner))
+        }
     }
 
     /// Convenience: combined update_view + load_nodes.
     fn tick(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        let result = dispatch_mut!(self.inner, layer => {
-            let r = layer.update_view(&views);
-            layer.load_nodes(&r);
-            r
-        });
+        // SAFETY: see update_view + load_nodes above.
+        let result = unsafe {
+            numpy_conv::without_gil(|| {
+                let r = self.inner.update_view(&views);
+                self.inner.load_nodes(&r);
+                r
+            })
+        };
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
     }
@@ -1079,7 +982,11 @@ impl PySceneLayer {
     /// Blocking update — wait until all nodes meeting SSE are loaded.
     fn update_view_offline(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        let result = dispatch_mut!(self.inner, layer => layer.update_view_offline(&views));
+        // SAFETY: potentially long-running — must release GIL so other
+        // threads can make progress and callbacks can reacquire it.
+        let result = unsafe {
+            numpy_conv::without_gil(|| self.inner.update_view_offline(&views))
+        };
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
     }
@@ -1091,48 +998,37 @@ impl PySceneLayer {
         let result = self.last_result.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("No view update result — call update_view() first")
         })?;
-        let nodes: Vec<PyRenderNode> = dispatch!(self.inner, layer => {
-            layer
-                .nodes_to_render(result)
-                .map(|rn| PyRenderNode {
-                    node_id: rn.node_id,
-                    center: rn.center,
-                    quaternion: rn.quaternion,
-                    half_size: rn.half_size,
-                    bounding_radius: rn.bounding_radius,
-                })
-                .collect()
-        });
+        let nodes: Vec<PyRenderNode> = self.inner
+            .nodes_to_render(result)
+            .map(|rn| PyRenderNode {
+                node_id: rn.node_id,
+                center: rn.center,
+                quaternion: rn.quaternion,
+                half_size: rn.half_size,
+                bounding_radius: rn.bounding_radius,
+            })
+            .collect();
         Ok(nodes)
     }
 
     /// Get the load state of a node.
     fn node_load_state(&self, node_id: u32) -> Option<PyNodeLoadState> {
-        dispatch!(self.inner, layer => {
-            layer.node_state(node_id).map(|s| s.load_state.into())
-        })
+        self.inner.node_state(node_id).map(|s| s.load_state.into())
     }
 
     /// Get cached content for a node.
     fn node_content(&mut self, node_id: u32) -> Option<PyNodeContent> {
-        dispatch_mut!(self.inner, layer => {
-            layer.cache().get(node_id).map(|c| PyNodeContent {
-                inner: c.clone(),
-            })
+        self.inner.cache().get(node_id).map(|c| PyNodeContent {
+            inner: Arc::new(c.clone()),
         })
     }
 
     fn __repr__(&self) -> String {
-        let info = dispatch!(self.inner, layer => {
-            format!("{:?}", layer.info.layer_type())
-        });
-        format!("SceneLayer(type={})", info)
+        format!("SceneLayer(type={:?})", self.inner.info.layer_type())
     }
 }
 
-// ============================================================================
 // Module registration
-// ============================================================================
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyIPrepareRendererResources>()?;

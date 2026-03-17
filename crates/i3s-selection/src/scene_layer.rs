@@ -11,7 +11,7 @@
 //! - **Building** — see [`BuildingSceneLayer`](crate::building::BuildingSceneLayer)
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::Arc;
 
 use glam::{DQuat, DVec3};
 
@@ -19,7 +19,7 @@ use i3s::core::{SceneLayerInfo, SceneLayerInfoPsl, SceneLayerType};
 use i3s::node::NodePageDefinitionLodSelectionMetricType;
 use i3s::pointcloud::PointCloudLayer;
 
-use i3s_async::{AssetAccessor, ResourceUriResolver, block_on};
+use i3s_async::{AssetAccessor, ResourceUriResolver};
 use i3s_geometry::obb::OrientedBoundingBox;
 use i3s_geospatial::crs::{self, CrsTransform, SceneCoordinateSystem};
 use i3s_geospatial::ellipsoid::Ellipsoid;
@@ -75,11 +75,11 @@ pub struct RenderNode<'a> {
     pub renderer_resources: Option<&'a RendererResources>,
 }
 
-pub struct SceneLayer<A: AssetAccessor + 'static> {
+pub struct SceneLayer {
     /// The typed layer info document.
     pub info: LayerInfo,
-    /// The asset accessor (REST or SLPK).
-    accessor: Arc<A>,
+    /// The asset accessor (unified HTTP + SLPK).
+    accessor: Arc<dyn AssetAccessor>,
     /// URI resolver for I3S resources.
     resolver: Arc<dyn ResourceUriResolver>,
     /// External dependencies (task processor, renderer).
@@ -99,12 +99,12 @@ pub struct SceneLayer<A: AssetAccessor + 'static> {
     /// Current frame counter.
     frame: u64,
     /// Concurrent content loader.
-    loader: NodeContentLoader<A>,
+    loader: NodeContentLoader,
     /// Memory-budgeted content cache.
     cache: NodeCache,
     /// Channel for async node page fetch results.
-    page_sender: mpsc::Sender<PageFetchResult>,
-    page_receiver: Mutex<mpsc::Receiver<PageFetchResult>>,
+    page_sender: crossbeam_channel::Sender<PageFetchResult>,
+    page_receiver: crossbeam_channel::Receiver<PageFetchResult>,
     /// Page IDs currently being fetched (dedup guard).
     pages_in_flight: HashSet<u32>,
 }
@@ -115,7 +115,7 @@ struct PageFetchResult {
     data: std::result::Result<Vec<u8>, i3s_util::I3sError>,
 }
 
-impl<A: AssetAccessor + 'static> SceneLayer<A> {
+impl SceneLayer {
     /// Create a scene layer from an accessor and URI resolver.
     /// Fetches the layer info document and the first node page to bootstrap the tree.
     ///
@@ -124,13 +124,13 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
     /// IntegratedMesh, Point, and PointCloud layers.
     ///
     /// For Building layers, use [`BuildingSceneLayer`](crate::building::BuildingSceneLayer).
-    pub async fn open(
-        accessor: A,
+    pub fn open(
+        accessor: impl AssetAccessor + 'static,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
     ) -> Result<Self> {
-        Self::open_shared(Arc::new(accessor), resolver, externals, options, None).await
+        Self::open_shared(Arc::new(accessor), resolver, externals, options, None)
     }
 
     /// Like [`open`](Self::open), but with a [`CrsTransform`] for local layers.
@@ -138,8 +138,8 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
     /// When provided, OBBs from local/projected layers are transformed to ECEF,
     /// enabling a unified ECEF [`ViewState`] regardless of the layer's native CRS.
     /// For global layers (WKID 4326/4490), the transform is ignored.
-    pub async fn open_with_transform(
-        accessor: A,
+    pub fn open_with_transform(
+        accessor: impl AssetAccessor + 'static,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
@@ -152,15 +152,14 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             options,
             Some(crs_transform),
         )
-        .await
     }
 
-    /// Like [`open`](Self::open), but takes a shared `Arc<A>` accessor.
+    /// Like [`open`](Self::open), but takes a pre-shared `Arc<dyn AssetAccessor>`.
     ///
     /// Used internally by [`BuildingSceneLayer`](crate::building::BuildingSceneLayer)
     /// to share one accessor across all sublayers.
-    pub async fn open_shared(
-        accessor: Arc<A>,
+    pub fn open_shared(
+        accessor: Arc<dyn AssetAccessor>,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
@@ -168,7 +167,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
     ) -> Result<Self> {
         // Fetch the layer JSON document
         let layer_uri = resolver.layer_uri();
-        let layer_bytes = accessor.get(&layer_uri).await?.into_data()?;
+        let layer_bytes = accessor.get(&layer_uri)?.into_data()?;
 
         // Probe the layer type from the raw JSON
         let layer_type = probe_layer_type(&layer_bytes)?;
@@ -183,7 +182,6 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
                     &layer_bytes,
                     crs_transform,
                 )
-                .await
             }
             SceneLayerType::Building => Err(i3s_util::I3sError::InvalidData(
                 "Building layers cannot be opened as a single SceneLayer. \
@@ -199,7 +197,6 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
                     &layer_bytes,
                     crs_transform,
                 )
-                .await
             }
             _ => {
                 // 3DObject, IntegratedMesh
@@ -211,14 +208,13 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
                     &layer_bytes,
                     crs_transform,
                 )
-                .await
             }
         }
     }
 
     /// Open a 3DObject or IntegratedMesh layer.
-    async fn open_mesh(
-        accessor: Arc<A>,
+    fn open_mesh(
+        accessor: Arc<dyn AssetAccessor>,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
@@ -248,7 +244,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             .unwrap_or(64);
 
         let page0_uri = resolver.node_page_uri(0);
-        let page0_bytes = accessor.get(&page0_uri).await?.into_data()?;
+        let page0_bytes = accessor.get(&page0_uri)?.into_data()?;
 
         let mut node_tree = NodeTree::Paged(PagedNodeTree {
             node_pages: Vec::new(),
@@ -272,7 +268,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             attribute_infos,
         );
         let cache = NodeCache::new(options.maximum_cached_bytes);
-        let (page_sender, page_receiver) = mpsc::channel();
+        let (page_sender, page_receiver) = crossbeam_channel::unbounded();
 
         Ok(Self {
             info: LayerInfo::Mesh(info),
@@ -289,14 +285,14 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             loader,
             cache,
             page_sender,
-            page_receiver: Mutex::new(page_receiver),
+            page_receiver,
             pages_in_flight: HashSet::new(),
         })
     }
 
     /// Open a Point scene layer (PSL profile).
-    async fn open_point(
-        accessor: Arc<A>,
+    fn open_point(
+        accessor: Arc<dyn AssetAccessor>,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
@@ -327,7 +323,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             .unwrap_or(64);
 
         let page0_uri = resolver.node_page_uri(0);
-        let page0_bytes = accessor.get(&page0_uri).await?.into_data()?;
+        let page0_bytes = accessor.get(&page0_uri)?.into_data()?;
 
         let mut node_tree = NodeTree::Paged(PagedNodeTree {
             node_pages: Vec::new(),
@@ -351,7 +347,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             attribute_infos,
         );
         let cache = NodeCache::new(options.maximum_cached_bytes);
-        let (page_sender, page_receiver) = mpsc::channel();
+        let (page_sender, page_receiver) = crossbeam_channel::unbounded();
 
         Ok(Self {
             info: LayerInfo::Point(info),
@@ -368,14 +364,14 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             loader,
             cache,
             page_sender,
-            page_receiver: Mutex::new(page_receiver),
+            page_receiver,
             pages_in_flight: HashSet::new(),
         })
     }
 
     /// Open a PointCloud scene layer (PCSL profile).
-    async fn open_pointcloud(
-        accessor: Arc<A>,
+    fn open_pointcloud(
+        accessor: Arc<dyn AssetAccessor>,
         resolver: Arc<dyn ResourceUriResolver>,
         externals: SceneLayerExternals,
         options: SelectionOptions,
@@ -392,7 +388,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
         let nodes_per_page = info.store.index.nodes_per_page as usize;
 
         let page0_uri = resolver.node_page_uri(0);
-        let page0_bytes = accessor.get(&page0_uri).await?.into_data()?;
+        let page0_bytes = accessor.get(&page0_uri)?.into_data()?;
 
         let mut node_tree = NodeTree::PointCloud(PointCloudNodeTree {
             node_pages: Vec::new(),
@@ -416,7 +412,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             Vec::new(),
         );
         let cache = NodeCache::new(options.maximum_cached_bytes);
-        let (page_sender, page_receiver) = mpsc::channel();
+        let (page_sender, page_receiver) = crossbeam_channel::unbounded();
 
         Ok(Self {
             info: LayerInfo::PointCloud(info),
@@ -433,7 +429,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             loader,
             cache,
             page_sender,
-            page_receiver: Mutex::new(page_receiver),
+            page_receiver,
             pages_in_flight: HashSet::new(),
         })
     }
@@ -445,7 +441,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
         }
 
         let bytes =
-            block_on(self.accessor.get(&self.resolver.node_page_uri(page_id)))?.into_data()?;
+            self.accessor.get(&self.resolver.node_page_uri(page_id))?.into_data()?;
         self.node_tree.insert_page(page_id, &bytes)?;
 
         // Ensure node states cover the new page
@@ -517,12 +513,14 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
             let accessor = Arc::clone(&self.accessor);
             let resolver = Arc::clone(&self.resolver);
             let sender = self.page_sender.clone();
-            self.externals.async_system.task_processor().start_task(Box::new(move || {
-                let uri = resolver.node_page_uri(page_id);
-                let data = block_on(accessor.get(&uri))
-                    .and_then(|r| r.into_data());
-                let _ = sender.send(PageFetchResult { page_id, data });
-            }));
+            self.externals
+                .async_system
+                .task_processor()
+                .start_task(Box::new(move || {
+                    let uri = resolver.node_page_uri(page_id);
+                    let data = accessor.get(&uri).and_then(|r| r.into_data());
+                    let _ = sender.send(PageFetchResult { page_id, data });
+                }));
         }
 
         // Enqueue new load requests from selection
@@ -611,12 +609,10 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
     /// Called at the start of [`load_nodes`](Self::load_nodes). Non-blocking —
     /// drains the page result channel without waiting.
     fn collect_page_fetches(&mut self) {
-        let rx = self.page_receiver.lock().unwrap();
         let mut fetched = Vec::new();
-        while let Ok(result) = rx.try_recv() {
+        while let Ok(result) = self.page_receiver.try_recv() {
             fetched.push(result);
         }
-        drop(rx);
 
         for fetch in fetched {
             self.pages_in_flight.remove(&fetch.page_id);
@@ -660,7 +656,7 @@ impl<A: AssetAccessor + 'static> SceneLayer<A> {
     }
 
     /// Access the content loader.
-    pub fn loader(&self) -> &NodeContentLoader<A> {
+    pub fn loader(&self) -> &NodeContentLoader {
         &self.loader
     }
 

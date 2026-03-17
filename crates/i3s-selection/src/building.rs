@@ -130,7 +130,7 @@ pub struct BuildingSceneLayer<A: AssetAccessor + 'static> {
     /// Flattened sublayer entries (including groups).
     sublayer_entries: Vec<SublayerEntry>,
     /// Opened sublayer SceneLayers, keyed by sublayer_id position in entries.
-    sublayers: Vec<Option<SceneLayer<A>>>,
+    sublayers: Vec<Option<SceneLayer>>,
 }
 
 impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
@@ -162,13 +162,13 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
         let accessor = Arc::new(accessor);
 
         let layer_uri = resolver.layer_uri();
-        let layer_bytes = accessor.get(&layer_uri).await?.into_data()?;
+        let layer_bytes = accessor.get(&layer_uri)?.into_data()?;
         let info: BuildingLayer = read_json(&layer_bytes)?;
 
         let mut entries = Vec::new();
         flatten_sublayers(&info.sublayers, &mut entries);
 
-        let sublayers: Vec<Option<SceneLayer<A>>> = (0..entries.len()).map(|_| None).collect();
+        let sublayers: Vec<Option<SceneLayer>> = (0..entries.len()).map(|_| None).collect();
 
         Ok(Self {
             info,
@@ -216,13 +216,12 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
         });
 
         let layer = SceneLayer::open_shared(
-            Arc::clone(&self.accessor),
+            Arc::clone(&self.accessor) as Arc<dyn AssetAccessor>,
             sub_resolver as Arc<dyn ResourceUriResolver>,
             self.externals.clone(),
             self.options.clone(),
             self.crs_transform.clone(),
-        )
-        .await?;
+        )?;
 
         self.sublayers[idx] = Some(layer);
         self.sublayer_entries[idx].opened = true;
@@ -272,7 +271,7 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
     }
 
     /// Access an opened sublayer's SceneLayer by sublayer ID.
-    pub fn sublayer(&self, sublayer_id: i64) -> Option<&SceneLayer<A>> {
+    pub fn sublayer(&self, sublayer_id: i64) -> Option<&SceneLayer> {
         let idx = self
             .sublayer_entries
             .iter()
@@ -281,7 +280,7 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
     }
 
     /// Access an opened sublayer's SceneLayer mutably by sublayer ID.
-    pub fn sublayer_mut(&mut self, sublayer_id: i64) -> Option<&mut SceneLayer<A>> {
+    pub fn sublayer_mut(&mut self, sublayer_id: i64) -> Option<&mut SceneLayer> {
         let idx = self
             .sublayer_entries
             .iter()

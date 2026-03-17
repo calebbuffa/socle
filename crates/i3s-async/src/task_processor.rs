@@ -7,10 +7,7 @@
 //! A default [`ThreadPoolTaskProcessor`] is provided using `std::thread` and
 //! channels — no tokio or async runtime required.
 
-use std::future::Future;
-use std::pin::pin;
 use std::sync::mpsc;
-use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
 
 /// A task processor that dispatches work to background threads.
@@ -29,32 +26,6 @@ pub trait TaskProcessor: Send + Sync {
     /// to another thread). The implementation should run it as soon as a worker
     /// is available. This method must not block.
     fn start_task(&self, task: Box<dyn FnOnce() + Send>);
-}
-
-struct NoopWaker;
-impl Wake for NoopWaker {
-    fn wake(self: std::sync::Arc<Self>) {}
-}
-
-/// Minimal `block_on` — polls a future to completion on the current thread.
-///
-/// Suitable for futures that complete synchronously or with minimal suspension
-/// (e.g. [`SlpkProvider`](crate::slpk::SlpkProvider) whose async methods do
-/// blocking I/O and return immediately).
-///
-/// For truly async providers (e.g. `RestProvider` with reqwest), use a
-/// runtime-aware block_on like `tokio::runtime::Handle::current().block_on(fut)`.
-pub fn block_on<F: Future>(fut: F) -> F::Output {
-    let waker = Waker::from(std::sync::Arc::new(NoopWaker));
-    let mut cx = Context::from_waker(&waker);
-    let mut fut = pin!(fut);
-
-    loop {
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(val) => return val,
-            Poll::Pending => std::thread::yield_now(),
-        }
-    }
 }
 
 /// A simple thread-pool [`TaskProcessor`] using `std::thread`.

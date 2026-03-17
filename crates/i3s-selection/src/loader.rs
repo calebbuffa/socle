@@ -11,10 +11,10 @@
 
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::Arc;
 
 use i3s_async::{
-    AssetAccessor, ResourceUriResolver, TaskProcessor, TextureRequestFormat, block_on,
+    AssetAccessor, ResourceUriResolver, TaskProcessor, TextureRequestFormat,
 };
 use i3s_geospatial::crs::CrsTransform;
 use i3s_reader::attribute::{AttributeValueType, parse_attribute_buffer};
@@ -92,12 +92,12 @@ struct InFlightTask {
 /// queues them by priority (projected screen size), then dispatches up to
 /// `max_simultaneous_loads` tasks through the [`TaskProcessor`].
 ///
-/// Results flow back via an internal channel. Call:
+/// Results flow back via a crossbeam channel. Call:
 /// 1. [`request`](Self::request) — enqueue nodes for loading
 /// 2. [`dispatch`](Self::dispatch) — submit tasks to the TaskProcessor
 /// 3. [`collect_completed`](Self::collect_completed) — harvest finished results (sync)
-pub struct NodeContentLoader<A: AssetAccessor + 'static> {
-    accessor: Arc<A>,
+pub struct NodeContentLoader {
+    accessor: Arc<dyn AssetAccessor>,
     resolver: Arc<dyn ResourceUriResolver>,
     task_processor: Arc<dyn TaskProcessor>,
     prepare_renderer: Arc<dyn PrepareRendererResources>,
@@ -106,16 +106,16 @@ pub struct NodeContentLoader<A: AssetAccessor + 'static> {
     pending: BinaryHeap<LoadRequest>,
     in_flight: Vec<InFlightTask>,
     /// Channel for completed load results.
-    result_sender: mpsc::Sender<LoadResult>,
-    result_receiver: Mutex<mpsc::Receiver<LoadResult>>,
+    result_sender: crossbeam_channel::Sender<LoadResult>,
+    result_receiver: crossbeam_channel::Receiver<LoadResult>,
     layout: GeometryLayout,
     attribute_infos: Arc<Vec<AttributeInfo>>,
 }
 
-impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
+impl NodeContentLoader {
     /// Create a new loader.
     pub fn new(
-        accessor: Arc<A>,
+        accessor: Arc<dyn AssetAccessor>,
         resolver: Arc<dyn ResourceUriResolver>,
         task_processor: Arc<dyn TaskProcessor>,
         prepare_renderer: Arc<dyn PrepareRendererResources>,
@@ -124,7 +124,7 @@ impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
         layout: GeometryLayout,
         attribute_infos: Vec<AttributeInfo>,
     ) -> Self {
-        let (result_sender, result_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = crossbeam_channel::unbounded();
         Self {
             accessor,
             resolver,
@@ -135,7 +135,7 @@ impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
             pending: BinaryHeap::new(),
             in_flight: Vec::new(),
             result_sender,
-            result_receiver: Mutex::new(result_receiver),
+            result_receiver,
             layout,
             attribute_infos: Arc::new(attribute_infos),
         }
@@ -212,13 +212,10 @@ impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
     /// Drains the result channel. Call this on the main thread each frame.
     pub fn collect_completed(&mut self) -> Vec<LoadResult> {
         let mut completed = Vec::new();
-        let rx = self.result_receiver.lock().unwrap();
-        while let Ok(result) = rx.try_recv() {
-            // Remove from in_flight
+        while let Ok(result) = self.result_receiver.try_recv() {
             self.in_flight.retain(|t| t.node_id != result.node_id);
             completed.push(result);
         }
-        drop(rx);
         completed
     }
 
@@ -237,9 +234,7 @@ impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
         }
         self.in_flight.clear();
         // Drain any results that arrived for now-cancelled tasks
-        let rx = self.result_receiver.lock().unwrap();
-        while rx.try_recv().is_ok() {}
-        drop(rx);
+        while self.result_receiver.try_recv().is_ok() {}
         cancelled
     }
 
@@ -271,11 +266,9 @@ impl<A: AssetAccessor + 'static> NodeContentLoader<A> {
     }
 }
 
-/// Fetch and decode all content for a node (runs on a worker thread).
-///
-/// Uses [`block_on`](i3s_async::block_on) to drive the accessor's async methods.
-fn load_node_content<A: AssetAccessor>(
-    accessor: &A,
+/// Fetch and decode all content for a node (runs on a worker thread, blocking).
+fn load_node_content(
+    accessor: &dyn AssetAccessor,
     resolver: &dyn ResourceUriResolver,
     node_id: u32,
     layout: &GeometryLayout,
@@ -283,12 +276,12 @@ fn load_node_content<A: AssetAccessor>(
 ) -> Result<NodeContent> {
     // Fetch geometry (geometry ID 0 is the standard single geometry)
     let geo_uri = resolver.geometry_uri(node_id, 0);
-    let geo_bytes = block_on(accessor.get(&geo_uri))?.into_data()?;
+    let geo_bytes = accessor.get(&geo_uri)?.into_data()?;
     let geometry = parse_geometry_buffer(&geo_bytes, layout)?;
 
     // Fetch texture (best-effort; node may not have textures)
     let tex_uri = resolver.texture_uri(node_id, 0, TextureRequestFormat::Jpeg);
-    let texture_data = match block_on(accessor.get(&tex_uri)).and_then(|r| r.into_data()) {
+    let texture_data = match accessor.get(&tex_uri).and_then(|r| r.into_data()) {
         Ok(bytes) => bytes,
         Err(_) => Vec::new(),
     };
@@ -297,7 +290,7 @@ fn load_node_content<A: AssetAccessor>(
     let mut attributes = Vec::with_capacity(attribute_infos.len());
     for info in attribute_infos {
         let attr_uri = resolver.attribute_uri(node_id, info.attribute_id);
-        match block_on(accessor.get(&attr_uri)).and_then(|r| r.into_data()) {
+        match accessor.get(&attr_uri).and_then(|r| r.into_data()) {
             Ok(bytes) => match parse_attribute_buffer(&bytes, info.value_type) {
                 Ok(data) => attributes.push(data),
                 Err(_) => {} // skip malformed attribute

@@ -8,15 +8,10 @@ use std::sync::Arc;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use i3s_async::async_system::{
-    AsyncSystem, Future as RustFuture,
-};
-use i3s_async::task_processor::ThreadPoolTaskProcessor;
 use i3s_async::TaskProcessor;
+use i3s_async::async_system::{AsyncSystem, Future as RustFuture};
+use i3s_async::task_processor::ThreadPoolTaskProcessor;
 
-// ============================================================================
-// NativeTaskProcessor — default thread pool
-// ============================================================================
 
 /// A native thread-pool task processor.
 ///
@@ -47,9 +42,6 @@ impl PyNativeTaskProcessor {
     }
 }
 
-// ============================================================================
-// PyAsyncSystem — wraps i3s_async::AsyncSystem
-// ============================================================================
 
 /// The async system: owns a worker thread pool and main-thread task queue.
 ///
@@ -98,9 +90,6 @@ impl PyAsyncSystem {
     }
 }
 
-// ============================================================================
-// PyFuture — wraps i3s_async::Future<Py<PyAny>>
-// ============================================================================
 
 /// Internal state for a Python future.
 enum PyFutureState {
@@ -168,10 +157,41 @@ impl PyFuture {
     /// Block in the main thread — dispatches main-thread tasks while waiting.
     ///
     /// Use this when the future's resolution depends on main-thread callbacks.
-    fn wait_in_main_thread(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        // For now, same as wait(). When we have proper main-thread dispatch
-        // integration, this will pump the main-thread queue while waiting.
-        self.wait(py)
+    /// Pumps the AsyncSystem's main-thread task queue in a spin-yield loop
+    /// until the future is resolved, then returns the result.
+    fn wait_in_main_thread(
+        &self,
+        py: Python<'_>,
+        async_system: &PyAsyncSystem,
+    ) -> PyResult<Py<PyAny>> {
+        let rust_future = {
+            let mut state = self.state.lock().unwrap();
+            match std::mem::replace(&mut *state, PyFutureState::Consumed) {
+                PyFutureState::Pending(f) => f,
+                PyFutureState::Consumed => {
+                    return Err(PyRuntimeError::new_err("Future already consumed"));
+                }
+            }
+        };
+        let sys = async_system.inner.clone();
+        // Pump the main-thread queue while we wait. Release the GIL each
+        // iteration so worker threads can complete their work.
+        loop {
+            if rust_future.is_ready() {
+                break;
+            }
+            // Dispatch any queued main-thread callbacks (GIL held here)
+            sys.dispatch_main_thread_tasks();
+            if rust_future.is_ready() {
+                break;
+            }
+            // Briefly release the GIL so workers can progress
+            py.detach(|| std::thread::yield_now());
+        }
+        match rust_future.wait() {
+            Ok(obj) => Ok(obj),
+            Err(e) => Err(PyRuntimeError::new_err(e)),
+        }
     }
 
     /// Check if the result is available without blocking.
@@ -185,7 +205,7 @@ impl PyFuture {
 
     /// Enable ``await future`` in asyncio.
     fn __await__(slf: Py<Self>) -> PyFutureAwaitable {
-        PyFutureAwaitable { future: slf }
+        PyFutureAwaitable { future: slf, asyncio_future: None }
     }
 
     fn __repr__(&self) -> String {
@@ -203,14 +223,17 @@ impl PyFuture {
     }
 }
 
-// ============================================================================
-// PyFutureAwaitable — makes Future work with `await`
-// ============================================================================
 
 /// Iterator wrapper for Python's ``await`` protocol.
+///
+/// Each call to ``__next__`` returns an asyncio.Future that becomes ready
+/// when the underlying Rust future resolves, so the asyncio event loop
+/// suspends the coroutine without busy-polling.
 #[pyclass]
 struct PyFutureAwaitable {
     future: Py<PyFuture>,
+    /// asyncio.Future created on first poll; used to properly suspend the loop.
+    asyncio_future: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -219,7 +242,7 @@ impl PyFutureAwaitable {
         slf
     }
 
-    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let future_ref = self.future.bind(py);
         let f: &PyFuture = &future_ref.borrow();
 
@@ -232,29 +255,35 @@ impl PyFutureAwaitable {
                         PyFutureState::Pending(fut) => {
                             drop(state);
                             match fut.wait() {
-                                Ok(obj) => {
-                                    Err(pyo3::exceptions::PyStopIteration::new_err(obj))
-                                }
+                                Ok(obj) => Err(pyo3::exceptions::PyStopIteration::new_err(obj)),
                                 Err(e) => Err(PyRuntimeError::new_err(e)),
                             }
                         }
                         _ => unreachable!(),
                     }
                 } else {
-                    // Not ready — yield None to asyncio event loop
-                    Ok(Some(py.None().into()))
+                    // Not ready — yield an asyncio.Future so the event loop
+                    // truly suspends (not a busy-poll).
+                    drop(state);
+                    let asyncio_fut = match self.asyncio_future.take() {
+                        Some(f) => f,
+                        None => {
+                            let asyncio = py.import("asyncio")?;
+                            let loop_ = asyncio.call_method0("get_event_loop")?;
+                            let fut = loop_.call_method0("create_future")?;
+                            fut.unbind()
+                        }
+                    };
+                    // Re-store for next poll
+                    self.asyncio_future = Some(asyncio_fut.clone_ref(py));
+                    Ok(Some(asyncio_fut))
                 }
             }
-            PyFutureState::Consumed => {
-                Err(PyRuntimeError::new_err("Future already consumed"))
-            }
+            PyFutureState::Consumed => Err(PyRuntimeError::new_err("Future already consumed")),
         }
     }
 }
 
-// ============================================================================
-// Module registration
-// ============================================================================
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNativeTaskProcessor>()?;

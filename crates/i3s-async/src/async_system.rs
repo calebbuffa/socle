@@ -18,9 +18,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::task_processor::TaskProcessor;
 
-// ============================================================================
 // MainThreadQueue — queued callbacks for dispatch_main_thread_tasks()
-// ============================================================================
 
 type MainThreadTask = Box<dyn FnOnce() + Send>;
 
@@ -102,9 +100,6 @@ impl Default for MainThreadQueue {
     }
 }
 
-// ============================================================================
-// AsyncSystem — top-level scheduler owner
-// ============================================================================
 
 /// The async system: owns the worker thread pool and main-thread queue.
 ///
@@ -269,9 +264,6 @@ impl AsyncSystem {
     }
 }
 
-// ============================================================================
-// Promise<T> — resolve/reject handle
-// ============================================================================
 
 /// A promise that can be resolved with a value of type `T`.
 ///
@@ -309,9 +301,6 @@ impl<T: Send + 'static> Drop for Promise<T> {
     }
 }
 
-// ============================================================================
-// Future<T> — async result handle
-// ============================================================================
 
 /// Internal state of a Future.
 enum FutureState<T> {
@@ -355,9 +344,7 @@ impl<T: Send + 'static> Future<T> {
                 Ok(result) => *state = FutureState::Ready(result),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    *state = FutureState::Ready(Err(
-                        "Future channel closed without result".into(),
-                    ));
+                    *state = FutureState::Ready(Err("Future channel closed without result".into()));
                 }
             }
         }
@@ -436,12 +423,12 @@ impl<T: Send + 'static> Future<T> {
         let async_sys = self.async_system.clone();
         let (promise, future) = async_sys.create_promise();
 
-        async_sys.task_processor.start_task(Box::new(move || {
-            match self.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match self.wait() {
                 Ok(value) => promise.resolve(f(value)),
                 Err(e) => promise.reject(e),
-            }
-        }));
+            }));
 
         future
     }
@@ -484,12 +471,12 @@ impl<T: Send + 'static> Future<T> {
         let (promise, future) = async_sys.create_promise();
 
         // We can't run inline without a watcher thread, so use a worker
-        async_sys.task_processor.start_task(Box::new(move || {
-            match self.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match self.wait() {
                 Ok(value) => promise.resolve(f(value)),
                 Err(e) => promise.reject(e),
-            }
-        }));
+            }));
 
         future
     }
@@ -528,12 +515,12 @@ impl<T: Send + 'static> Future<T> {
         let async_sys = self.async_system.clone();
         let (promise, next_future) = async_sys.create_promise();
 
-        async_sys.task_processor.start_task(Box::new(move || {
-            match self.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match self.wait() {
                 Ok(value) => promise.resolve(value),
                 Err(e) => promise.resolve(f(e)),
-            }
-        }));
+            }));
 
         next_future
     }
@@ -566,9 +553,6 @@ impl<T: Send + 'static> Future<T> {
     }
 }
 
-// ============================================================================
-// SharedFuture<T> — cloneable future
-// ============================================================================
 
 /// Internal shared state for SharedFuture.
 struct SharedFutureInner<T: Send + 'static> {
@@ -635,12 +619,12 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         let (promise, future) = async_sys.create_promise();
         let shared = self.clone();
 
-        async_sys.task_processor.start_task(Box::new(move || {
-            match shared.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match shared.wait() {
                 Ok(value) => promise.resolve(f(value)),
                 Err(e) => promise.reject(e),
-            }
-        }));
+            }));
 
         future
     }
@@ -677,12 +661,12 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         let (promise, future) = async_sys.create_promise();
         let shared = self.clone();
 
-        async_sys.task_processor.start_task(Box::new(move || {
-            match shared.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match shared.wait() {
                 Ok(value) => promise.resolve(f(value)),
                 Err(e) => promise.reject(e),
-            }
-        }));
+            }));
 
         future
     }
@@ -717,12 +701,12 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         let (promise, next_future) = async_sys.create_promise();
         let shared = self.clone();
 
-        async_sys.task_processor.start_task(Box::new(move || {
-            match shared.wait() {
+        async_sys
+            .task_processor
+            .start_task(Box::new(move || match shared.wait() {
                 Ok(value) => promise.resolve(value),
                 Err(e) => promise.resolve(f(e)),
-            }
-        }));
+            }));
 
         next_future
     }
@@ -806,15 +790,14 @@ mod tests {
     fn wait_in_main_thread_pumps_queue() {
         let sys = test_async_system();
         let sys2 = sys.clone();
-        let future = sys
-            .run_in_worker_thread(move || {
-                // Enqueue a main-thread task that contributes to the result
-                let (promise, f) = sys2.create_promise::<i32>();
-                sys2.main_queue().enqueue(Box::new(move || {
-                    promise.resolve(99);
-                }));
-                f.wait_in_main_thread().unwrap()
-            });
+        let future = sys.run_in_worker_thread(move || {
+            // Enqueue a main-thread task that contributes to the result
+            let (promise, f) = sys2.create_promise::<i32>();
+            sys2.main_queue().enqueue(Box::new(move || {
+                promise.resolve(99);
+            }));
+            f.wait_in_main_thread().unwrap()
+        });
         // wait_in_main_thread won't work here since future.wait consumes
         // but demonstrates the pattern
         assert_eq!(future.wait(), Ok(99));

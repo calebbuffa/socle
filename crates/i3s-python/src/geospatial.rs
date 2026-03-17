@@ -7,23 +7,21 @@
 use glam::DVec3;
 use numpy::ndarray::{Array2, ArrayView2};
 use numpy::{IntoPyArray, PyArray1};
+use pyo3::Py;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::Py;
 
 use i3s_geospatial::cartographic::Cartographic;
 use i3s_geospatial::crs::WkidTransform;
 use i3s_geospatial::ellipsoid::Ellipsoid;
 use i3s_geospatial::projection::{
-    TransverseMercatorParams, from_transverse_mercator,
-    from_web_mercator, to_transverse_mercator, to_web_mercator,
+    TransverseMercatorParams, from_transverse_mercator, from_web_mercator, to_transverse_mercator,
+    to_web_mercator,
 };
 
 use crate::numpy_conv;
 
-// ============================================================================
 // Cartographic
-// ============================================================================
 
 /// A geographic position: longitude/latitude in radians, height in meters.
 #[pyclass(name = "Cartographic", skip_from_py_object)]
@@ -118,9 +116,7 @@ impl PyCartographic {
     }
 }
 
-// ============================================================================
 // Ellipsoid
-// ============================================================================
 
 /// Reference ellipsoid with WGS84 constant.
 ///
@@ -196,8 +192,8 @@ impl PyEllipsoid {
         if numpy_conv::is_points_array(position, 3) {
             let ellipsoid = self.inner;
             let result = numpy_conv::batch_transform(py, position, 3, 3, move |inp, out| {
-                let v = ellipsoid
-                    .geodetic_surface_normal_cartesian(DVec3::new(inp[0], inp[1], inp[2]));
+                let v =
+                    ellipsoid.geodetic_surface_normal_cartesian(DVec3::new(inp[0], inp[1], inp[2]));
                 out[0] = v.x;
                 out[1] = v.y;
                 out[2] = v.z;
@@ -313,9 +309,7 @@ impl PyEllipsoid {
     }
 }
 
-// ============================================================================
 // WkidTransform — CRS-to-ECEF
-// ============================================================================
 
 /// Pure-Rust CRS-to-ECEF transform for common WKID-based coordinate systems.
 ///
@@ -342,11 +336,7 @@ impl PyWkidTransform {
     }
 
     /// Transform positions to ECEF. Accepts (3,) or (N,3).
-    fn to_ecef<'py>(
-        &self,
-        py: Python<'py>,
-        positions: &Bound<'py, PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    fn to_ecef<'py>(&self, py: Python<'py>, positions: &Bound<'py, PyAny>) -> PyResult<Py<PyAny>> {
         use i3s_geospatial::crs::CrsTransform;
 
         // Batch: (N,3)
@@ -386,9 +376,6 @@ impl PyWkidTransform {
     }
 }
 
-// ============================================================================
-// SceneCoordinateSystem enum
-// ============================================================================
 
 #[pyclass(name = "SceneCoordinateSystem", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
@@ -397,9 +384,6 @@ pub enum PySceneCoordinateSystem {
     Local = 1,
 }
 
-// ============================================================================
-// Projection functions (module-level)
-// ============================================================================
 
 /// Project cartographic to Web Mercator. (N,3) or (3,) -> (N,3) or (3,).
 #[pyfunction]
@@ -409,9 +393,7 @@ fn web_mercator_project<'py>(
     cartographic: &Bound<'py, PyAny>,
     ellipsoid: Option<&PyEllipsoid>,
 ) -> PyResult<Py<PyAny>> {
-    let e = ellipsoid
-        .map(|e| e.inner)
-        .unwrap_or(Ellipsoid::WGS84);
+    let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
 
     if numpy_conv::is_points_array(cartographic, 3) {
         let result = numpy_conv::batch_transform(py, cartographic, 3, 3, move |inp, out| {
@@ -439,9 +421,7 @@ fn web_mercator_unproject<'py>(
     positions: &Bound<'py, PyAny>,
     ellipsoid: Option<&PyEllipsoid>,
 ) -> PyResult<Py<PyAny>> {
-    let e = ellipsoid
-        .map(|e| e.inner)
-        .unwrap_or(Ellipsoid::WGS84);
+    let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
 
     if numpy_conv::is_points_array(positions, 3) {
         let result = numpy_conv::batch_transform(py, positions, 3, 3, move |inp, out| {
@@ -558,9 +538,7 @@ fn transverse_mercator_unproject<'py>(
     )
 }
 
-// ============================================================================
 // Module registration
-// ============================================================================
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCartographic>()?;

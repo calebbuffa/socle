@@ -17,10 +17,13 @@ mod selection;
 
 use pyo3::prelude::*;
 
-/// Root Python module: `i3s`
+/// Root Python module: `i3s._native`
 #[pymodule]
-fn i3s(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.setattr("__doc__", "Compiled Rust bindings for the i3s-native engine")?;
+fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.setattr(
+        "__doc__",
+        "Compiled Rust bindings for the i3s-native engine",
+    )?;
 
     // Submodules
     let async_mod = PyModule::new(py, "async_")?;
@@ -39,7 +42,8 @@ fn i3s(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     selection::register(&selection_mod)?;
     m.add_submodule(&selection_mod)?;
 
-    // Register submodules in sys.modules so `from _i3s_native.X import Y` works
+    // Register submodules in sys.modules so `from i3s.X import Y` works.
+    // Keys must match the Python package paths, not the native module paths.
     let sys_modules = py.import("sys")?.getattr("modules")?;
     sys_modules.set_item("i3s.async_", &async_mod)?;
     sys_modules.set_item("i3s.geometry", &geom)?;

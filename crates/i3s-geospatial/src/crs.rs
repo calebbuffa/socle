@@ -185,7 +185,9 @@ fn obb_from_spec_local_to_ecef(obb: &Obb, xform: &dyn CrsTransform) -> OrientedB
 // WkidTransform — pure-Rust CrsTransform for common CRS families
 // ---------------------------------------------------------------------------
 
-use crate::projection::{TransverseMercatorParams, from_geographic_degrees, from_transverse_mercator, from_web_mercator};
+use crate::projection::{
+    TransverseMercatorParams, from_geographic_degrees, from_transverse_mercator, from_web_mercator,
+};
 
 /// The internal projection kind used by [`WkidTransform`].
 #[derive(Debug, Clone, Copy)]
@@ -274,17 +276,17 @@ impl WkidTransform {
             // UTM North zones: EPSG 32601 (zone 1) through 32660 (zone 60)
             32601..=32660 => {
                 let zone = (wkid - 32600) as u8;
-                TransformKind::TransverseMercator(
-                    TransverseMercatorParams::utm_with_ellipsoid(zone, true, ellipsoid),
-                )
+                TransformKind::TransverseMercator(TransverseMercatorParams::utm_with_ellipsoid(
+                    zone, true, ellipsoid,
+                ))
             }
 
             // UTM South zones: EPSG 32701 (zone 1) through 32760 (zone 60)
             32701..=32760 => {
                 let zone = (wkid - 32700) as u8;
-                TransformKind::TransverseMercator(
-                    TransverseMercatorParams::utm_with_ellipsoid(zone, false, ellipsoid),
-                )
+                TransformKind::TransverseMercator(TransverseMercatorParams::utm_with_ellipsoid(
+                    zone, false, ellipsoid,
+                ))
             }
 
             _ => return None,
