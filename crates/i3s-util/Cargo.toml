@@ -1,0 +1,9 @@
+[package]
+name = "i3s-util"
+version = "0.1.0"
+edition = "2024"
+description = "Shared utilities for the i3s-native engine: error types, math constants, helpers"
+
+[dependencies]
+thiserror = "2"
+serde_json = "1"

@@ -1,0 +1,8 @@
+[package]
+name = "i3s-geometry"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+i3s-util = { path = "../i3s-util" }
+glam = { version = "0.32", features = ["std"] }

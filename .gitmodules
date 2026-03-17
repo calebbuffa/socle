@@ -1,0 +1,3 @@
+[submodule "docs/i3s-spec"]
+	path = docs/i3s-spec
+	url = https://github.com/Esri/i3s-spec.git

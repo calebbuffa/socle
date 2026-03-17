@@ -1,0 +1,33 @@
+[package]
+name = "i3s-reader"
+version = "0.1.0"
+edition = "2024"
+description = "I3S content reader: JSON deserialization and binary buffer parsing"
+
+[dependencies]
+i3s = { path = "../i3s" }
+i3s-util = { path = "../i3s-util" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+byteorder = "1"
+
+[dependencies.draco-core]
+git = "https://github.com/Filyus/draco.git"
+branch = "api"
+default-features = false
+features = ["decoder"]
+optional = true
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["jpeg", "png"]
+optional = true
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+draco = ["dep:draco-core"]
+textures = ["dep:image"]

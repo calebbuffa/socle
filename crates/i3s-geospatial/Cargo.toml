@@ -1,0 +1,10 @@
+[package]
+name = "i3s-geospatial"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+i3s = { path = "../i3s" }
+i3s-util = { path = "../i3s-util" }
+i3s-geometry = { path = "../i3s-geometry" }
+glam = { version = "0.32", features = ["std"] }

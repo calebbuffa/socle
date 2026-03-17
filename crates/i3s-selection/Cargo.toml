@@ -1,0 +1,17 @@
+[package]
+name = "i3s-selection"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+i3s = { path = "../i3s" }
+i3s-util = { path = "../i3s-util" }
+i3s-geometry = { path = "../i3s-geometry" }
+i3s-geospatial = { path = "../i3s-geospatial" }
+i3s-reader = { path = "../i3s-reader" }
+i3s-async = { path = "../i3s-async" }
+glam = { version = "0.32", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+
+[features]
+default = []
