@@ -1,9 +1,4 @@
 //! SLPK (Scene Layer Package) `AssetAccessor` — reads from a local ZIP archive.
-//!
-//! Follows the same pattern as cesium-native's `ArchiveAssetAccessor`:
-//! - Entry found → response with status 200 + data
-//! - Entry not found → response with status 404 + empty data
-//! - I/O error → `Err`
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -18,14 +13,7 @@ use zip::ZipArchive;
 use crate::accessor::AssetAccessor;
 use crate::request::{AssetRequest, AssetResponse};
 
-/// Reads I3S resources from a local `.slpk` archive.
-///
-/// SLPK files are ZIP archives (typically ZIP64) where each entry is
-/// individually gzip-compressed. The accessor transparently handles
-/// decompression, trying the `.gz` suffixed name first then the bare name.
-///
-/// Pair with [`SlpkUriResolver`](crate::resolver::SlpkUriResolver) to map
-/// I3S resource concepts to archive entry paths.
+/// Reads I3S resources from a local `.slpk` ZIP archive.
 pub struct SlpkAssetAccessor {
     archive: Arc<Mutex<ZipArchive<BufReader<File>>>>,
 }
@@ -44,7 +32,7 @@ impl SlpkAssetAccessor {
 }
 
 impl AssetAccessor for SlpkAssetAccessor {
-    async fn get(&self, uri: &str) -> Result<AssetRequest> {
+    fn get(&self, uri: &str) -> Result<AssetRequest> {
         let mut guard = self
             .archive
             .lock()

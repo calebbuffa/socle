@@ -1,8 +1,7 @@
 //! Python bindings for `i3s-geometry`: OBB, BoundingSphere, Plane, Ray,
 //! Rectangle, Transforms, and intersection tests.
 //!
-//! Mirrors cesium-native's `GeometryBindings.cpp`. Batch methods accept
-//! `(N, 3)` numpy arrays and release the GIL.
+//! Batch methods accept `(N, 3)` numpy arrays and release the GIL.
 
 use glam::{DMat4, DVec2, DVec3};
 use numpy::ndarray::{Array1, Array2};
@@ -11,6 +10,7 @@ use pyo3::prelude::*;
 
 use i3s_geometry::aabb::AxisAlignedBoundingBox;
 use i3s_geometry::culling::CullingResult;
+use i3s_geometry::frustum::CullingVolume;
 use i3s_geometry::intersection;
 use i3s_geometry::obb::OrientedBoundingBox;
 use i3s_geometry::plane::Plane;
@@ -20,7 +20,6 @@ use i3s_geometry::sphere::BoundingSphere;
 use i3s_geometry::transforms::{Axis, Transforms};
 
 use crate::numpy_conv;
-
 
 #[pyclass(name = "CullingResult", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
@@ -39,7 +38,6 @@ impl From<CullingResult> for PyCullingResult {
         }
     }
 }
-
 
 #[pyclass(name = "Plane", skip_from_py_object)]
 #[derive(Clone)]
@@ -152,7 +150,6 @@ impl PyPlane {
     }
 }
 
-
 #[pyclass(name = "BoundingSphere", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyBoundingSphere {
@@ -245,7 +242,6 @@ impl PyBoundingSphere {
     }
 }
 
-
 #[pyclass(name = "OrientedBoundingBox", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyOrientedBoundingBox {
@@ -272,12 +268,23 @@ impl PyOrientedBoundingBox {
         })
     }
 
-    /// Construct from I3S-format arrays (center[3], half_size[3], quaternion[4]).
+    /// Construct from I3S-format numpy arrays (center (3,), half_size (3,), quaternion (4,)).
     #[staticmethod]
-    fn from_i3s(center: [f64; 3], half_size: [f64; 3], quaternion: [f64; 4]) -> Self {
-        Self {
-            inner: OrientedBoundingBox::from_i3s(center, half_size, quaternion),
-        }
+    fn from_i3s(
+        center: &Bound<'_, PyAny>,
+        half_size: &Bound<'_, PyAny>,
+        quaternion: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let c = numpy_conv::to_dvec3(center)?;
+        let hs = numpy_conv::to_dvec3(half_size)?;
+        let q = numpy_conv::to_dquat(quaternion)?;
+        Ok(Self {
+            inner: OrientedBoundingBox::from_i3s(
+                [c.x, c.y, c.z],
+                [hs.x, hs.y, hs.z],
+                [q.x, q.y, q.z, q.w],
+            ),
+        })
     }
 
     /// Create from an axis-aligned bounding box (min[3], max[3]).
@@ -320,13 +327,7 @@ impl PyOrientedBoundingBox {
     /// 8 corner vertices as (8, 3) numpy array.
     fn corners<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         let c = self.inner.corners();
-        let mut arr = Array2::<f64>::zeros((8, 3));
-        for (i, v) in c.iter().enumerate() {
-            arr[[i, 0]] = v.x;
-            arr[[i, 1]] = v.y;
-            arr[[i, 2]] = v.z;
-        }
-        arr.into_pyarray(py)
+        numpy_conv::dvec3_slice_to_pyarray2(py, &c)
     }
 
     /// Rotation matrix as (3,3) numpy array.
@@ -441,7 +442,6 @@ impl PyOrientedBoundingBox {
     }
 }
 
-
 #[pyclass(name = "Ray", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyRay {
@@ -502,12 +502,156 @@ impl PyRay {
     }
 }
 
+/// Axis-aligned bounding box.
+#[pyclass(name = "AxisAlignedBoundingBox", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyAxisAlignedBoundingBox {
+    pub inner: AxisAlignedBoundingBox,
+}
+
+#[pymethods]
+impl PyAxisAlignedBoundingBox {
+    #[new]
+    fn new(min: &Bound<'_, PyAny>, max: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mn = numpy_conv::to_dvec3(min)?;
+        let mx = numpy_conv::to_dvec3(max)?;
+        Ok(Self {
+            inner: AxisAlignedBoundingBox::new(mn, mx),
+        })
+    }
+
+    #[staticmethod]
+    fn from_center_half_extents(
+        center: &Bound<'_, PyAny>,
+        half_extents: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let c = numpy_conv::to_dvec3(center)?;
+        let h = numpy_conv::to_dvec3(half_extents)?;
+        Ok(Self {
+            inner: AxisAlignedBoundingBox::from_center_half_extents(c, h),
+        })
+    }
+
+    #[getter]
+    fn min<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        numpy_conv::dvec3_to_numpy(py, self.inner.min)
+    }
+
+    #[getter]
+    fn max<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        numpy_conv::dvec3_to_numpy(py, self.inner.max)
+    }
+
+    fn center<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        numpy_conv::dvec3_to_numpy(py, self.inner.center())
+    }
+
+    fn half_extents<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        numpy_conv::dvec3_to_numpy(py, self.inner.half_extents())
+    }
+
+    fn contains(&self, point: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let p = numpy_conv::to_dvec3(point)?;
+        Ok(self.inner.contains(p))
+    }
+
+    fn distance_squared_to(&self, point: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let p = numpy_conv::to_dvec3(point)?;
+        Ok(self.inner.distance_squared_to(p))
+    }
+
+    fn to_bounding_sphere(&self) -> PyBoundingSphere {
+        PyBoundingSphere {
+            inner: self.inner.to_bounding_sphere(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let mn = self.inner.min;
+        let mx = self.inner.max;
+        format!(
+            "AxisAlignedBoundingBox(min=[{:.2}, {:.2}, {:.2}], max=[{:.2}, {:.2}, {:.2}])",
+            mn.x, mn.y, mn.z, mx.x, mx.y, mx.z
+        )
+    }
+}
+
+/// Convex view frustum composed of inward-facing planes.
+#[pyclass(name = "CullingVolume", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyCullingVolume {
+    pub inner: CullingVolume,
+}
+
+#[pymethods]
+impl PyCullingVolume {
+    /// Construct from an explicit list of Plane objects.
+    #[new]
+    fn new(planes: Vec<PyRef<PyPlane>>) -> Self {
+        let planes_vec = planes.iter().map(|p| p.inner).collect();
+        Self {
+            inner: CullingVolume::from_planes(planes_vec),
+        }
+    }
+
+    /// Build 4 side frustum planes from camera position, direction, up, fov_y (radians), aspect.
+    #[staticmethod]
+    fn from_camera(
+        position: &Bound<'_, PyAny>,
+        direction: &Bound<'_, PyAny>,
+        up: &Bound<'_, PyAny>,
+        fov_y: f64,
+        aspect_ratio: f64,
+    ) -> PyResult<Self> {
+        let pos = numpy_conv::to_dvec3(position)?;
+        let dir = numpy_conv::to_dvec3(direction)?;
+        let up_v = numpy_conv::to_dvec3(up)?;
+        Ok(Self {
+            inner: CullingVolume::from_camera(pos, dir, up_v, fov_y, aspect_ratio),
+        })
+    }
+
+    /// Extract 6 frustum planes from a view-projection matrix (4×4 numpy array).
+    #[staticmethod]
+    fn from_view_projection(vp: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mat = mat4_from_any(vp)?;
+        Ok(Self {
+            inner: CullingVolume::from_view_projection(&mat),
+        })
+    }
+
+    /// The frustum planes.
+    #[getter]
+    fn planes(&self) -> Vec<PyPlane> {
+        self.inner
+            .planes
+            .iter()
+            .map(|p| PyPlane { inner: *p })
+            .collect()
+    }
+
+    /// Test a bounding sphere against the frustum.
+    fn visibility_sphere(&self, sphere: &PyBoundingSphere) -> PyCullingResult {
+        PyCullingResult::from(self.inner.visibility_sphere(&sphere.inner))
+    }
+
+    /// Test an OBB against the frustum.
+    fn visibility_obb(&self, obb: &PyOrientedBoundingBox) -> PyCullingResult {
+        PyCullingResult::from(self.inner.visibility_obb(&obb.inner))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("CullingVolume({} planes)", self.inner.planes.len())
+    }
+}
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCullingResult>()?;
     m.add_class::<PyPlane>()?;
     m.add_class::<PyBoundingSphere>()?;
     m.add_class::<PyOrientedBoundingBox>()?;
+    m.add_class::<PyAxisAlignedBoundingBox>()?;
+    m.add_class::<PyCullingVolume>()?;
     m.add_class::<PyRay>()?;
     m.add_class::<PyRectangle>()?;
     m.add_class::<PyAxis>()?;
@@ -527,57 +671,47 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-
-fn mat4_from_nested(rows: &[Vec<f64>]) -> PyResult<DMat4> {
+/// Extract a `DMat4` from a `(4, 4)` float64 numpy array (row-major).
+fn mat4_from_any(obj: &Bound<'_, PyAny>) -> PyResult<DMat4> {
     use pyo3::exceptions::PyValueError;
-    if rows.len() != 4 || rows.iter().any(|r| r.len() != 4) {
-        return Err(PyValueError::new_err(
-            "Expected 4x4 matrix as list of lists",
-        ));
+    let arr = obj
+        .extract::<numpy::PyReadonlyArray2<f64>>()
+        .map_err(|_| PyValueError::new_err("Expected a (4, 4) float64 numpy array"))?;
+    let s = arr.shape();
+    if s[0] != 4 || s[1] != 4 {
+        return Err(PyValueError::new_err(format!(
+            "Expected (4, 4) matrix, got ({}, {})",
+            s[0], s[1]
+        )));
     }
-    // Input is row-major, DMat4 is column-major
+    let v = arr.as_array();
     Ok(DMat4::from_cols_array(&[
-        rows[0][0], rows[1][0], rows[2][0], rows[3][0], rows[0][1], rows[1][1], rows[2][1],
-        rows[3][1], rows[0][2], rows[1][2], rows[2][2], rows[3][2], rows[0][3], rows[1][3],
-        rows[2][3], rows[3][3],
+        v[[0, 0]],
+        v[[1, 0]],
+        v[[2, 0]],
+        v[[3, 0]],
+        v[[0, 1]],
+        v[[1, 1]],
+        v[[2, 1]],
+        v[[3, 1]],
+        v[[0, 2]],
+        v[[1, 2]],
+        v[[2, 2]],
+        v[[3, 2]],
+        v[[0, 3]],
+        v[[1, 3]],
+        v[[2, 3]],
+        v[[3, 3]],
     ]))
 }
 
-/// Extract a 4x4 matrix from either a (4,4) float64 numpy array or a nested
-/// Python list-of-lists.  `np.eye(4)`, `np.array(...)`, and `[[...], ...]`
-/// all work.
-fn mat4_from_any(obj: &Bound<'_, PyAny>) -> PyResult<DMat4> {
-    use pyo3::exceptions::PyValueError;
-    // Fast path: numpy (4, 4) float64
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray2<f64>>() {
-        let s = arr.shape();
-        if s[0] != 4 || s[1] != 4 {
-            return Err(PyValueError::new_err("Expected (4, 4) matrix"));
-        }
-        let v = arr.as_array();
-        // Row-major → column-major for DMat4
-        return Ok(DMat4::from_cols_array(&[
-            v[[0, 0]], v[[1, 0]], v[[2, 0]], v[[3, 0]],
-            v[[0, 1]], v[[1, 1]], v[[2, 1]], v[[3, 1]],
-            v[[0, 2]], v[[1, 2]], v[[2, 2]], v[[3, 2]],
-            v[[0, 3]], v[[1, 3]], v[[2, 3]], v[[3, 3]],
-        ]));
-    }
-    // Fallback: nested list-of-lists
-    let nested: Vec<Vec<f64>> = obj.extract()?;
-    mat4_from_nested(&nested)
-}
-
 fn mat4_to_nested<'py>(py: Python<'py>, m: &DMat4) -> Bound<'py, PyArray2<f64>> {
-    let mut arr = Array2::<f64>::zeros((4, 4));
-    for col in 0..4 {
-        for row in 0..4 {
-            arr[[row, col]] = m.col(col)[row];
-        }
-    }
-    arr.into_pyarray(py)
+    // glam is column-major; transpose → to_cols_array gives row-major for numpy.
+    let flat = m.transpose().to_cols_array();
+    Array2::from_shape_vec((4, 4), flat.to_vec())
+        .expect("DMat4 4×4 layout")
+        .into_pyarray(py)
 }
-
 
 #[pyclass(name = "Rectangle", skip_from_py_object)]
 #[derive(Clone)]
@@ -661,7 +795,6 @@ impl PyRectangle {
     }
 }
 
-
 #[pyclass(name = "Axis", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
 pub enum PyAxis {
@@ -679,7 +812,6 @@ impl From<PyAxis> for Axis {
         }
     }
 }
-
 
 /// Intersect a ray with a plane. Returns parametric t, or None.
 #[pyfunction]
@@ -777,7 +909,6 @@ fn py_point_in_triangle_3d<'py>(
     Ok(intersection::point_in_triangle_3d(p, va, vb, vc)
         .map(|bary| Array1::from_vec(vec![bary.x, bary.y, bary.z]).into_pyarray(py)))
 }
-
 
 /// Create a translation-rotation-scale matrix.
 #[pyfunction]

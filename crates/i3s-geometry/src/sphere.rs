@@ -8,9 +8,7 @@ use crate::plane::Plane;
 /// A bounding sphere defined by a center point and radius.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoundingSphere {
-    /// Center of the sphere.
     pub center: DVec3,
-    /// Radius of the sphere.
     pub radius: f64,
 }
 
@@ -46,10 +44,6 @@ impl BoundingSphere {
         }
     }
 
-    /// Transform the bounding sphere by a 4x4 matrix.
-    ///
-    /// Computes the maximum scale factor from the matrix to adjust the radius.
-    /// Mirrors cesium-native `BoundingSphere::transform`.
     pub fn transform(&self, transformation: &DMat4) -> BoundingSphere {
         let center = transformation.transform_point3(self.center);
         // Maximum scale factor = max column length of the upper-left 3x3

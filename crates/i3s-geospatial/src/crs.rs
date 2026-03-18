@@ -1,32 +1,4 @@
 //! Coordinate reference system dispatch for I3S scene layers.
-//!
-//! I3S layers specify their CRS via `spatialReference.wkid`. OBB semantics
-//! depend on the CRS:
-//!
-//! - **Global (WKID 4326)**: OBB center = `[lon°, lat°, elev_m]`, quaternion
-//!   in ECEF frame, half-sizes in meters.
-//! - **Local (other)**: All OBB components in the layer's CRS units.
-//!
-//! This module detects the CRS at layer-open time and provides OBB conversion.
-//!
-//! ## CRS transformation for local layers
-//!
-//! For local/projected layers, the integration can optionally provide a
-//! [`CrsTransform`] to convert OBBs to ECEF. This enables a unified ECEF
-//! ViewState regardless of the layer's native CRS.
-//!
-//! When a `CrsTransform` is provided for a local layer, OBB conversion
-//! 1. Transform the OBB center from the source CRS to ECEF
-//! 2. Compute the 8 OBB corners in source CRS space
-//! 3. Transform all corners to ECEF
-//! 4. Refit an axis-aligned OBB from the transformed ECEF corners
-//!
-//! ## Built-in `WkidTransform`
-//!
-//! For common CRS families (Web Mercator, UTM, Geographic), use
-//! [`WkidTransform::from_spatial_reference`] for a zero-dependency
-//! pure-Rust transform. For unsupported CRS, provide a custom
-//! [`CrsTransform`] implementation.
 
 use glam::{DQuat, DVec3};
 
@@ -37,45 +9,15 @@ use crate::cartographic::Cartographic;
 use crate::ellipsoid::Ellipsoid;
 
 /// Trait for converting positions from a local/projected CRS to ECEF.
-///
-/// For global layers (WKID 4326/4490), the built-in geodetic→ECEF conversion
-/// is used and no `CrsTransform` is needed.
-///
-/// For local/projected layers, provide an implementation (typically backed by
-/// a projection engine like PROJ) to enable unified ECEF output. Without a
-/// transform, local layers use their native CRS coordinates directly.
-///
-/// # Thread safety
-///
-/// Implementations must be `Send + Sync` because transforms are shared
-/// across the scene layer and potentially across async tasks.
 pub trait CrsTransform: Send + Sync {
-    /// Transform positions from the layer's source CRS to ECEF.
-    ///
-    /// Each element in `positions` is `[x, y, z]` in the source CRS units.
-    /// The implementation must convert them **in-place** to ECEF `[x, y, z]`
-    /// in meters.
+    /// Transform positions in-place from source CRS to ECEF.
     fn to_ecef(&self, positions: &mut [DVec3]);
 }
 
-/// The coordinate system classification for a scene layer.
-///
-/// Determines how I3S OBBs are interpreted:
-///
-/// | | Global | Local |
-/// |---|---|---|
-/// | OBB center | `[lon°, lat°, elev_m]` → converted to ECEF | CRS units, used directly |
-/// | OBB halfSize | meters (ECEF) | CRS units (meters, feet, etc.) |
-/// | OBB quaternion | ECEF frame | Layer CRS frame |
-/// | Vertex offsets | meters from ECEF center | CRS units from CRS center |
+/// Global (WKID 4326/4490) or Local/projected CRS classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneCoordinateSystem {
-    /// WGS84 (WKID 4326) or CGCS 2000 (WKID 4490) geographic CRS.
-    /// OBB centers are in `[lon°, lat°, elev_m]`, quaternions and halfSizes
-    /// are in the ECEF reference frame (meters).
     Global,
-    /// Projected or local CRS. OBB components are directly usable as Cartesian
-    /// in the layer's CRS units.
     Local,
 }
 
@@ -181,9 +123,7 @@ fn obb_from_spec_local_to_ecef(obb: &Obb, xform: &dyn CrsTransform) -> OrientedB
     OrientedBoundingBox::from_corners(&corners)
 }
 
-// ---------------------------------------------------------------------------
 // WkidTransform — pure-Rust CrsTransform for common CRS families
-// ---------------------------------------------------------------------------
 
 use crate::projection::{
     TransverseMercatorParams, from_geographic_degrees, from_transverse_mercator, from_web_mercator,

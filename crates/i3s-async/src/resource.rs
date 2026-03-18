@@ -3,13 +3,9 @@
 /// Requested texture format for texture fetches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureRequestFormat {
-    /// JPEG (lossy, no alpha).
     Jpeg,
-    /// PNG (lossless, with alpha).
     Png,
-    /// DDS (GPU-compressed, S3TC).
     Dds,
-    /// KTX2 (GPU-compressed, Basis Universal).
     Ktx2,
 }
 

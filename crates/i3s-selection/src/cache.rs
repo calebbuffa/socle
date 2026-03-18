@@ -119,7 +119,11 @@ impl NodeCache {
 
         while self.total_bytes > self.budget && !self.lru_order.is_empty() {
             // Pop the entry with the smallest access counter (LRU)
-            let (&access, &lru_id) = self.lru_order.iter().next().unwrap();
+            let (&access, &lru_id) = self
+                .lru_order
+                .iter()
+                .next()
+                .expect("lru_order is not empty");
             self.lru_order.remove(&access);
 
             if let Some(entry) = self.entries.remove(&lru_id) {

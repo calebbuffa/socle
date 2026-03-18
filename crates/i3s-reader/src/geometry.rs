@@ -163,8 +163,6 @@ pub fn parse_geometry_buffer(data: &[u8], layout: &GeometryLayout) -> Result<Geo
         ..Default::default()
     };
 
-    // --- Per-vertex attributes (in schema ordering) ---
-
     if layout.has_position {
         geo.positions = read_array(&mut cursor, vertex_count, "position")?;
     }
@@ -186,8 +184,6 @@ pub fn parse_geometry_buffer(data: &[u8], layout: &GeometryLayout) -> Result<Geo
         geo.uv_region = Some(read_array(&mut cursor, vertex_count, "uvRegion")?);
     }
 
-    // --- Per-feature attributes ---
-
     if layout.has_feature_id && feature_count > 0 {
         geo.feature_ids = Some(read_feature_ids(
             &mut cursor,
@@ -202,8 +198,6 @@ pub fn parse_geometry_buffer(data: &[u8], layout: &GeometryLayout) -> Result<Geo
 
     Ok(geo)
 }
-
-// ---- Generic array reader ----
 
 /// Trait for types that can be read element-by-element from a binary cursor.
 trait ReadElement: Sized {

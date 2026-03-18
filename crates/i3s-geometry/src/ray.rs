@@ -29,7 +29,7 @@ impl Ray {
     /// Transform the ray by a 4x4 matrix.
     ///
     /// The origin is transformed as a point, the direction as a vector
-    /// (and re-normalized). Mirrors cesium-native `Ray::transform`.
+    /// (and re-normalized).
     pub fn transform(&self, transformation: &DMat4) -> Ray {
         let origin = transformation.transform_point3(self.origin);
         let direction = transformation.transform_vector3(self.direction).normalize();
@@ -37,8 +37,6 @@ impl Ray {
     }
 
     /// Return a ray with the negated direction.
-    ///
-    /// Mirrors cesium-native `Ray::operator-()`.
     #[inline]
     pub fn negate(&self) -> Ray {
         Ray {

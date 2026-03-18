@@ -12,6 +12,9 @@ pub enum I3sError {
     #[error("draco decode error: {0}")]
     Draco(String),
 
+    #[error("lepcc decode error: {0}")]
+    Lepcc(String),
+
     #[error("texture decode error: {0}")]
     Texture(String),
 

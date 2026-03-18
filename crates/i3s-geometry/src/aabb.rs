@@ -100,10 +100,7 @@ impl AxisAlignedBoundingBox {
         }
     }
 
-    /// Compute the AABB that encloses a set of positions.
-    ///
-    /// Mirrors cesium-native `AxisAlignedBox::fromPositions`.
-    /// Panics if the slice is empty.
+    /// Compute the AABB that encloses a set of positions. Panics if the slice is empty.
     pub fn from_positions(positions: &[DVec3]) -> Self {
         assert!(!positions.is_empty());
         let mut min = positions[0];

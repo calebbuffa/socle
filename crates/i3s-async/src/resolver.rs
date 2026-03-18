@@ -1,21 +1,8 @@
 //! URI resolution for I3S resources.
-//!
-//! Maps I3S resource concepts (layer document, node pages, geometry buffers,
-//! textures, attributes, statistics) to transport-specific URI strings.
-//!
-//! This trait is **object-safe** (no async methods) and can be used as
-//! `Arc<dyn ResourceUriResolver>`.
 
 use crate::resource::TextureRequestFormat;
 
-/// Maps I3S resource concepts to URI strings.
-///
-/// Separates URI construction from fetching, allowing the same
-/// [`AssetAccessor`](crate::AssetAccessor) to work with different URI schemes.
-///
-/// Implementations:
-/// - [`RestUriResolver`] — builds HTTP URIs from a base REST endpoint
-/// - [`SlpkUriResolver`] — builds archive entry paths for SLPK files
+/// Maps I3S resource concepts to transport-specific URI strings.
 pub trait ResourceUriResolver: Send + Sync {
     /// URI for the scene layer document (JSON).
     fn layer_uri(&self) -> String;
@@ -37,18 +24,11 @@ pub trait ResourceUriResolver: Send + Sync {
 }
 
 /// URI resolver for I3S REST service endpoints.
-///
-/// Given a base URI like `https://host/SceneServer/layers/0`, constructs
-/// full URIs for each resource type by appending the I3S path pattern.
 pub struct RestUriResolver {
     base_uri: String,
 }
 
 impl RestUriResolver {
-    /// Create a resolver for the given I3S service base URI.
-    ///
-    /// The URI should point to a specific layer, e.g.
-    /// `https://tiles.arcgis.com/.../SceneServer/layers/0`
     pub fn new(base_uri: &str) -> Self {
         Self {
             base_uri: base_uri.trim_end_matches('/').to_string(),

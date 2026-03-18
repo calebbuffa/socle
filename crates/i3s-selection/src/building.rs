@@ -221,7 +221,7 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
             self.externals.clone(),
             self.options.clone(),
             self.crs_transform.clone(),
-        )?;
+        );
 
         self.sublayers[idx] = Some(layer);
         self.sublayer_entries[idx].opened = true;

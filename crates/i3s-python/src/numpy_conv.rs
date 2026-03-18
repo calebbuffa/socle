@@ -1,11 +1,11 @@
 //! NumPy ↔ Rust conversion and batch-processing utilities.
 //!
-//! Equivalent to the cesium-native `NumpyConversions.h` header. Provides:
+//! Provides:
 //! - DVec3 / DQuat / DMat3 ↔ numpy conversions
 //! - GIL-free batch operation templates for near-native throughput
 //! - Array validation helpers
 
-use glam::{DMat3, DQuat, DVec3};
+use glam::{DMat3, DMat4, DQuat, DVec3};
 use numpy::ndarray::{Array1, Array2, ArrayView2};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2, PyUntypedArrayMethods,
@@ -13,36 +13,7 @@ use numpy::{
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-// GIL release helper
-
-/// Release the GIL for the duration of the closure, restoring it on return
-/// (or panic).
-///
-/// # Safety
-///
-/// The closure must not directly access Python objects (`Py<T>`, `Bound<T>`,
-/// etc.).  It **may** call `Python::attach()` to temporarily reacquire the
-/// GIL for specific Python interactions (e.g., callbacks).
-pub unsafe fn without_gil<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let save = unsafe { pyo3::ffi::PyEval_SaveThread() };
-    struct RestoreGuard(*mut pyo3::ffi::PyThreadState);
-    impl Drop for RestoreGuard {
-        fn drop(&mut self) {
-            unsafe { pyo3::ffi::PyEval_RestoreThread(self.0) };
-        }
-    }
-    let _guard = RestoreGuard(save);
-    f()
-}
-
-// Fast array creation from contiguous typed slices
-
 /// Create `(N, 3)` float32 numpy array from `&[[f32; 3]]`.
-///
-/// Uses a single `memcpy` instead of element-by-element copy.
 pub fn f32x3_to_pyarray2<'py>(py: Python<'py>, data: &[[f32; 3]]) -> Bound<'py, PyArray2<f32>> {
     let n = data.len();
     // SAFETY: [f32; 3] has identical layout to 3 contiguous f32 values.
@@ -88,45 +59,46 @@ pub fn u16x4_to_pyarray2<'py>(py: Python<'py>, data: &[[u16; 4]]) -> Bound<'py, 
         .into_pyarray(py)
 }
 
-// numpy -> glam  (always copies)
+/// Create `(N, 3)` float64 numpy array from `&[DVec3]` via a single memcpy.
+pub fn dvec3_slice_to_pyarray2<'py>(py: Python<'py>, data: &[DVec3]) -> Bound<'py, PyArray2<f64>> {
+    let n = data.len();
+    let flat: &[f64] = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f64, n * 3) };
+    Array2::from_shape_vec((n, 3), flat.to_vec())
+        .expect("DVec3 repr(C) layout")
+        .into_pyarray(py)
+}
 
-/// Convert a (3,) numpy array or Python sequence to DVec3.
+/// Convert a `(3,)` float64 numpy array to `DVec3`.
 pub fn to_dvec3(obj: &Bound<'_, PyAny>) -> PyResult<DVec3> {
-    // Try numpy array first
-    if let Ok(arr) = obj.cast::<PyArray1<f64>>() {
-        let ro = arr.readonly();
-        let slice = ro.as_slice()?;
-        if slice.len() != 3 {
-            return Err(PyValueError::new_err("Expected numpy shape (3,)"));
-        }
-        return Ok(DVec3::new(slice[0], slice[1], slice[2]));
+    let arr = obj
+        .cast::<PyArray1<f64>>()
+        .map_err(|_| PyValueError::new_err("Expected a (3,) float64 numpy array"))?;
+    let ro = arr.readonly();
+    let slice = ro.as_slice()?;
+    if slice.len() != 3 {
+        return Err(PyValueError::new_err(format!(
+            "Expected numpy shape (3,), got ({},)",
+            slice.len()
+        )));
     }
-    // Fall back to sequence
-    let seq: Vec<f64> = obj.extract()?;
-    if seq.len() != 3 {
-        return Err(PyValueError::new_err("Expected sequence length 3"));
-    }
-    Ok(DVec3::new(seq[0], seq[1], seq[2]))
+    Ok(DVec3::new(slice[0], slice[1], slice[2]))
 }
 
-/// Convert a (4,) numpy array or sequence to DQuat (input order: x,y,z,w).
+/// Convert a `(4,)` float64 numpy array to `DQuat` (input order: x,y,z,w).
 pub fn to_dquat(obj: &Bound<'_, PyAny>) -> PyResult<DQuat> {
-    if let Ok(arr) = obj.cast::<PyArray1<f64>>() {
-        let ro = arr.readonly();
-        let slice = ro.as_slice()?;
-        if slice.len() != 4 {
-            return Err(PyValueError::new_err("Expected numpy shape (4,)"));
-        }
-        return Ok(DQuat::from_xyzw(slice[0], slice[1], slice[2], slice[3]));
+    let arr = obj
+        .cast::<PyArray1<f64>>()
+        .map_err(|_| PyValueError::new_err("Expected a (4,) float64 numpy array"))?;
+    let ro = arr.readonly();
+    let slice = ro.as_slice()?;
+    if slice.len() != 4 {
+        return Err(PyValueError::new_err(format!(
+            "Expected numpy shape (4,), got ({},)",
+            slice.len()
+        )));
     }
-    let seq: Vec<f64> = obj.extract()?;
-    if seq.len() != 4 {
-        return Err(PyValueError::new_err("Expected sequence length 4"));
-    }
-    Ok(DQuat::from_xyzw(seq[0], seq[1], seq[2], seq[3]))
+    Ok(DQuat::from_xyzw(slice[0], slice[1], slice[2], slice[3]))
 }
-
-// glam -> numpy  (copy)
 
 /// Copy a DVec3 to a new (3,) float64 numpy array.
 pub fn dvec3_to_numpy<'py>(py: Python<'py>, v: DVec3) -> Bound<'py, PyArray1<f64>> {
@@ -140,13 +112,49 @@ pub fn dquat_to_numpy<'py>(py: Python<'py>, q: DQuat) -> Bound<'py, PyArray1<f64
 
 /// Copy a DMat3 to a new (3,3) float64 numpy array (row-major, i.e. arr[row, col]).
 pub fn dmat3_to_numpy<'py>(py: Python<'py>, m: DMat3) -> Bound<'py, PyArray2<f64>> {
-    let mut arr = Array2::<f64>::zeros((3, 3));
-    for col in 0..3 {
-        for row in 0..3 {
-            arr[[row, col]] = m.col(col)[row];
-        }
+    // glam is column-major; transpose → to_cols_array gives row-major for numpy.
+    let flat = m.transpose().to_cols_array();
+    Array2::from_shape_vec((3, 3), flat.to_vec())
+        .expect("DMat3 3×3 layout")
+        .into_pyarray(py)
+}
+
+/// Copy a DMat4 to a new (4,4) float64 numpy array (row-major).
+pub fn dmat4_to_numpy<'py>(py: Python<'py>, m: &DMat4) -> Bound<'py, PyArray2<f64>> {
+    let flat = m.transpose().to_cols_array();
+    Array2::from_shape_vec((4, 4), flat.to_vec())
+        .expect("DMat4 4×4 layout")
+        .into_pyarray(py)
+}
+
+/// Extract a `DMat4` from a `(4, 4)` float64 numpy array (row-major input).
+pub fn to_dmat4(obj: &Bound<'_, PyAny>) -> PyResult<DMat4> {
+    let arr = obj
+        .cast::<PyArray2<f64>>()
+        .map_err(|_| PyValueError::new_err("Expected (4, 4) float64 numpy array"))?;
+    let ro = arr.readonly();
+    let v = ro.as_array();
+    if v.shape() != [4, 4] {
+        return Err(PyValueError::new_err("Expected (4, 4) matrix"));
     }
-    arr.into_pyarray(py)
+    Ok(DMat4::from_cols_array(&[
+        v[[0, 0]],
+        v[[1, 0]],
+        v[[2, 0]],
+        v[[3, 0]],
+        v[[0, 1]],
+        v[[1, 1]],
+        v[[2, 1]],
+        v[[3, 1]],
+        v[[0, 2]],
+        v[[1, 2]],
+        v[[2, 2]],
+        v[[3, 2]],
+        v[[0, 3]],
+        v[[1, 3]],
+        v[[2, 3]],
+        v[[3, 3]],
+    ]))
 }
 
 // Batch helpers — GIL-free transforms for near-native throughput
@@ -197,18 +205,28 @@ where
     let n = view.nrows();
     let mut output = Array2::<f64>::zeros((n, out_cols));
 
-    // Release the GIL while processing
     py.detach(|| {
-        let out_data = output.as_slice_mut().unwrap();
-        let mut row_buf = vec![0.0f64; in_cols];
-        for i in 0..n {
-            let in_row = view.row(i);
-            // Copy row to a contiguous buffer to handle non-C-order input
-            for (j, &v) in in_row.iter().enumerate() {
-                row_buf[j] = v;
+        let out_data = output
+            .as_slice_mut()
+            .expect("freshly allocated Array2 is always C-contiguous");
+        if let Some(flat_in) = view.as_slice() {
+            // Fast path: C-contiguous input (numpy default) — no per-row copy.
+            for i in 0..n {
+                let in_slice = &flat_in[i * in_cols..(i + 1) * in_cols];
+                let out_slice = &mut out_data[i * out_cols..(i + 1) * out_cols];
+                func(in_slice, out_slice);
             }
-            let out_slice = &mut out_data[i * out_cols..(i + 1) * out_cols];
-            func(&row_buf, out_slice);
+        } else {
+            // Fallback: non-contiguous (Fortran-order, strided slice, etc.).
+            let mut row_buf = vec![0.0f64; in_cols];
+            for i in 0..n {
+                let in_row = view.row(i);
+                for (j, &v) in in_row.iter().enumerate() {
+                    row_buf[j] = v;
+                }
+                let out_slice = &mut out_data[i * out_cols..(i + 1) * out_cols];
+                func(&row_buf, out_slice);
+            }
         }
     });
 
@@ -231,13 +249,20 @@ where
     let mut output = Array1::<bool>::from_elem(n, false);
 
     py.detach(|| {
-        let mut row_buf = vec![0.0f64; cols];
-        for i in 0..n {
-            let in_row = view.row(i);
-            for (j, &v) in in_row.iter().enumerate() {
-                row_buf[j] = v;
+        if let Some(flat_in) = view.as_slice() {
+            for i in 0..n {
+                let in_slice = &flat_in[i * cols..(i + 1) * cols];
+                output[i] = func(in_slice);
             }
-            output[i] = func(&row_buf);
+        } else {
+            let mut row_buf = vec![0.0f64; cols];
+            for i in 0..n {
+                let in_row = view.row(i);
+                for (j, &v) in in_row.iter().enumerate() {
+                    row_buf[j] = v;
+                }
+                output[i] = func(&row_buf);
+            }
         }
     });
 
@@ -260,13 +285,20 @@ where
     let mut output = Array1::<f64>::zeros(n);
 
     py.detach(|| {
-        let mut row_buf = vec![0.0f64; cols];
-        for i in 0..n {
-            let in_row = view.row(i);
-            for (j, &v) in in_row.iter().enumerate() {
-                row_buf[j] = v;
+        if let Some(flat_in) = view.as_slice() {
+            for i in 0..n {
+                let in_slice = &flat_in[i * cols..(i + 1) * cols];
+                output[i] = func(in_slice);
             }
-            output[i] = func(&row_buf);
+        } else {
+            let mut row_buf = vec![0.0f64; cols];
+            for i in 0..n {
+                let in_row = view.row(i);
+                for (j, &v) in in_row.iter().enumerate() {
+                    row_buf[j] = v;
+                }
+                output[i] = func(&row_buf);
+            }
         }
     });
 

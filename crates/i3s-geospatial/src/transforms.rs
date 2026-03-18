@@ -1,6 +1,6 @@
 //! Coordinate frame transforms (ENU, surface normal).
 
-use glam::{DMat3, DVec3};
+use glam::{DMat3, DMat4, DVec3};
 
 use crate::ellipsoid::Ellipsoid;
 
@@ -21,6 +21,21 @@ pub fn enu_frame(ellipsoid: &Ellipsoid, cartesian: DVec3) -> DMat3 {
     };
     let north = up.cross(east);
     DMat3::from_cols(east, north, up)
+}
+
+/// Compute the East-North-Up frame as a 4×4 matrix with `cartesian` as the
+/// translation column.
+///
+/// Equivalent to `CesiumGeospatial::GlobeTransforms::eastNorthUpToFixedFrame()`.
+/// Transforms points from the local ENU frame (origin at `cartesian`) to ECEF.
+pub fn enu_matrix_at(ellipsoid: &Ellipsoid, cartesian: DVec3) -> DMat4 {
+    let rot = enu_frame(ellipsoid, cartesian);
+    DMat4::from_cols(
+        rot.x_axis.extend(0.0),
+        rot.y_axis.extend(0.0),
+        rot.z_axis.extend(0.0),
+        cartesian.extend(1.0),
+    )
 }
 
 #[cfg(test)]

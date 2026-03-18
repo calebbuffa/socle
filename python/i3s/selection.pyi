@@ -8,8 +8,25 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .async_ import AsyncSystem, Future
+from .async_ import AsyncSystem
+from .geometry import OrientedBoundingBox
 from .geospatial import CrsTransform, Ellipsoid, SceneCoordinateSystem
+from .spec import LayerInfo, SpatialReference
+
+class LodMetric(IntEnum):
+    MaxScreenThreshold = 0
+    MaxScreenThresholdSQ = 1
+    DensityThreshold = 2
+
+class INodeExcluder:
+    """Base class for excluding nodes from LOD traversal.
+
+    Subclass and override :meth:`should_exclude` to skip specific nodes.
+    """
+
+    def __init__(self) -> None: ...
+    def start_new_frame(self) -> None: ...
+    def should_exclude(self, obb: Any) -> bool: ...
 
 class IPrepareRendererResources:
     """Base class for preparing renderer resources from decoded I3S content.
@@ -31,6 +48,7 @@ class SceneLayerExternals:
         self,
         async_system: AsyncSystem,
         prepare_renderer_resources: IPrepareRendererResources | None = None,
+        excluders: list[INodeExcluder] | None = None,
     ) -> None: ...
     @property
     def async_system(self) -> AsyncSystem: ...
@@ -41,9 +59,9 @@ class ViewState:
 
     def __init__(
         self,
-        position: npt.ArrayLike,
-        direction: npt.ArrayLike,
-        up: npt.ArrayLike,
+        position: npt.NDArray[np.float64],
+        direction: npt.NDArray[np.float64],
+        up: npt.NDArray[np.float64],
         viewport_width: int,
         viewport_height: int,
         fov_y: float,
@@ -160,6 +178,12 @@ class SceneLayer:
 
     Accepts REST URLs (``http://``, ``https://``) and local ``.slpk``
     file paths.  Source type is auto-detected.
+
+    ``__init__`` returns immediately; bootstrap I/O (layer JSON + node page 0)
+    runs on the worker thread pool.  Poll :attr:`is_ready` or :attr:`root_obb`
+    to know when the layer is usable, or simply drive the frame loop — ``tick``
+    / ``update_view`` are no-ops until the bootstrap resolves.
+    """
     """
 
     def __init__(
@@ -169,13 +193,11 @@ class SceneLayer:
         crs_transform: CrsTransform | None = None,
         options: SelectionOptions | None = None,
     ) -> None: ...
-    @staticmethod
-    def open_async(
-        externals: SceneLayerExternals,
-        url: str,
-        crs_transform: CrsTransform | None = None,
-        options: SelectionOptions | None = None,
-    ) -> Future[SceneLayer]: ...
+    @property
+    def is_ready(self) -> bool:
+        """``True`` once bootstrap has resolved (layer JSON + node page 0 loaded)."""
+        ...
+
     @property
     def crs(self) -> SceneCoordinateSystem: ...
     @property
@@ -190,10 +212,26 @@ class SceneLayer:
     def options(self, value: SelectionOptions) -> None: ...
     @property
     def cached_bytes(self) -> int: ...
+    @property
+    def layer_info(self) -> LayerInfo | None:
+        """The typed I3S layer document (metadata from ``3DSceneLayer.json``).
+        Returns ``None`` until :attr:`is_ready` is ``True``."""
+        ...
+
+    @property
+    def spatial_reference(self) -> SpatialReference | None:
+        """The spatial reference of this layer, or ``None`` if not yet loaded."""
+        ...
+
     def update_view(self, view_states: list[ViewState]) -> ViewUpdateResult: ...
     def load_nodes(self, result: ViewUpdateResult) -> None: ...
     def tick(self, view_states: list[ViewState]) -> ViewUpdateResult: ...
     def update_view_offline(self, view_states: list[ViewState]) -> ViewUpdateResult: ...
+    @property
+    def root_obb(self) -> OrientedBoundingBox | None:
+        """OBB of the root node in I3S spec coordinates.
+        Returns ``None`` until :attr:`is_ready` is ``True``."""
+        ...
     def nodes_to_render(self) -> list[RenderNode]: ...
     def node_load_state(self, node_id: int) -> NodeLoadState | None: ...
     def node_content(self, node_id: int) -> NodeContent | None: ...

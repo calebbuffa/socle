@@ -134,7 +134,7 @@ pub fn ray_triangle(ray: &Ray, v0: DVec3, v1: DVec3, v2: DVec3) -> Option<f64> {
 /// Intersect a ray with an ellipsoid defined by three radii.
 ///
 /// Returns `Some((t_near, t_far))` with both parametric distances, or `None` if
-/// the ray misses. Mirrors cesium-native `IntersectionTests::rayEllipsoid`.
+/// the ray misses.
 pub fn ray_ellipsoid(ray: &Ray, radii: DVec3) -> Option<DVec2> {
     if radii.x == 0.0 || radii.y == 0.0 || radii.z == 0.0 {
         return None;
@@ -195,8 +195,7 @@ pub fn ray_ellipsoid(ray: &Ray, radii: DVec3) -> Option<DVec2> {
 
 /// Test if a 2D point is inside a triangle.
 ///
-/// Works regardless of winding order. Mirrors cesium-native
-/// `IntersectionTests::pointInTriangle` (2D overload).
+/// Works regardless of winding order.
 pub fn point_in_triangle_2d(point: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool {
     let ab = b - a;
     let bc = c - b;
@@ -220,8 +219,7 @@ pub fn point_in_triangle_2d(point: DVec2, a: DVec2, b: DVec2, c: DVec2) -> bool 
 /// Test if a 3D point is inside a triangle, returning barycentric coordinates.
 ///
 /// Returns `Some((u, v, w))` barycentric coordinates if the point is inside,
-/// or `None` if outside. Mirrors cesium-native `IntersectionTests::pointInTriangle`
-/// (3D overload with barycentric output).
+/// or `None` if outside.
 pub fn point_in_triangle_3d(point: DVec3, a: DVec3, b: DVec3, c: DVec3) -> Option<DVec3> {
     let ab = b - a;
     let bc = c - b;

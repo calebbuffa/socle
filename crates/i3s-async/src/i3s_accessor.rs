@@ -1,16 +1,4 @@
 //! Unified I3S asset accessor — handles both HTTP(S) and local SLPK archives.
-//!
-//! A single [`I3sAssetAccessor`] replaces the former `RestAssetAccessor` and
-//! `SlpkAssetAccessor`. Transport is selected automatically based on the URI:
-//! - `http://` / `https://` → [`ureq`] blocking HTTP (no Tokio runtime required)
-//! - any other URI → ZIP archive (SLPK) entry lookup
-//!
-//! Mirrors the approach of cesium-native's `CurlAssetAccessor`, which handles
-//! both `http://` and `file://` URIs through a single libcurl handle. The
-//! blocking model is intentional: worker threads in the [`TaskProcessor`] pool
-//! are free to block, and this avoids the complexity of an async runtime.
-//!
-//! [`TaskProcessor`]: crate::TaskProcessor
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,27 +13,11 @@ use zip::ZipArchive;
 use crate::accessor::AssetAccessor;
 use crate::request::{AssetRequest, AssetResponse};
 
-
 type SlpkArchive = Arc<Mutex<ZipArchive<BufReader<File>>>>;
 
-/// Unified asset accessor for I3S scene layers.
-///
-/// Handles both REST service URLs and local SLPK archives. Construct one
-/// instance per application and share it via `Arc<dyn AssetAccessor>`.
-///
-/// ```text
-/// let accessor = Arc::new(I3sAssetAccessor::new());
-/// // pass to SceneLayer::open(accessor, resolver, ...)
-/// ```
-///
-/// For SLPK files, archives are opened on first access and cached for
-/// subsequent requests from the same path.
+/// Unified asset accessor for I3S scene layers (HTTP and SLPK).
 pub struct I3sAssetAccessor {
-    /// ureq HTTP agent — connection-pool backed, thread-safe.
     http_agent: ureq::Agent,
-    /// SLPK archive cache: path → opened ZipArchive.
-    /// Keyed by the canonical path prefix (the part before the first `/` in
-    /// SLPK URIs).
     slpk_cache: Mutex<HashMap<PathBuf, SlpkArchive>>,
 }
 
@@ -69,10 +41,6 @@ impl I3sAssetAccessor {
             slpk_cache: Mutex::new(HashMap::new()),
         }
     }
-
-    // ------------------------------------------------------------------
-    // HTTP fetch
-    // ------------------------------------------------------------------
 
     fn fetch_http(&self, uri: &str) -> Result<AssetRequest> {
         let response = self
@@ -113,9 +81,7 @@ impl I3sAssetAccessor {
         })
     }
 
-    // ------------------------------------------------------------------
     // SLPK (ZIP archive) fetch
-    // ------------------------------------------------------------------
 
     /// Fetch an entry from an SLPK archive.
     ///
@@ -137,24 +103,17 @@ impl I3sAssetAccessor {
 
         let gz_name = format!("{entry_path}.gz");
         let gz_found = guard.by_name(&gz_name).is_ok();
-        let name = if gz_found {
-            gz_name.clone()
-        } else {
-            entry_path.to_string()
-        };
+        let name: &str = if gz_found { &gz_name } else { entry_path };
 
-        match guard.by_name(&name) {
+        match guard.by_name(name) {
             Ok(mut entry) => {
                 let mut raw = Vec::new();
-                entry
-                    .read_to_end(&mut raw)
-                    .map_err(|e| I3sError::Io(e))?;
+                entry.read_to_end(&mut raw).map_err(I3sError::Io)?;
 
                 let data = if entry.name().ends_with(".gz") {
                     let mut dec = GzDecoder::new(&raw[..]);
                     let mut out = Vec::new();
-                    dec.read_to_end(&mut out)
-                        .map_err(|e| I3sError::Io(e))?;
+                    dec.read_to_end(&mut out).map_err(I3sError::Io)?;
                     out
                 } else {
                     raw
@@ -247,9 +206,8 @@ impl AssetAccessor for I3sAssetAccessor {
     }
 }
 
-
 fn open_slpk(path: &Path) -> Result<ZipArchive<BufReader<File>>> {
-    let file = File::open(path).map_err(|e| I3sError::Io(e))?;
+    let file = File::open(path).map_err(I3sError::Io)?;
     ZipArchive::new(BufReader::new(file))
         .map_err(|e| I3sError::InvalidData(format!("failed to read SLPK ZIP: {e}")))
 }

@@ -1,19 +1,11 @@
-//! Python bindings for i3s-native, exposing geometry and geospatial
-//! types with NumPy array support.
-//!
-//! Built with PyO3 + numpy. Mirrors the module structure of the
-//! cesium-native Python bindings:
-//!
-//! ```python
-//! import i3s
-//! from i3es import geometry, geospatial
-//! ```
+//! Python bindings for i3s-native.
 
 mod async_support;
 mod geometry;
 mod geospatial;
 mod numpy_conv;
 mod selection;
+mod spec;
 
 use pyo3::prelude::*;
 
@@ -42,6 +34,10 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     selection::register(&selection_mod)?;
     m.add_submodule(&selection_mod)?;
 
+    let spec_mod = PyModule::new(py, "spec")?;
+    spec::register(&spec_mod)?;
+    m.add_submodule(&spec_mod)?;
+
     // Register submodules in sys.modules so `from i3s.X import Y` works.
     // Keys must match the Python package paths, not the native module paths.
     let sys_modules = py.import("sys")?.getattr("modules")?;
@@ -49,6 +45,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     sys_modules.set_item("i3s.geometry", &geom)?;
     sys_modules.set_item("i3s.geospatial", &geospatial_mod)?;
     sys_modules.set_item("i3s.selection", &selection_mod)?;
+    sys_modules.set_item("i3s.spec", &spec_mod)?;
 
     Ok(())
 }

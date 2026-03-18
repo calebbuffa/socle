@@ -27,11 +27,15 @@ ray_obb = _mod.ray_obb
 ray_plane = _mod.ray_plane
 ray_sphere = _mod.ray_sphere
 ray_triangle = _mod.ray_triangle
+AxisAlignedBoundingBox = _mod.AxisAlignedBoundingBox
+CullingVolume = _mod.CullingVolume
 
 __all__ = [
     "Axis",
+    "AxisAlignedBoundingBox",
     "BoundingSphere",
     "CullingResult",
+    "CullingVolume",
     "OrientedBoundingBox",
     "Plane",
     "Ray",

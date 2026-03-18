@@ -1,9 +1,6 @@
 //! Per-frame output from the selection algorithm.
 
-/// Priority group for a node load request.
-///
-/// Matches cesium-native's `TileLoadPriorityGroup`. Higher groups are loaded
-/// first.
+/// Priority group for a node load request. Higher groups are loaded first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LoadPriority {
     /// Background preload (ancestors, siblings). Lowest priority.
@@ -56,4 +53,10 @@ pub struct ViewUpdateResult {
     pub pages_needed: Vec<u32>,
     /// Traversal statistics for this frame.
     pub stats: TraversalStats,
+    /// Monotonically incrementing frame counter. Useful for detecting stale results.
+    pub frame_number: u64,
+    /// Number of node content loads currently executing on worker threads.
+    pub worker_thread_load_queue_length: u32,
+    /// Number of node content loads queued but not yet dispatched.
+    pub main_thread_load_queue_length: u32,
 }

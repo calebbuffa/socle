@@ -1,48 +1,42 @@
 //! The `AssetAccessor` trait — synchronous resource fetcher.
-//!
-//! Equivalent to cesium-native's `IAssetAccessor`. All I/O goes through this
-//! trait, which operates on arbitrary URIs. For REST endpoints, URIs are HTTP
-//! URLs. For SLPK archives, URIs are archive entry paths.
-//!
-//! URI construction (mapping I3S resource concepts to URIs) is handled by
-//! [`ResourceUriResolver`](crate::ResourceUriResolver), keeping the accessor
-//! transport-agnostic.
-//!
-//! ## Why synchronous?
-//!
-//! Worker threads in the [`TaskProcessor`](crate::TaskProcessor) pool are
-//! free to block — that is their purpose. Making `get` sync means the trait
-//! is object-safe (`Arc<dyn AssetAccessor>` works), eliminates the
-//! `SceneLayer<A>` generic monomorphization, and removes all `block_on` call
-//! sites. The concurrency model is: bounded thread pool + blocking I/O per
-//! thread, exactly as cesium-native does internally with libcurl.
 
 use i3s_util::Result;
 
-use crate::request::AssetRequest;
+use crate::request::{AssetRequest, AssetResponse, Headers};
 
-/// Synchronous resource accessor — equivalent to cesium-native's `IAssetAccessor`.
-///
-/// Fetches resources by URI. Implementations handle the transport layer:
-/// - [`I3sAssetAccessor`](crate::accessor_impl::I3sAssetAccessor) — unified HTTP+SLPK accessor
-///
-/// Returns [`AssetRequest`] with full response metadata (status code, content
-/// type, headers). Non-success HTTP status codes (404, 500, etc.) are returned
-/// in the response, **not** as `Err`. `Err` is reserved for I/O-level failures
-/// (network unreachable, archive corrupted, etc.).
-///
-/// The trait is **object-safe**: use `Arc<dyn AssetAccessor>` freely.
+/// Synchronous resource accessor. Non-success HTTP status codes are in the response, not `Err`.
 pub trait AssetAccessor: Send + Sync {
-    /// Fetch a resource by URI (HTTP GET equivalent).
-    ///
-    /// Blocking — may perform network I/O or file I/O. Must only be called
-    /// from a worker thread (not the main thread / frame loop).
-    ///
-    /// Returns the completed request-response pair. On success, the response
-    /// carries status 200 and the resource data. On HTTP-level errors, the
-    /// response carries the error status code (404, 500) and an empty or error body.
-    ///
-    /// Returns `Err` only for transport-level failures (network down, file I/O
-    /// error, lock poisoned, etc.).
+    /// Fetch a resource via GET. Non-success HTTP status codes are returned in
+    /// the response, not as `Err`. `Err` is reserved for network/IO failures.
     fn get(&self, uri: &str) -> Result<AssetRequest>;
+
+    /// Fetch a resource using an arbitrary HTTP verb with an optional body.
+    ///
+    /// The default implementation returns a 405 Method Not Allowed response.
+    /// Override this for accessors that need to serve POST/PATCH/etc.
+    fn request(
+        &self,
+        verb: &str,
+        uri: &str,
+        headers: &Headers,
+        body: &[u8],
+    ) -> Result<AssetRequest> {
+        Ok(AssetRequest {
+            method: verb.to_string(),
+            uri: uri.to_string(),
+            request_headers: Headers::default(),
+            response: AssetResponse {
+                status_code: 405,
+                content_type: String::new(),
+                headers: Headers::default(),
+                data: Vec::new(),
+            },
+        })
+    }
+
+    /// Called each frame on the main thread.
+    ///
+    /// Accessors that need to pump an event loop (e.g., cURL multi) should
+    /// do so here. The default implementation is a no-op.
+    fn tick(&self) {}
 }

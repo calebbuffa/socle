@@ -1,10 +1,4 @@
 //! Oriented bounding box — the primary bounding volume in I3S.
-//!
-//! An OBB is defined by a center, half-size extents along each local axis,
-//! and a quaternion rotation. The I3S spec stores OBBs as:
-//! - `center`: `[x, y, z]`
-//! - `halfSize`: `[sx, sy, sz]`
-//! - `quaternion`: `[x, y, z, w]`
 
 use glam::{DMat3, DMat4, DQuat, DVec3};
 
@@ -16,11 +10,8 @@ use crate::sphere::BoundingSphere;
 /// An oriented bounding box defined by center, half-size, and rotation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OrientedBoundingBox {
-    /// Center of the box in world coordinates.
     pub center: DVec3,
-    /// Half-size extents along each local axis.
     pub half_size: DVec3,
-    /// Rotation quaternion from local to world space.
     pub quaternion: DQuat,
 }
 
@@ -56,26 +47,15 @@ impl OrientedBoundingBox {
         ]
     }
 
-    /// The half-axes as a 3x3 matrix (columns are the scaled local axes).
-    ///
-    /// Equivalent to cesium-native `OrientedBoundingBox::getHalfAxes()` which
-    /// returns a `dmat3`.
     pub fn half_axes_matrix(&self) -> DMat3 {
         let axes = self.half_axes();
         DMat3::from_cols(axes[0], axes[1], axes[2])
     }
 
-    /// The inverse of the half-axes matrix.
-    ///
-    /// Mirrors cesium-native `OrientedBoundingBox::getInverseHalfAxes()`.
     pub fn inverse_half_axes(&self) -> DMat3 {
         self.half_axes_matrix().inverse()
     }
 
-    /// The lengths (full extents) along each local axis (2 * half_size).
-    ///
-    /// Mirrors cesium-native `OrientedBoundingBox::getLengths()`.
-    #[inline]
     pub fn lengths(&self) -> DVec3 {
         self.half_size * 2.0
     }
@@ -175,8 +155,6 @@ impl OrientedBoundingBox {
     }
 
     /// Create an OBB from an axis-aligned bounding box.
-    ///
-    /// Mirrors cesium-native `OrientedBoundingBox::fromAxisAligned`.
     pub fn from_axis_aligned(aabb: &AxisAlignedBoundingBox) -> Self {
         Self {
             center: aabb.center(),
@@ -186,8 +164,6 @@ impl OrientedBoundingBox {
     }
 
     /// Create an OBB from a bounding sphere.
-    ///
-    /// Mirrors cesium-native `OrientedBoundingBox::fromSphere`.
     pub fn from_sphere(sphere: &BoundingSphere) -> Self {
         Self {
             center: sphere.center,
@@ -199,8 +175,7 @@ impl OrientedBoundingBox {
     /// Transform the OBB by a 4x4 matrix.
     ///
     /// Decomposes the rotation and scale from the matrix, applies them
-    /// to the OBB's orientation and half-size. Mirrors cesium-native
-    /// `OrientedBoundingBox::transform`.
+    /// to the OBB's orientation and half-size.
     pub fn transform(&self, transformation: &DMat4) -> OrientedBoundingBox {
         let center = transformation.transform_point3(self.center);
         // Extract the upper-left 3x3 and apply to half-axes

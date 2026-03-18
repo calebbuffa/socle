@@ -1,9 +1,6 @@
 //! Selection configuration options.
 
 /// Options controlling scene layer traversal and LOD selection behavior.
-///
-/// Modeled after cesium-native's `TilesetOptions`. All fields have sensible
-/// defaults matching cesium-native where the concept translates to I3S.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionOptions {
     /// Maximum number of simultaneous node content loads. Default: 20

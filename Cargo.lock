@@ -429,6 +429,9 @@ dependencies = [
  "i3s-util",
  "numpy",
  "pyo3",
+ "pythonize",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -437,9 +440,11 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "draco-core",
+ "glam",
  "i3s",
  "i3s-util",
  "image",
+ "lepcc-ffi",
  "serde",
  "serde_json",
 ]
@@ -528,6 +533,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lepcc-ffi"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec176eccd146626b7dede0e63783ddb5562e7c93ab5fc24d7172dbaea139ef2a"
+dependencies = [
+ "cc",
+ "thiserror",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -598,9 +613,9 @@ dependencies = [
 
 [[package]]
 name = "ndarray"
-version = "0.16.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
+checksum = "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d"
 dependencies = [
  "matrixmultiply",
  "num-complex",
@@ -793,6 +808,16 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "pythonize"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b79f670c9626c8b651c0581011b57b6ba6970bb69faf01a7c4c0cfc81c43f95"
+dependencies = [
+ "pyo3",
+ "serde",
 ]
 
 [[package]]

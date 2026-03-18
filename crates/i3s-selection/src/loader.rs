@@ -3,22 +3,16 @@
 //! Manages bounded worker-thread requests for node geometry, textures, and
 //! attributes. Dispatches work via the user-provided [`TaskProcessor`] and
 //! collects results through a channel — no async runtime required.
-//!
-//! Follows cesium-native's loading pipeline:
-//! 1. **Worker thread**: fetch bytes via [`AssetAccessor`] + [`ResourceUriResolver`] + decode
-//! 2. **Worker thread**: [`PrepareRendererResources::prepare_in_load_thread`]
-//! 3. **Main thread**: [`PrepareRendererResources::prepare_in_main_thread`]
 
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use i3s_async::{
-    AssetAccessor, ResourceUriResolver, TaskProcessor, TextureRequestFormat,
-};
+use i3s_async::{AssetAccessor, ResourceUriResolver, TaskProcessor, TextureRequestFormat};
 use i3s_geospatial::crs::CrsTransform;
 use i3s_reader::attribute::{AttributeValueType, parse_attribute_buffer};
-use i3s_reader::geometry::{GeometryLayout, parse_geometry_buffer};
+use i3s_reader::codec::GeometryDecoder;
+use i3s_reader::geometry::GeometryLayout;
 use i3s_util::Result;
 
 use crate::content::NodeContent;
@@ -110,6 +104,7 @@ pub struct NodeContentLoader {
     result_receiver: crossbeam_channel::Receiver<LoadResult>,
     layout: GeometryLayout,
     attribute_infos: Arc<Vec<AttributeInfo>>,
+    decoder: Arc<dyn GeometryDecoder>,
 }
 
 impl NodeContentLoader {
@@ -123,6 +118,7 @@ impl NodeContentLoader {
         max_simultaneous: usize,
         layout: GeometryLayout,
         attribute_infos: Vec<AttributeInfo>,
+        decoder: Arc<dyn GeometryDecoder>,
     ) -> Self {
         let (result_sender, result_receiver) = crossbeam_channel::unbounded();
         Self {
@@ -138,6 +134,7 @@ impl NodeContentLoader {
             result_receiver,
             layout,
             attribute_infos: Arc::new(attribute_infos),
+            decoder,
         }
     }
 
@@ -168,6 +165,7 @@ impl NodeContentLoader {
             let attr_infos = Arc::clone(&self.attribute_infos);
             let prepare_renderer = Arc::clone(&self.prepare_renderer);
             let crs_xform = self.crs_transform.clone();
+            let decoder = Arc::clone(&self.decoder);
             let sender = self.result_sender.clone();
             let node_id = req.node_id;
 
@@ -178,8 +176,14 @@ impl NodeContentLoader {
                 }
 
                 // Phase 1: Fetch + decode (worker thread)
-                let result =
-                    load_node_content(&*accessor, &*resolver, node_id, &layout, &attr_infos);
+                let result = load_node_content(
+                    &*accessor,
+                    &*resolver,
+                    node_id,
+                    &*decoder,
+                    &layout,
+                    &attr_infos,
+                );
 
                 if cancel_flag.load(Ordering::Relaxed) {
                     return;
@@ -210,6 +214,7 @@ impl NodeContentLoader {
     /// Collect completed loads without blocking (sync).
     ///
     /// Drains the result channel. Call this on the main thread each frame.
+    #[must_use]
     pub fn collect_completed(&mut self) -> Vec<LoadResult> {
         let mut completed = Vec::new();
         while let Ok(result) = self.result_receiver.try_recv() {
@@ -271,13 +276,14 @@ fn load_node_content(
     accessor: &dyn AssetAccessor,
     resolver: &dyn ResourceUriResolver,
     node_id: u32,
+    decoder: &dyn GeometryDecoder,
     layout: &GeometryLayout,
     attribute_infos: &[AttributeInfo],
 ) -> Result<NodeContent> {
     // Fetch geometry (geometry ID 0 is the standard single geometry)
     let geo_uri = resolver.geometry_uri(node_id, 0);
     let geo_bytes = accessor.get(&geo_uri)?.into_data()?;
-    let geometry = parse_geometry_buffer(&geo_bytes, layout)?;
+    let geometry = decoder.decode(&geo_bytes, layout)?;
 
     // Fetch texture (best-effort; node may not have textures)
     let tex_uri = resolver.texture_uri(node_id, 0, TextureRequestFormat::Jpeg);
@@ -287,17 +293,14 @@ fn load_node_content(
     };
 
     // Fetch attributes (best-effort per attribute)
-    let mut attributes = Vec::with_capacity(attribute_infos.len());
-    for info in attribute_infos {
-        let attr_uri = resolver.attribute_uri(node_id, info.attribute_id);
-        match accessor.get(&attr_uri).and_then(|r| r.into_data()) {
-            Ok(bytes) => match parse_attribute_buffer(&bytes, info.value_type) {
-                Ok(data) => attributes.push(data),
-                Err(_) => {} // skip malformed attribute
-            },
-            Err(_) => {} // skip unavailable attribute
-        }
-    }
+    let attributes: Vec<_> = attribute_infos
+        .iter()
+        .filter_map(|info| {
+            let attr_uri = resolver.attribute_uri(node_id, info.attribute_id);
+            let bytes = accessor.get(&attr_uri).and_then(|r| r.into_data()).ok()?;
+            parse_attribute_buffer(&bytes, info.value_type).ok()
+        })
+        .collect();
 
     let byte_size = NodeContent::estimate_byte_size(&geometry, &texture_data, &attributes);
 

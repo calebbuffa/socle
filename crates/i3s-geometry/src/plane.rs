@@ -33,9 +33,6 @@ impl Plane {
         distance: 0.0,
     };
 
-    /// Create a plane from a unit normal and a distance from the origin.
-    ///
-    /// Mirrors cesium-native `Plane(normal, distance)` constructor.
     pub fn new(normal: DVec3, distance: f64) -> Self {
         let n = normal.normalize();
         Self {
@@ -72,7 +69,6 @@ impl Plane {
     /// Project a point onto this plane.
     ///
     /// Returns the closest point on the plane to the given point.
-    /// Mirrors cesium-native `Plane::projectPointOntoPlane`.
     #[inline]
     pub fn project_point(&self, point: DVec3) -> DVec3 {
         point - self.normal * self.signed_distance(point)

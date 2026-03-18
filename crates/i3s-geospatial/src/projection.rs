@@ -51,9 +51,7 @@ pub fn from_geographic_degrees(lon_deg: f64, lat_deg: f64) -> Cartographic {
     Cartographic::from_degrees(lon_deg, lat_deg, 0.0)
 }
 
-// ---------------------------------------------------------------------------
 // Transverse Mercator
-// ---------------------------------------------------------------------------
 
 /// Parameters for a Transverse Mercator projection.
 ///

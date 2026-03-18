@@ -22,7 +22,7 @@
 //!     RENDER node  // leaf — max detail available
 //! ```
 //!
-//! ## Enhancements (matching cesium-native's approach)
+//! Enhancements:
 //!
 //! - **Near-to-far child ordering**: children are visited closest to camera first
 //!   so the closest geometry gets highest load priority.
@@ -178,7 +178,7 @@ where
         }
 
         // Fog cull: reject nodes whose screen contribution is negligible due to distance.
-        // Uses cesium-native's approach: fog density scales with distance/view_height.
+        // Fog density scales with distance/view_height.
         if options.enable_fog_culling {
             let distance = primary_view.position.distance(obb.center);
             let radius = obb.half_size.length();
@@ -466,25 +466,25 @@ mod tests {
     }
 
     fn far_camera() -> ViewState {
-        ViewState {
-            position: DVec3::new(0.0, 0.0, 1000.0),
-            direction: DVec3::NEG_Z,
-            up: DVec3::Y,
-            viewport_width: 1920,
-            viewport_height: 1080,
-            fov_y: std::f64::consts::FRAC_PI_3,
-        }
+        ViewState::new(
+            DVec3::new(0.0, 0.0, 1000.0),
+            DVec3::NEG_Z,
+            DVec3::Y,
+            1920,
+            1080,
+            std::f64::consts::FRAC_PI_3,
+        )
     }
 
     fn close_camera() -> ViewState {
-        ViewState {
-            position: DVec3::new(0.0, 0.0, 0.01),
-            direction: DVec3::NEG_Z,
-            up: DVec3::Y,
-            viewport_width: 1920,
-            viewport_height: 1080,
-            fov_y: std::f64::consts::FRAC_PI_3,
-        }
+        ViewState::new(
+            DVec3::new(0.0, 0.0, 0.01),
+            DVec3::NEG_Z,
+            DVec3::Y,
+            1920,
+            1080,
+            std::f64::consts::FRAC_PI_3,
+        )
     }
 
     /// Helper to check if a node_id appears in load_requests
@@ -969,14 +969,14 @@ mod tests {
         let mut nodes = vec![NodeState::new(0)];
         nodes[0].load_state = NodeLoadState::Loaded;
 
-        let view = ViewState {
-            position: DVec3::new(0.0, 0.0, 100.0),
-            direction: DVec3::NEG_Z,
-            up: DVec3::Y,
-            viewport_width: 1920,
-            viewport_height: 1080,
-            fov_y: std::f64::consts::FRAC_PI_3,
-        };
+        let view = ViewState::new(
+            DVec3::new(0.0, 0.0, 100.0),
+            DVec3::NEG_Z,
+            DVec3::Y,
+            1920,
+            1080,
+            std::f64::consts::FRAC_PI_3,
+        );
 
         let opts = SelectionOptions {
             enable_fog_culling: true,

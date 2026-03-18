@@ -1,10 +1,5 @@
 //! Python bindings for `i3s-selection`: SceneLayerExternals, SceneLayer,
 //! ViewState, ViewUpdateResult, IPrepareRendererResources, etc.
-//!
-//! Mirrors cesium-native's `Tiles3dSelectionBindings.cpp` patterns:
-//! - `SceneLayerExternals` ↔ `TilesetExternals` — user-constructed
-//! - `IPrepareRendererResources` — Python subclass-able base
-//! - `SceneLayer` ↔ `Tileset` — constructed with externals + URL/path
 
 use std::sync::Arc;
 
@@ -14,9 +9,13 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use i3s_async::{I3sAssetAccessor, resolver::{ResourceUriResolver, RestUriResolver, SlpkUriResolver}};
+use i3s_async::{
+    I3sAssetAccessor,
+    resolver::{ResourceUriResolver, RestUriResolver, SlpkUriResolver},
+};
 use i3s_geospatial::crs::SceneCoordinateSystem;
 use i3s_selection::content::NodeContent;
+use i3s_selection::excluder::NodeExcluder;
 use i3s_selection::externals::SceneLayerExternals;
 use i3s_selection::node_state::NodeLoadState;
 use i3s_selection::options::SelectionOptions;
@@ -24,31 +23,17 @@ use i3s_selection::prepare::{
     NoopPrepareRendererResources, PrepareRendererResources, RendererResources,
 };
 use i3s_selection::scene_layer::SceneLayer;
+use i3s_selection::selection::LodMetric;
 use i3s_selection::update_result::ViewUpdateResult;
 use i3s_selection::view_state::ViewState;
 
-use crate::async_support::{PyAsyncSystem, PyFuture};
+use crate::async_support::PyAsyncSystem;
 use crate::geospatial::{PyEllipsoid, PyWkidTransform};
 use crate::numpy_conv;
+use crate::spec::{PyLayerInfo, PySpatialReference};
 
-/// Base class for preparing renderer resources from decoded I3S content.
-///
-/// Mirrors cesium-native's ``IPrepareRendererResources``. Subclass this
-/// and override methods to create GPU-ready resources from decoded nodes.
-///
-/// The default implementation is a no-op (suitable for headless use).
-///
-/// Example::
-///
-///     class MyResources(IPrepareRendererResources):
-///         def prepare_in_load_thread(self, node_id, content):
-///             return my_cpu_processing(content)
-///
-///         def prepare_in_main_thread(self, node_id, content, load_result):
-///             return my_gpu_upload(content, load_result)
-///
-///         def free(self, node_id, resources):
-///             pass
+/// Base class for preparing renderer resources from decoded I3S node content.
+/// Subclass and override to create GPU-ready resources. Default is a no-op.
 #[pyclass(name = "IPrepareRendererResources", subclass)]
 pub struct PyIPrepareRendererResources;
 
@@ -60,13 +45,59 @@ impl PyIPrepareRendererResources {
     }
 }
 
-/// Bridge: implements the Rust `PrepareRendererResources` trait by calling
-/// Python methods on a user-provided `IPrepareRendererResources` subclass.
+/// Base class for excluding nodes from LOD traversal.
+///
+/// Subclass and override :meth:`should_exclude` to skip specific nodes.
+/// :meth:`start_new_frame` is called once per frame before traversal.
+#[pyclass(name = "INodeExcluder", subclass)]
+pub struct PyINodeExcluder;
+
+#[pymethods]
+impl PyINodeExcluder {
+    #[new]
+    fn new() -> Self {
+        Self
+    }
+
+    /// Called at the start of each frame, before ``should_exclude``.
+    fn start_new_frame(&mut self) {}
+
+    /// Return ``True`` to exclude this node's OBB from rendering.
+    fn should_exclude(&self, _obb: &crate::geometry::PyOrientedBoundingBox) -> bool {
+        false
+    }
+}
+
+struct PyNodeExcluderBridge {
+    py_obj: Py<PyAny>,
+}
+
+unsafe impl Send for PyNodeExcluderBridge {}
+unsafe impl Sync for PyNodeExcluderBridge {}
+
+impl NodeExcluder for PyNodeExcluderBridge {
+    fn start_new_frame(&mut self) {
+        Python::attach(|py| {
+            let _ = self.py_obj.call_method(py, "start_new_frame", (), None);
+        });
+    }
+
+    fn should_exclude(&self, obb: &i3s_geometry::obb::OrientedBoundingBox) -> bool {
+        Python::attach(|py| {
+            let py_obb = crate::geometry::PyOrientedBoundingBox { inner: *obb };
+            self.py_obj
+                .call_method(py, "should_exclude", (py_obb,), None)
+                .and_then(|r| r.extract::<bool>(py))
+                .unwrap_or(false)
+        })
+    }
+}
+
 struct PyPrepareRendererResourcesBridge {
     py_obj: Py<PyAny>,
 }
 
-// Safety: Py<PyAny> is Send+Sync when detached from GIL.
+// SAFETY: Py<PyAny> is Send+Sync when detached from GIL.
 unsafe impl Send for PyPrepareRendererResourcesBridge {}
 unsafe impl Sync for PyPrepareRendererResourcesBridge {}
 
@@ -144,15 +175,11 @@ impl PrepareRendererResources for PyPrepareRendererResourcesBridge {
     }
 }
 
-/// Bridge: implements the Rust `CrsTransform` trait by calling a Python
-/// object's `to_ecef` method. This allows any Python class with
-/// `def to_ecef(self, positions: ndarray) -> ndarray` to serve as a
-/// CRS transform for the scene layer.
 struct PyCrsTransformBridge {
     py_obj: Py<PyAny>,
 }
 
-// Safety: Py<PyAny> is Send+Sync when detached from GIL.
+// SAFETY: Py<PyAny> is Send+Sync when detached from GIL.
 unsafe impl Send for PyCrsTransformBridge {}
 unsafe impl Sync for PyCrsTransformBridge {}
 
@@ -198,10 +225,6 @@ impl i3s_geospatial::crs::CrsTransform for PyCrsTransformBridge {
 }
 
 /// Extract an `Arc<dyn CrsTransform>` from a Python argument.
-///
-/// Accepts either a `WkidTransform` instance (fast, pure-Rust) or any
-/// Python object with a `to_ecef(positions: ndarray) -> ndarray` method
-/// (e.g. `ProjTransform`).
 fn extract_crs_transform(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<Arc<dyn i3s_geospatial::crs::CrsTransform>> {
@@ -222,18 +245,6 @@ fn extract_crs_transform(
 }
 
 /// External dependencies for a ``SceneLayer``.
-///
-/// Mirrors cesium-native's ``TilesetExternals``. Construct one and pass
-/// it to ``SceneLayer``.
-///
-/// Example::
-///
-///     tp = NativeTaskProcessor(4)
-///     async_system = AsyncSystem(tp)
-///     externals = SceneLayerExternals(async_system)
-///
-///     # Or with custom renderer resources:
-///     externals = SceneLayerExternals(async_system, my_resources)
 #[pyclass(name = "SceneLayerExternals")]
 pub struct PySceneLayerExternals {
     pub inner: SceneLayerExternals,
@@ -241,25 +252,27 @@ pub struct PySceneLayerExternals {
 
 #[pymethods]
 impl PySceneLayerExternals {
-    /// Create externals with the given async system and optional renderer resources.
-    ///
-    /// Parameters
-    /// ----------
-    /// async_system : AsyncSystem
-    ///     The async system for dispatching work.
-    /// prepare_renderer_resources : IPrepareRendererResources, optional
-    ///     Custom renderer resource preparer. If None, uses a no-op.
     #[new]
-    #[pyo3(signature = (async_system, prepare_renderer_resources=None))]
-    fn new(async_system: &PyAsyncSystem, prepare_renderer_resources: Option<Py<PyAny>>) -> Self {
+    #[pyo3(signature = (async_system, prepare_renderer_resources=None, excluders=None))]
+    fn new(
+        async_system: &PyAsyncSystem,
+        prepare_renderer_resources: Option<Py<PyAny>>,
+        excluders: Option<Vec<Py<PyAny>>>,
+    ) -> Self {
         let prepare: Arc<dyn PrepareRendererResources> = match prepare_renderer_resources {
             Some(py_obj) => Arc::new(PyPrepareRendererResourcesBridge { py_obj }),
             None => Arc::new(NoopPrepareRendererResources),
         };
+        let excl: Vec<Arc<dyn NodeExcluder>> = excluders
+            .unwrap_or_default()
+            .into_iter()
+            .map(|py_obj| -> Arc<dyn NodeExcluder> { Arc::new(PyNodeExcluderBridge { py_obj }) })
+            .collect();
         Self {
             inner: SceneLayerExternals {
                 async_system: async_system.inner.clone(),
                 prepare_renderer_resources: prepare,
+                excluders: excl,
             },
         }
     }
@@ -277,9 +290,7 @@ impl PySceneLayerExternals {
     }
 }
 
-/// Camera view state for LOD selection.
-///
-/// Mirrors cesium-native's ``ViewState``. Positions are ECEF.
+/// Camera view state for LOD selection. Positions are ECEF.
 #[pyclass(name = "ViewState", from_py_object)]
 #[derive(Clone)]
 pub struct PyViewState {
@@ -298,14 +309,14 @@ impl PyViewState {
         fov_y: f64,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: ViewState {
-                position: numpy_conv::to_dvec3(position)?,
-                direction: numpy_conv::to_dvec3(direction)?,
-                up: numpy_conv::to_dvec3(up)?,
+            inner: ViewState::new(
+                numpy_conv::to_dvec3(position)?,
+                numpy_conv::to_dvec3(direction)?,
+                numpy_conv::to_dvec3(up)?,
                 viewport_width,
                 viewport_height,
                 fov_y,
-            },
+            ),
         })
     }
 
@@ -349,8 +360,6 @@ impl PyViewState {
 }
 
 /// LOD selection and loading options.
-///
-/// Mirrors cesium-native's ``TilesetOptions``.
 #[pyclass(name = "SelectionOptions", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySelectionOptions {
@@ -453,8 +462,6 @@ impl PySelectionOptions {
 }
 
 /// Result of a single frame's LOD selection.
-///
-/// Mirrors cesium-native's ``ViewUpdateResult``.
 #[pyclass(name = "ViewUpdateResult")]
 pub struct PyViewUpdateResult {
     inner: ViewUpdateResult,
@@ -584,14 +591,9 @@ impl PyRenderNode {
     }
 }
 
-/// Decoded geometry buffer content: positions, normals, UVs, etc.
-///
-/// All array properties return numpy arrays via contiguous `memcpy`
-/// (no element-by-element copy).  The data is shared via `Arc` so
-/// accessing `NodeContent.geometry` is O(1).
+/// Decoded node geometry: positions, normals, UVs, indices, vertex colors.
 #[pyclass(name = "GeometryData")]
 pub struct PyGeometryData {
-    /// Shared reference — avoids cloning large buffers from NodeContent.
     _owner: Arc<NodeContent>,
 }
 
@@ -682,7 +684,6 @@ impl PyGeometryData {
     }
 }
 
-
 /// Loaded node content: geometry + texture + attribute data.
 ///
 /// Content is reference-counted (`Arc`) so accessing sub-fields like
@@ -724,12 +725,9 @@ impl PyNodeContent {
     }
 }
 
-
 /// An I3S scene layer — the central runtime object.
 ///
-/// Equivalent to cesium-native's ``Tileset``.
-///
-/// **Construction** (mirrors ``Tileset(externals, url, options)``)::
+/// **Construction**::
 ///
 ///     tp = NativeTaskProcessor(4)
 ///     async_system = AsyncSystem(tp)
@@ -761,8 +759,12 @@ impl PySceneLayer {
     /// ``to_ecef(positions)`` method (e.g. ``WkidTransform``,
     /// ``ProjTransform``, or a custom implementation).
     ///
+    /// **Returns immediately** — bootstrap I/O runs on the worker thread pool.
+    /// Poll :attr:`is_ready` or :attr:`root_obb` to know when the layer is
+    /// usable, or drive the frame loop normally (``tick`` / ``update_view``
+    /// are no-ops until the bootstrap resolves).
+    ///
     /// Parameters
-    /// ----------
     /// externals : SceneLayerExternals
     ///     External dependencies (async system, renderer resources).
     /// url : str
@@ -801,18 +803,12 @@ impl PySceneLayer {
             (I3sAssetAccessor::new(), Arc::new(RestUriResolver::new(url)))
         };
 
-        // SAFETY: open() is pure Rust I/O only; no Python objects accessed.
-        // Releasing the GIL lets other Python threads make progress.
-        let layer = unsafe {
-            numpy_conv::without_gil(|| {
-                if let Some(xf) = transform {
-                    SceneLayer::open_with_transform(accessor, resolver, ext, opts, xf)
-                } else {
-                    SceneLayer::open(accessor, resolver, ext, opts)
-                }
-            })
-        }
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        // SceneLayer::open returns immediately; bootstrap runs on worker threads.
+        let layer = if let Some(xf) = transform {
+            SceneLayer::open_with_transform(accessor, resolver, ext, opts, xf)
+        } else {
+            SceneLayer::open(accessor, resolver, ext, opts)
+        };
 
         Ok(Self {
             inner: layer,
@@ -820,71 +816,18 @@ impl PySceneLayer {
         })
     }
 
-    /// Open an I3S scene layer asynchronously.
+    /// ``True`` once the layer document and root node page have been fetched.
     ///
-    /// Same arguments as ``__init__`` but returns a ``Future`` that
-    /// resolves to a ``SceneLayer``.
-    #[staticmethod]
-    #[pyo3(signature = (externals, url, crs_transform=None, options=None))]
-    fn open_async(
-        externals: &PySceneLayerExternals,
-        url: &str,
-        crs_transform: Option<&Bound<'_, PyAny>>,
-        options: Option<&PySelectionOptions>,
-    ) -> PyResult<PyFuture> {
-        let opts = options.map(|o| o.inner.clone()).unwrap_or_default();
-        let ext = externals.inner.clone();
-        let transform: Option<Arc<dyn i3s_geospatial::crs::CrsTransform>> =
-            crs_transform.map(extract_crs_transform).transpose()?;
-
-        let lower = url.to_ascii_lowercase();
-        let is_slpk = lower.ends_with(".slpk")
-            || (!lower.starts_with("http://") && !lower.starts_with("https://"));
-
-        let (accessor, resolver): (I3sAssetAccessor, Arc<dyn ResourceUriResolver>) = if is_slpk {
-            let mut acc = I3sAssetAccessor::new();
-            acc.register_slpk(std::path::Path::new(url))
-                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            (acc, Arc::new(SlpkUriResolver))
-        } else {
-            (I3sAssetAccessor::new(), Arc::new(RestUriResolver::new(url)))
-        };
-
-        let (promise, future) = ext.async_system.create_promise();
-        let tp = ext.async_system.task_processor().clone();
-        tp.start_task(Box::new(move || {
-            let result = (|| -> Result<Py<PyAny>, String> {
-                let layer = if let Some(xf) = transform {
-                    SceneLayer::open_with_transform(accessor, resolver, ext, opts, xf)
-                } else {
-                    SceneLayer::open(accessor, resolver, ext, opts)
-                }
-                .map_err(|e| e.to_string())?;
-                Python::attach(|py| {
-                    Py::new(
-                        py,
-                        PySceneLayer {
-                            inner: layer,
-                            last_result: None,
-                        },
-                    )
-                    .map(|obj| obj.into_any())
-                    .map_err(|e: PyErr| e.to_string())
-                })
-            })();
-            match result {
-                Ok(obj) => promise.resolve(obj),
-                Err(e) => promise.reject(e),
-            }
-        }));
-
-        Ok(PyFuture::from_rust(future))
+    /// Until this is ``True``, ``update_view`` / ``tick`` are no-ops and
+    /// ``root_obb`` / ``layer_info`` return ``None``.
+    #[getter]
+    fn is_ready(&mut self) -> bool {
+        self.inner.is_ready()
     }
-
 
     /// The layer's coordinate reference system classification.
     #[getter]
-    fn crs(&self) -> crate::geospatial::PySceneCoordinateSystem {
+    fn crs(&mut self) -> crate::geospatial::PySceneCoordinateSystem {
         match self.inner.crs() {
             SceneCoordinateSystem::Global => crate::geospatial::PySceneCoordinateSystem::Global,
             SceneCoordinateSystem::Local => crate::geospatial::PySceneCoordinateSystem::Local,
@@ -893,13 +836,13 @@ impl PySceneLayer {
 
     /// Current frame counter.
     #[getter]
-    fn frame(&self) -> u64 {
+    fn frame(&mut self) -> u64 {
         self.inner.frame()
     }
 
     /// Load progress as a fraction [0.0, 1.0].
     #[getter]
-    fn load_progress(&self) -> f64 {
+    fn load_progress(&mut self) -> f64 {
         self.inner.load_progress()
     }
 
@@ -927,27 +870,41 @@ impl PySceneLayer {
     /// Total cached bytes.
     #[getter]
     fn cached_bytes(&mut self) -> usize {
-        self.inner.cache().total_bytes()
+        self.inner.cache().map(|c| c.total_bytes()).unwrap_or(0)
     }
 
+    /// The typed I3S layer document (metadata parsed from ``3DSceneLayer.json``).
+    ///
+    /// Returns a :class:`~i3s.spec.LayerInfo` or ``None`` until
+    /// :attr:`is_ready` is ``True``.
+    #[getter]
+    fn layer_info(&mut self) -> Option<PyLayerInfo> {
+        self.inner.info().map(|i| PyLayerInfo { inner: i.clone() })
+    }
+
+    /// The spatial reference of this layer, or ``None`` if not specified
+    /// or not yet loaded.
+    ///
+    /// Shortcut for ``layer.layer_info.spatial_reference``.
+    #[getter]
+    fn spatial_reference(&mut self) -> Option<PySpatialReference> {
+        self.inner
+            .info()
+            .and_then(|i| i.spatial_reference().cloned())
+            .map(|sr| PySpatialReference { inner: sr })
+    }
 
     /// Run per-frame LOD selection (sync — pure computation).
     ///
     /// Parameters
-    /// ----------
     /// view_states : list[ViewState]
     ///     One or more camera states. Multiple for VR / shadow cascades.
     ///
     /// Returns
-    /// -------
     /// ViewUpdateResult
-    fn update_view(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
+    fn update_view(&mut self, py: Python<'_>, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        // SAFETY: update_view is pure Rust traversal (frustum culling, SSE
-        // tests).  No Python objects are accessed.
-        let result = unsafe {
-            numpy_conv::without_gil(|| self.inner.update_view(&views))
-        };
+        let result = py.detach(|| self.inner.update_view(&views));
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
     }
@@ -955,40 +912,61 @@ impl PySceneLayer {
     /// Dispatch content loading, collect completed, finalize.
     ///
     /// Call after ``update_view()`` each frame.
-    fn load_nodes(&mut self, result: &PyViewUpdateResult) {
-        // SAFETY: load_nodes dispatches I/O to worker threads and collects
-        // completed work.  The prepare_renderer_resources callbacks use
-        // Python::attach() to reacquire the GIL when needed.
-        unsafe {
-            numpy_conv::without_gil(|| self.inner.load_nodes(&result.inner))
-        }
+    fn load_nodes(&mut self, py: Python<'_>, result: &PyViewUpdateResult) {
+        py.detach(|| self.inner.load_nodes(&result.inner))
     }
 
     /// Convenience: combined update_view + load_nodes.
-    fn tick(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
+    fn tick(&mut self, py: Python<'_>, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        // SAFETY: see update_view + load_nodes above.
-        let result = unsafe {
-            numpy_conv::without_gil(|| {
-                let r = self.inner.update_view(&views);
-                self.inner.load_nodes(&r);
-                r
-            })
-        };
+        let result = py.detach(|| {
+            let r = self.inner.update_view(&views);
+            self.inner.load_nodes(&r);
+            r
+        });
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
     }
 
     /// Blocking update — wait until all nodes meeting SSE are loaded.
-    fn update_view_offline(&mut self, view_states: Vec<PyViewState>) -> PyViewUpdateResult {
+    fn update_view_offline(
+        &mut self,
+        py: Python<'_>,
+        view_states: Vec<PyViewState>,
+    ) -> PyViewUpdateResult {
         let views: Vec<ViewState> = view_states.iter().map(|v| v.inner).collect();
-        // SAFETY: potentially long-running — must release GIL so other
-        // threads can make progress and callbacks can reacquire it.
-        let result = unsafe {
-            numpy_conv::without_gil(|| self.inner.update_view_offline(&views))
-        };
+        let result = py.detach(|| self.inner.update_view_offline(&views));
         self.last_result = Some(result.clone());
         PyViewUpdateResult { inner: result }
+    }
+
+    /// Get the OBB of the root node (node 0) in spec coordinates.
+    ///
+    /// Returns ``None`` until :attr:`is_ready` is ``True``, or if the layer
+    /// has no nodes.
+    ///
+    /// For *global* layers the OBB is in geographic coordinates
+    /// (longitude/latitude in degrees, height in metres).  Pass it to
+    /// ``OrientedBoundingBox.from_i3s`` to create an ``OrientedBoundingBox``.
+    #[getter]
+    fn root_obb(&mut self) -> Option<crate::geometry::PyOrientedBoundingBox> {
+        use glam::{DQuat, DVec3};
+        use i3s_geometry::obb::OrientedBoundingBox as GeoObb;
+        self.inner
+            .node_tree()?
+            .obb_of(0)
+            .map(|obb| crate::geometry::PyOrientedBoundingBox {
+                inner: GeoObb {
+                    center: DVec3::new(obb.center[0], obb.center[1], obb.center[2]),
+                    half_size: DVec3::new(obb.half_size[0], obb.half_size[1], obb.half_size[2]),
+                    quaternion: DQuat::from_xyzw(
+                        obb.quaternion[0],
+                        obb.quaternion[1],
+                        obb.quaternion[2],
+                        obb.quaternion[3],
+                    ),
+                },
+            })
     }
 
     /// Get nodes selected for rendering as a list of RenderNode.
@@ -998,7 +976,8 @@ impl PySceneLayer {
         let result = self.last_result.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("No view update result — call update_view() first")
         })?;
-        let nodes: Vec<PyRenderNode> = self.inner
+        let nodes: Vec<PyRenderNode> = self
+            .inner
             .nodes_to_render(result)
             .map(|rn| PyRenderNode {
                 node_id: rn.node_id,
@@ -1012,25 +991,49 @@ impl PySceneLayer {
     }
 
     /// Get the load state of a node.
-    fn node_load_state(&self, node_id: u32) -> Option<PyNodeLoadState> {
+    fn node_load_state(&mut self, node_id: u32) -> Option<PyNodeLoadState> {
         self.inner.node_state(node_id).map(|s| s.load_state.into())
     }
 
     /// Get cached content for a node.
     fn node_content(&mut self, node_id: u32) -> Option<PyNodeContent> {
-        self.inner.cache().get(node_id).map(|c| PyNodeContent {
+        self.inner.cache()?.get(node_id).map(|c| PyNodeContent {
             inner: Arc::new(c.clone()),
         })
     }
 
-    fn __repr__(&self) -> String {
-        format!("SceneLayer(type={:?})", self.inner.info.layer_type())
+    fn __repr__(&mut self) -> String {
+        match self.inner.info() {
+            Some(info) => format!("SceneLayer(type={:?})", info.layer_type()),
+            None => "SceneLayer(loading...)".to_string(),
+        }
     }
 }
 
 // Module registration
 
+/// LOD metric used in the I3S spec's screen-size threshold calculation.
+#[pyclass(name = "LodMetric", eq, eq_int, skip_from_py_object)]
+#[derive(Clone, PartialEq)]
+pub enum PyLodMetric {
+    MaxScreenThreshold = 0,
+    MaxScreenThresholdSQ = 1,
+    DensityThreshold = 2,
+}
+
+impl From<LodMetric> for PyLodMetric {
+    fn from(m: LodMetric) -> Self {
+        match m {
+            LodMetric::MaxScreenThreshold => PyLodMetric::MaxScreenThreshold,
+            LodMetric::MaxScreenThresholdSQ => PyLodMetric::MaxScreenThresholdSQ,
+            LodMetric::DensityThreshold => PyLodMetric::DensityThreshold,
+        }
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyLodMetric>()?;
+    m.add_class::<PyINodeExcluder>()?;
     m.add_class::<PyIPrepareRendererResources>()?;
     m.add_class::<PySceneLayerExternals>()?;
     m.add_class::<PyViewState>()?;

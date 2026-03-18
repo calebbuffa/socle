@@ -8,7 +8,9 @@ from i3s import _native as _native  # type: ignore[attr-defined]
 _mod = _native.selection
 
 GeometryData = _mod.GeometryData
+INodeExcluder = _mod.INodeExcluder
 IPrepareRendererResources = _mod.IPrepareRendererResources
+LodMetric = _mod.LodMetric
 NodeContent = _mod.NodeContent
 NodeLoadState = _mod.NodeLoadState
 RenderNode = _mod.RenderNode
@@ -20,7 +22,9 @@ ViewUpdateResult = _mod.ViewUpdateResult
 
 __all__ = [
     "GeometryData",
+    "INodeExcluder",
     "IPrepareRendererResources",
+    "LodMetric",
     "NodeContent",
     "NodeLoadState",
     "RenderNode",

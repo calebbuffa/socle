@@ -1,7 +1,4 @@
 //! Reference ellipsoid with WGS84 constant.
-//!
-//! Implements cartographic ↔ Cartesian (ECEF) transforms for oblate
-//! spheroid ellipsoids, matching cesium-native's `CesiumGeospatial::Ellipsoid`.
 
 use glam::DVec3;
 
@@ -12,11 +9,8 @@ use crate::cartographic::Cartographic;
 /// The standard ellipsoid is [`Ellipsoid::WGS84`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ellipsoid {
-    /// Semi-axis radii `[x, y, z]` in meters.
     pub radii: DVec3,
-    /// Squared radii (cached for performance).
     radii_squared: DVec3,
-    /// One over radii squared.
     one_over_radii_squared: DVec3,
 }
 
@@ -28,7 +22,6 @@ impl Ellipsoid {
     /// Unit sphere (useful for testing).
     pub const UNIT_SPHERE: Ellipsoid = Ellipsoid::from_radii(1.0, 1.0, 1.0);
 
-    /// Create an ellipsoid at compile time.
     const fn from_radii(x: f64, y: f64, z: f64) -> Self {
         Self {
             radii: DVec3::new(x, y, z),
@@ -167,6 +160,35 @@ impl Ellipsoid {
     pub fn eccentricity_squared(&self) -> f64 {
         let f = self.flattening();
         2.0 * f - f * f
+    }
+
+    /// Maximum radius among all three semi-axes.
+    #[inline]
+    pub fn maximum_radius(&self) -> f64 {
+        self.radii.max_element()
+    }
+
+    /// Minimum radius among all three semi-axes.
+    #[inline]
+    pub fn minimum_radius(&self) -> f64 {
+        self.radii.min_element()
+    }
+
+    /// Scale a Cartesian point to the closest point on the ellipsoid surface
+    /// along the **geocentric** (radial) direction.
+    ///
+    /// Unlike [`scale_to_geodetic_surface`](Self::scale_to_geodetic_surface),
+    /// this projects along the line from the origin through `cartesian`, not
+    /// along the geodetic surface normal. Returns `None` if `cartesian` is at
+    /// the origin.
+    pub fn scale_to_geocentric_surface(&self, cartesian: DVec3) -> Option<DVec3> {
+        // Find λ such that ||(cartesian * λ) / radii||² = 1
+        // => λ² * dot(cartesian * one_over_radii_squared, cartesian) = 1
+        let d2 = self.one_over_radii_squared.dot(cartesian * cartesian);
+        if d2 == 0.0 {
+            return None;
+        }
+        Some(cartesian / d2.sqrt())
     }
 
     fn geodetic_surface_normal_from_geodetic(

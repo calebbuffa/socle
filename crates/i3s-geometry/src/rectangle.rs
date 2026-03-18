@@ -1,6 +1,4 @@
 //! 2D rectangle type.
-//!
-//! Mirrors cesium-native's `CesiumGeometry::Rectangle`.
 
 use glam::DVec2;
 

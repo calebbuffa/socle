@@ -10,7 +10,16 @@ use draco_core::{DecoderBuffer, GeometryAttributeType, MeshDecoder, PointIndex};
 
 use i3s_util::{I3sError, Result};
 
-use crate::geometry::GeometryData;
+use crate::codec::GeometryDecoder;
+use crate::geometry::{GeometryData, GeometryLayout};
+
+pub struct DracoGeometryDecoder;
+
+impl GeometryDecoder for DracoGeometryDecoder {
+    fn decode(&self, data: &[u8], _layout: &GeometryLayout) -> Result<GeometryData> {
+        decode_draco_geometry(data, None, None)
+    }
+}
 
 /// Decode a Draco-compressed geometry buffer into [`GeometryData`].
 ///

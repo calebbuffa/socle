@@ -1,51 +1,20 @@
 //! Task processor trait and default thread-pool implementation.
-//!
-//! Modeled after cesium-native's `ITaskProcessor`. The engine provides an
-//! implementation that dispatches work to a thread pool, and this library
-//! submits CPU-heavy and I/O tasks through it.
-//!
-//! A default [`ThreadPoolTaskProcessor`] is provided using `std::thread` and
-//! channels — no tokio or async runtime required.
 
 use std::sync::mpsc;
 use std::thread;
 
-/// A task processor that dispatches work to background threads.
-///
-/// This is the Rust equivalent of cesium-native's `ITaskProcessor`.
-/// The integration layer (game engine, viewer, etc.) implements this trait
-/// to route work through its own job system or thread pool.
-///
-/// The library calls [`start_task`](TaskProcessor::start_task) to submit
-/// work that should run off the main thread. The implementation decides
-/// *how* and *where* to run it.
+/// Dispatches work to background threads.
 pub trait TaskProcessor: Send + Sync {
-    /// Submit a synchronous task for execution on a worker thread.
-    ///
-    /// The task is a boxed closure that must be `Send` (it will be transferred
-    /// to another thread). The implementation should run it as soon as a worker
-    /// is available. This method must not block.
     fn start_task(&self, task: Box<dyn FnOnce() + Send>);
 }
 
-/// A simple thread-pool [`TaskProcessor`] using `std::thread`.
-///
-/// Spawns a fixed number of worker threads that pull tasks from a shared
-/// channel. This is the default implementation — production integrations
-/// should provide their own `TaskProcessor` backed by their engine's job system.
-///
-/// Use [`block_on`] inside task closures to run async provider methods.
-/// For truly async I/O (reqwest/REST), use a tokio-aware task processor instead.
+/// Thread-pool [`TaskProcessor`] backed by `std::thread`.
 pub struct ThreadPoolTaskProcessor {
     sender: mpsc::Sender<Box<dyn FnOnce() + Send>>,
     _workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl ThreadPoolTaskProcessor {
-    /// Create a thread pool with `num_threads` worker threads.
-    ///
-    /// A reasonable default is `std::thread::available_parallelism()` minus 1
-    /// (reserving the main thread).
     pub fn new(num_threads: usize) -> Self {
         let num_threads = num_threads.max(1);
         let (sender, receiver) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
@@ -59,7 +28,7 @@ impl ThreadPoolTaskProcessor {
                 .spawn(move || {
                     loop {
                         let task = {
-                            let lock = rx.lock().unwrap();
+                            let lock = rx.lock().expect("task receiver lock poisoned");
                             lock.recv()
                         };
                         match task {

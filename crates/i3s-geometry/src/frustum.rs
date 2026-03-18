@@ -96,10 +96,8 @@ impl CullingVolume {
     }
 
     /// Build 4 side frustum planes from camera position, direction, and
-    /// separate horizontal/vertical FOV.
-    ///
-    /// Mirrors cesium-native `createCullingVolume(position, direction, up, fovx, fovy)`.
-    /// Produces left, right, bottom, top planes (no near/far).
+    /// separate horizontal/vertical FOV. Produces left, right, bottom, top
+    /// planes (no near/far).
     pub fn from_fov(position: DVec3, direction: DVec3, up: DVec3, fov_x: f64, fov_y: f64) -> Self {
         let dir = direction.normalize();
         let right = dir.cross(up).normalize();
@@ -152,9 +150,6 @@ impl CullingVolume {
     }
 
     /// Build a frustum from asymmetric perspective bounds.
-    ///
-    /// Mirrors cesium-native `createCullingVolume(position, direction, up, l, r, b, t, n)`.
-    /// Uses a perspective projection + view matrix to extract 4 side planes.
     pub fn from_asymmetric_perspective(
         position: DVec3,
         direction: DVec3,
@@ -173,8 +168,6 @@ impl CullingVolume {
     }
 
     /// Build a frustum from orthographic bounds.
-    ///
-    /// Mirrors cesium-native `createOrthographicCullingVolume`.
     pub fn from_orthographic(
         position: DVec3,
         direction: DVec3,

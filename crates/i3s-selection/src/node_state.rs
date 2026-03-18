@@ -25,9 +25,6 @@ pub enum NodeLoadState {
 ///
 /// Tracks load state, per-frame selection results, the last projected
 /// screen size used for LOD evaluation, and renderer resources.
-///
-/// Modeled after cesium-native's `Tile` — each node owns its renderer
-/// resources directly rather than storing them in a global map.
 pub struct NodeState {
     /// Node index in the flat node array.
     pub node_id: u32,

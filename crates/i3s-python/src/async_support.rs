@@ -1,7 +1,6 @@
 //! Python bindings for i3s-async's `AsyncSystem`, `Future<T>`, and `Promise<T>`.
 //!
-//! Mirrors cesium-native's `cesium.async_` module. These are thin wrappers
-//! around the Rust types — all async machinery lives in the Rust crate.
+//! Thin wrappers around the Rust types — all async machinery lives in the Rust crate.
 
 use std::sync::Arc;
 
@@ -12,10 +11,7 @@ use i3s_async::TaskProcessor;
 use i3s_async::async_system::{AsyncSystem, Future as RustFuture};
 use i3s_async::task_processor::ThreadPoolTaskProcessor;
 
-
-/// A native thread-pool task processor.
-///
-/// Mirrors cesium-native's ``NativeTaskProcessor``.
+/// Thread-pool task processor.
 #[pyclass(name = "NativeTaskProcessor")]
 pub struct PyNativeTaskProcessor {
     pub inner: Arc<dyn TaskProcessor>,
@@ -23,9 +19,6 @@ pub struct PyNativeTaskProcessor {
 
 #[pymethods]
 impl PyNativeTaskProcessor {
-    /// Create a thread pool with the given number of worker threads.
-    ///
-    /// If ``num_threads`` is 0, uses ``available_parallelism() - 1``.
     #[new]
     #[pyo3(signature = (num_threads = 0))]
     fn new(num_threads: usize) -> Self {
@@ -42,16 +35,7 @@ impl PyNativeTaskProcessor {
     }
 }
 
-
-/// The async system: owns a worker thread pool and main-thread task queue.
-///
-/// Mirrors cesium-native's ``AsyncSystem``. Create one per application
-/// and share it with all scene layers.
-///
-/// Example::
-///
-///     tp = NativeTaskProcessor(4)
-///     async_system = AsyncSystem(tp)
+/// Async system: owns a worker thread pool and main-thread task queue.
 #[pyclass(name = "AsyncSystem")]
 pub struct PyAsyncSystem {
     pub inner: AsyncSystem,
@@ -59,12 +43,6 @@ pub struct PyAsyncSystem {
 
 #[pymethods]
 impl PyAsyncSystem {
-    /// Create an async system backed by the given task processor.
-    ///
-    /// Parameters
-    /// ----------
-    /// task_processor : NativeTaskProcessor
-    ///     The thread pool that executes worker tasks.
     #[new]
     fn new(task_processor: &PyNativeTaskProcessor) -> Self {
         Self {
@@ -72,10 +50,7 @@ impl PyAsyncSystem {
         }
     }
 
-    /// Dispatch all pending main-thread tasks.
-    ///
-    /// Call this once per frame from the main thread to process callbacks
-    /// queued by worker threads. Returns the number of tasks dispatched.
+    /// Dispatch pending main-thread tasks. Call once per frame from the main thread.
     fn dispatch_main_thread_tasks(&self) -> usize {
         self.inner.dispatch_main_thread_tasks()
     }
@@ -90,7 +65,6 @@ impl PyAsyncSystem {
     }
 }
 
-
 /// Internal state for a Python future.
 enum PyFutureState {
     /// Backed by a Rust Future<Py<PyAny>>.
@@ -99,23 +73,13 @@ enum PyFutureState {
     Consumed,
 }
 
-// Safety: PyFutureState is only accessed through Mutex (inside PyFuture).
+// SAFETY: PyFutureState is only accessed through Mutex (inside PyFuture).
 // Py<PyAny> is Send when not attached to the GIL.
 // RustFuture<Py<PyAny>> is Send+Sync by its own impl.
 unsafe impl Send for PyFutureState {}
 unsafe impl Sync for PyFutureState {}
 
 /// A future that resolves to a Python object.
-///
-/// Wraps ``i3s_async::Future<T>``. Created by async operations like
-/// ``SceneLayer.open_async()``.
-///
-/// Mirrors cesium-native's ``Future[T]``.
-///
-/// Supports:
-/// - ``future.wait()`` — blocking wait (releases GIL)
-/// - ``future.is_ready()`` — non-blocking poll
-/// - ``await future`` — asyncio integration
 #[pyclass(name = "Future")]
 pub struct PyFuture {
     state: std::sync::Mutex<PyFutureState>,
@@ -132,13 +96,13 @@ impl PyFuture {
 
 #[pymethods]
 impl PyFuture {
-    /// Block until the result is available and return it.
-    ///
-    /// Releases the GIL while waiting so worker threads can make progress.
-    /// Can only be called once — subsequent calls raise RuntimeError.
+    /// Block until the result is available. Releases the GIL. Can only be called once.
     fn wait(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let rust_future = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("future state lock poisoned"))?;
             match std::mem::replace(&mut *state, PyFutureState::Consumed) {
                 PyFutureState::Pending(f) => f,
                 PyFutureState::Consumed => {
@@ -150,22 +114,21 @@ impl PyFuture {
         let result = py.detach(|| rust_future.wait());
         match result {
             Ok(obj) => Ok(obj),
-            Err(e) => Err(PyRuntimeError::new_err(e)),
+            Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
         }
     }
 
-    /// Block in the main thread — dispatches main-thread tasks while waiting.
-    ///
-    /// Use this when the future's resolution depends on main-thread callbacks.
-    /// Pumps the AsyncSystem's main-thread task queue in a spin-yield loop
-    /// until the future is resolved, then returns the result.
+    /// Block until resolved, pumping the main-thread task queue each iteration.
     fn wait_in_main_thread(
         &self,
         py: Python<'_>,
         async_system: &PyAsyncSystem,
     ) -> PyResult<Py<PyAny>> {
         let rust_future = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("future state lock poisoned"))?;
             match std::mem::replace(&mut *state, PyFutureState::Consumed) {
                 PyFutureState::Pending(f) => f,
                 PyFutureState::Consumed => {
@@ -190,13 +153,13 @@ impl PyFuture {
         }
         match rust_future.wait() {
             Ok(obj) => Ok(obj),
-            Err(e) => Err(PyRuntimeError::new_err(e)),
+            Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
         }
     }
 
     /// Check if the result is available without blocking.
     fn is_ready(&self) -> bool {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("future state lock poisoned");
         match &*state {
             PyFutureState::Pending(f) => f.is_ready(),
             PyFutureState::Consumed => false,
@@ -205,11 +168,14 @@ impl PyFuture {
 
     /// Enable ``await future`` in asyncio.
     fn __await__(slf: Py<Self>) -> PyFutureAwaitable {
-        PyFutureAwaitable { future: slf, asyncio_future: None }
+        PyFutureAwaitable {
+            future: slf,
+            asyncio_future: None,
+        }
     }
 
     fn __repr__(&self) -> String {
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().expect("future state lock poisoned");
         match &*state {
             PyFutureState::Pending(f) => {
                 if f.is_ready() {
@@ -223,12 +189,6 @@ impl PyFuture {
     }
 }
 
-
-/// Iterator wrapper for Python's ``await`` protocol.
-///
-/// Each call to ``__next__`` returns an asyncio.Future that becomes ready
-/// when the underlying Rust future resolves, so the asyncio event loop
-/// suspends the coroutine without busy-polling.
 #[pyclass]
 struct PyFutureAwaitable {
     future: Py<PyFuture>,
@@ -246,7 +206,10 @@ impl PyFutureAwaitable {
         let future_ref = self.future.bind(py);
         let f: &PyFuture = &future_ref.borrow();
 
-        let mut state = f.state.lock().unwrap();
+        let mut state = f
+            .state
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("future state lock poisoned"))?;
         match &*state {
             PyFutureState::Pending(rust_future) => {
                 if rust_future.is_ready() {
@@ -256,7 +219,7 @@ impl PyFutureAwaitable {
                             drop(state);
                             match fut.wait() {
                                 Ok(obj) => Err(pyo3::exceptions::PyStopIteration::new_err(obj)),
-                                Err(e) => Err(PyRuntimeError::new_err(e)),
+                                Err(e) => Err(PyRuntimeError::new_err(e.to_string())),
                             }
                         }
                         _ => unreachable!(),
@@ -283,7 +246,6 @@ impl PyFutureAwaitable {
         }
     }
 }
-
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNativeTaskProcessor>()?;

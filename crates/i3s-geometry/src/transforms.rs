@@ -1,6 +1,4 @@
 //! Coordinate system transforms and matrix construction helpers.
-//!
-//! Mirrors cesium-native's `CesiumGeometry::Transforms`.
 
 use glam::{DMat3, DMat4, DQuat, DVec3, DVec4};
 
@@ -13,14 +11,7 @@ pub enum Axis {
 }
 
 /// Axis transform constants and matrix construction helpers.
-///
-/// All projection matrices use Vulkan-style conventions with reverse-Z,
-/// matching cesium-native exactly:
-/// - X maps from -1 to 1 (left to right)
-/// - Y maps from 1 to -1 (bottom to top)
-/// - Z maps from 1 to 0 (near to far)
 pub struct Transforms;
-
 
 /// Y-up to Z-up: rotate +π/2 around X axis.
 pub const Y_UP_TO_Z_UP: DMat4 = DMat4::from_cols(

@@ -1,27 +1,28 @@
 //! Python bindings for `i3s-geospatial`: Ellipsoid, Cartographic, projections, CRS.
 //!
-//! Mirrors cesium-native's `GeospatialBindings.cpp`. Every method that takes
-//! a position accepts both a single `(3,)` array and an `(N, 3)` batch array,
-//! returning the matching shape. Batch paths release the GIL.
+//! Every method that takes a position accepts both a single `(3,)` array and
+//! an `(N, 3)` batch array, returning the matching shape. Batch paths release the GIL.
 
 use glam::DVec3;
 use numpy::ndarray::{Array2, ArrayView2};
-use numpy::{IntoPyArray, PyArray1};
+use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::Py;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use i3s_geospatial::bounding_region::BoundingRegion;
 use i3s_geospatial::cartographic::Cartographic;
 use i3s_geospatial::crs::WkidTransform;
 use i3s_geospatial::ellipsoid::Ellipsoid;
+use i3s_geospatial::globe_rectangle::GlobeRectangle;
+use i3s_geospatial::local_horizontal_cs::{LocalDirection, LocalHorizontalCoordinateSystem};
 use i3s_geospatial::projection::{
     TransverseMercatorParams, from_transverse_mercator, from_web_mercator, to_transverse_mercator,
     to_web_mercator,
 };
+use i3s_geospatial::transforms::{enu_frame as rs_enu_frame, enu_matrix_at as rs_enu_matrix_at};
 
 use crate::numpy_conv;
-
-// Cartographic
 
 /// A geographic position: longitude/latitude in radians, height in meters.
 #[pyclass(name = "Cartographic", skip_from_py_object)]
@@ -118,10 +119,7 @@ impl PyCartographic {
 
 // Ellipsoid
 
-/// Reference ellipsoid with WGS84 constant.
-///
-/// All methods that accept a position take either a single `(3,)` array
-/// or an `(N, 3)` batch array. Batch operations release the GIL.
+/// Reference ellipsoid.
 #[pyclass(name = "Ellipsoid", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyEllipsoid {
@@ -309,12 +307,7 @@ impl PyEllipsoid {
     }
 }
 
-// WkidTransform — CRS-to-ECEF
-
-/// Pure-Rust CRS-to-ECEF transform for common WKID-based coordinate systems.
-///
-/// Supports Web Mercator (3857), NAD83 (4269), ETRS89 (4258), UTM zones.
-/// All `to_ecef` calls accept `(3,)` or `(N, 3)` with GIL-free batch path.
+/// CRS-to-ECEF transform for common WKID-based coordinate systems.
 #[pyclass(name = "WkidTransform", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyWkidTransform {
@@ -376,14 +369,12 @@ impl PyWkidTransform {
     }
 }
 
-
 #[pyclass(name = "SceneCoordinateSystem", eq, eq_int, skip_from_py_object)]
 #[derive(Clone, PartialEq)]
 pub enum PySceneCoordinateSystem {
     Global = 0,
     Local = 1,
 }
-
 
 /// Project cartographic to Web Mercator. (N,3) or (3,) -> (N,3) or (3,).
 #[pyfunction]
@@ -538,6 +529,334 @@ fn transverse_mercator_unproject<'py>(
     )
 }
 
+/// A principal compass or vertical direction in a local horizontal coordinate frame.
+#[pyclass(name = "LocalDirection", eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, PartialEq)]
+pub enum PyLocalDirection {
+    East = 0,
+    North = 1,
+    West = 2,
+    South = 3,
+    Up = 4,
+    Down = 5,
+}
+
+impl From<PyLocalDirection> for LocalDirection {
+    fn from(d: PyLocalDirection) -> Self {
+        match d {
+            PyLocalDirection::East => LocalDirection::East,
+            PyLocalDirection::North => LocalDirection::North,
+            PyLocalDirection::West => LocalDirection::West,
+            PyLocalDirection::South => LocalDirection::South,
+            PyLocalDirection::Up => LocalDirection::Up,
+            PyLocalDirection::Down => LocalDirection::Down,
+        }
+    }
+}
+
+/// A local horizontal coordinate system anchored to a point on the globe.
+///
+/// Each axis points in a configurable :class:`LocalDirection` at the origin.
+/// Stores ``local_to_ecef`` and ``ecef_to_local`` ``(4, 4)`` matrices.
+#[pyclass(name = "LocalHorizontalCoordinateSystem", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyLocalHorizontalCoordinateSystem {
+    inner: LocalHorizontalCoordinateSystem,
+}
+
+#[pymethods]
+impl PyLocalHorizontalCoordinateSystem {
+    /// Create at a cartographic origin.
+    #[new]
+    #[pyo3(signature = (origin, x_axis, y_axis, z_axis, scale_to_meters=1.0, ellipsoid=None))]
+    fn new(
+        origin: &PyCartographic,
+        x_axis: PyLocalDirection,
+        y_axis: PyLocalDirection,
+        z_axis: PyLocalDirection,
+        scale_to_meters: f64,
+        ellipsoid: Option<&PyEllipsoid>,
+    ) -> Self {
+        let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
+        Self {
+            inner: LocalHorizontalCoordinateSystem::new(
+                origin.inner,
+                x_axis.into(),
+                y_axis.into(),
+                z_axis.into(),
+                scale_to_meters,
+                &e,
+            ),
+        }
+    }
+
+    /// Create at an ECEF origin (3,) numpy array.
+    #[staticmethod]
+    #[pyo3(signature = (origin_ecef, x_axis, y_axis, z_axis, scale_to_meters=1.0, ellipsoid=None))]
+    fn from_ecef(
+        origin_ecef: &Bound<'_, PyAny>,
+        x_axis: PyLocalDirection,
+        y_axis: PyLocalDirection,
+        z_axis: PyLocalDirection,
+        scale_to_meters: f64,
+        ellipsoid: Option<&PyEllipsoid>,
+    ) -> PyResult<Self> {
+        let ecef = numpy_conv::to_dvec3(origin_ecef)?;
+        let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
+        Ok(Self {
+            inner: LocalHorizontalCoordinateSystem::from_ecef(
+                ecef,
+                x_axis.into(),
+                y_axis.into(),
+                z_axis.into(),
+                scale_to_meters,
+                &e,
+            ),
+        })
+    }
+
+    /// Create from a known ``local_to_ecef`` (4×4) matrix.
+    #[staticmethod]
+    fn from_matrix(mat: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let m = numpy_conv::to_dmat4(mat)?;
+        Ok(Self {
+            inner: LocalHorizontalCoordinateSystem::from_matrix(m),
+        })
+    }
+
+    /// ``local_to_ecef`` as a (4, 4) float64 numpy array.
+    #[getter]
+    fn local_to_ecef_transform<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        numpy_conv::dmat4_to_numpy(py, self.inner.local_to_ecef_transform())
+    }
+
+    /// ``ecef_to_local`` as a (4, 4) float64 numpy array.
+    #[getter]
+    fn ecef_to_local_transform<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        numpy_conv::dmat4_to_numpy(py, self.inner.ecef_to_local_transform())
+    }
+
+    /// Transform a local-frame position to ECEF.
+    fn local_position_to_ecef<'py>(
+        &self,
+        py: Python<'py>,
+        local: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let v = numpy_conv::to_dvec3(local)?;
+        Ok(numpy_conv::dvec3_to_numpy(
+            py,
+            self.inner.local_position_to_ecef(v),
+        ))
+    }
+
+    /// Transform an ECEF position to the local frame.
+    fn ecef_position_to_local<'py>(
+        &self,
+        py: Python<'py>,
+        ecef: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let v = numpy_conv::to_dvec3(ecef)?;
+        Ok(numpy_conv::dvec3_to_numpy(
+            py,
+            self.inner.ecef_position_to_local(v),
+        ))
+    }
+
+    /// Transform a local-frame direction vector to ECEF.
+    fn local_direction_to_ecef<'py>(
+        &self,
+        py: Python<'py>,
+        local: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let v = numpy_conv::to_dvec3(local)?;
+        Ok(numpy_conv::dvec3_to_numpy(
+            py,
+            self.inner.local_direction_to_ecef(v),
+        ))
+    }
+
+    /// Transform an ECEF direction vector to the local frame.
+    fn ecef_direction_to_local<'py>(
+        &self,
+        py: Python<'py>,
+        ecef: &Bound<'_, PyAny>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let v = numpy_conv::to_dvec3(ecef)?;
+        Ok(numpy_conv::dvec3_to_numpy(
+            py,
+            self.inner.ecef_direction_to_local(v),
+        ))
+    }
+
+    /// Return the (4, 4) matrix that maps positions in *self* to positions in *other*.
+    fn compute_transformation_to_another_local<'py>(
+        &self,
+        py: Python<'py>,
+        other: &PyLocalHorizontalCoordinateSystem,
+    ) -> Bound<'py, PyArray2<f64>> {
+        let mat = self
+            .inner
+            .compute_transformation_to_another_local(&other.inner);
+        numpy_conv::dmat4_to_numpy(py, &mat)
+    }
+
+    fn __repr__(&self) -> String {
+        "LocalHorizontalCoordinateSystem(...)".to_string()
+    }
+}
+
+/// An axis-aligned rectangle on the globe surface (bounds in radians).
+#[pyclass(name = "GlobeRectangle", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyGlobeRectangle {
+    pub inner: GlobeRectangle,
+}
+
+#[pymethods]
+impl PyGlobeRectangle {
+    /// Create from radian bounds (west, south, east, north).
+    #[new]
+    fn new(west: f64, south: f64, east: f64, north: f64) -> Self {
+        Self {
+            inner: GlobeRectangle::new(west, south, east, north),
+        }
+    }
+
+    /// Create from degree bounds.
+    #[staticmethod]
+    fn from_degrees(west: f64, south: f64, east: f64, north: f64) -> Self {
+        Self {
+            inner: GlobeRectangle::from_degrees(west, south, east, north),
+        }
+    }
+
+    #[getter]
+    fn west(&self) -> f64 {
+        self.inner.west
+    }
+    #[getter]
+    fn south(&self) -> f64 {
+        self.inner.south
+    }
+    #[getter]
+    fn east(&self) -> f64 {
+        self.inner.east
+    }
+    #[getter]
+    fn north(&self) -> f64 {
+        self.inner.north
+    }
+
+    fn width(&self) -> f64 {
+        self.inner.width()
+    }
+    fn height(&self) -> f64 {
+        self.inner.height()
+    }
+    fn center_longitude(&self) -> f64 {
+        self.inner.center_longitude()
+    }
+    fn center_latitude(&self) -> f64 {
+        self.inner.center_latitude()
+    }
+    fn contains(&self, longitude: f64, latitude: f64) -> bool {
+        self.inner.contains(longitude, latitude)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GlobeRectangle(west={:.4}, south={:.4}, east={:.4}, north={:.4})",
+            self.inner.west, self.inner.south, self.inner.east, self.inner.north
+        )
+    }
+}
+
+/// A bounding region on the globe: a geographic rectangle with a height range.
+#[pyclass(name = "BoundingRegion", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyBoundingRegion {
+    pub inner: BoundingRegion,
+}
+
+#[pymethods]
+impl PyBoundingRegion {
+    #[new]
+    fn new(rectangle: &PyGlobeRectangle, minimum_height: f64, maximum_height: f64) -> Self {
+        Self {
+            inner: BoundingRegion::new(rectangle.inner, minimum_height, maximum_height),
+        }
+    }
+
+    #[getter]
+    fn rectangle(&self) -> PyGlobeRectangle {
+        PyGlobeRectangle {
+            inner: self.inner.rectangle,
+        }
+    }
+    #[getter]
+    fn minimum_height(&self) -> f64 {
+        self.inner.minimum_height
+    }
+    #[getter]
+    fn maximum_height(&self) -> f64 {
+        self.inner.maximum_height
+    }
+
+    /// Compute the bounding sphere enclosing this region.
+    #[pyo3(signature = (ellipsoid=None))]
+    fn to_bounding_sphere(
+        &self,
+        ellipsoid: Option<&PyEllipsoid>,
+    ) -> crate::geometry::PyBoundingSphere {
+        let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
+        let sphere = self.inner.to_bounding_sphere(&e);
+        crate::geometry::PyBoundingSphere { inner: sphere }
+    }
+
+    fn contains(&self, cartographic: &PyCartographic) -> bool {
+        self.inner.contains(&cartographic.inner)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BoundingRegion(h=[{:.1}, {:.1}])",
+            self.inner.minimum_height, self.inner.maximum_height
+        )
+    }
+}
+
+/// Compute the East-North-Up (ENU) rotation matrix (3×3) at an ECEF position.
+///
+/// Columns are the East, North, and Up unit vectors in ECEF space.
+#[pyfunction]
+#[pyo3(name = "enu_frame")]
+#[pyo3(signature = (cartesian, ellipsoid=None))]
+fn py_enu_frame<'py>(
+    py: Python<'py>,
+    cartesian: &Bound<'_, PyAny>,
+    ellipsoid: Option<&PyEllipsoid>,
+) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
+    let v = numpy_conv::to_dvec3(cartesian)?;
+    let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
+    Ok(numpy_conv::dmat3_to_numpy(py, rs_enu_frame(&e, v)))
+}
+
+/// Compute the East-North-Up frame as a (4, 4) matrix with ECEF origin as translation.
+///
+/// Equivalent to ``Cesium.Transforms.eastNorthUpToFixedFrame()``.
+#[pyfunction]
+#[pyo3(name = "enu_matrix_at")]
+#[pyo3(signature = (cartesian, ellipsoid=None))]
+fn py_enu_matrix_at<'py>(
+    py: Python<'py>,
+    cartesian: &Bound<'_, PyAny>,
+    ellipsoid: Option<&PyEllipsoid>,
+) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
+    let v = numpy_conv::to_dvec3(cartesian)?;
+    let e = ellipsoid.map(|e| e.inner).unwrap_or(Ellipsoid::WGS84);
+    Ok(numpy_conv::dmat4_to_numpy(py, &rs_enu_matrix_at(&e, v)))
+}
+
 // Module registration
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -546,10 +865,16 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWkidTransform>()?;
     m.add_class::<PySceneCoordinateSystem>()?;
     m.add_class::<PyTransverseMercatorParams>()?;
+    m.add_class::<PyLocalDirection>()?;
+    m.add_class::<PyLocalHorizontalCoordinateSystem>()?;
+    m.add_class::<PyGlobeRectangle>()?;
+    m.add_class::<PyBoundingRegion>()?;
     m.add_function(wrap_pyfunction!(web_mercator_project, m)?)?;
     m.add_function(wrap_pyfunction!(web_mercator_unproject, m)?)?;
     m.add_function(wrap_pyfunction!(utm_params, m)?)?;
     m.add_function(wrap_pyfunction!(transverse_mercator_project, m)?)?;
     m.add_function(wrap_pyfunction!(transverse_mercator_unproject, m)?)?;
+    m.add_function(wrap_pyfunction!(py_enu_frame, m)?)?;
+    m.add_function(wrap_pyfunction!(py_enu_matrix_at, m)?)?;
     Ok(())
 }

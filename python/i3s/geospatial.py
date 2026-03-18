@@ -16,11 +16,17 @@ if TYPE_CHECKING:
 
 _mod = _native.geospatial
 
+BoundingRegion = _mod.BoundingRegion
 Cartographic = _mod.Cartographic
 Ellipsoid = _mod.Ellipsoid
+GlobeRectangle = _mod.GlobeRectangle
+LocalDirection = _mod.LocalDirection
+LocalHorizontalCoordinateSystem = _mod.LocalHorizontalCoordinateSystem
 SceneCoordinateSystem = _mod.SceneCoordinateSystem
 TransverseMercatorParams = _mod.TransverseMercatorParams
 WkidTransform = _mod.WkidTransform
+enu_frame = _mod.enu_frame
+enu_matrix_at = _mod.enu_matrix_at
 transverse_mercator_project = _mod.transverse_mercator_project
 transverse_mercator_unproject = _mod.transverse_mercator_unproject
 utm_params = _mod.utm_params
@@ -111,20 +117,30 @@ class ProjTransform:
         x, y, z = self._transformer.transform(
             positions[:, 0], positions[:, 1], positions[:, 2]
         )
-        return np.column_stack((x, y, z))
+        out = np.empty((len(positions), 3), dtype=np.float64)
+        out[:, 0] = x
+        out[:, 1] = y
+        out[:, 2] = z
+        return out
 
     def __repr__(self) -> str:
         return f"ProjTransform({self._source_crs.to_epsg() or self._source_crs.name!r})"
 
 
 __all__ = [
+    "BoundingRegion",
     "Cartographic",
     "CrsTransform",
     "Ellipsoid",
+    "GlobeRectangle",
+    "LocalDirection",
+    "LocalHorizontalCoordinateSystem",
     "ProjTransform",
     "SceneCoordinateSystem",
     "TransverseMercatorParams",
     "WkidTransform",
+    "enu_frame",
+    "enu_matrix_at",
     "transverse_mercator_project",
     "transverse_mercator_unproject",
     "utm_params",

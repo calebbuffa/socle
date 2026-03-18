@@ -1,61 +1,72 @@
-//! REST-based `AssetAccessor` using HTTP GET.
+//! REST-based `AssetAccessor` using synchronous HTTP GET via [`ureq`].
 
 use std::collections::HashMap;
 
 use i3s_util::{I3sError, Result};
-use reqwest::Client;
 
 use crate::accessor::AssetAccessor;
 use crate::request::{AssetRequest, AssetResponse, Headers};
 
-/// Fetches resources via HTTP — the REST transport layer.
-///
-/// This accessor does not know about I3S-specific URI patterns.
-/// Pair with [`RestUriResolver`](crate::resolver::RestUriResolver) for
-/// I3S URI construction.
+/// Fetches I3S resources via synchronous HTTP using `ureq`.
 pub struct RestAssetAccessor {
-    client: Client,
+    agent: ureq::Agent,
+}
+
+impl Default for RestAssetAccessor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RestAssetAccessor {
-    /// Create a new REST accessor with a default `reqwest::Client`.
+    /// Create a new REST accessor with a default [`ureq::Agent`].
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            agent: ureq::Agent::new_with_defaults(),
         }
     }
 
-    /// Create a new REST accessor with a custom `reqwest::Client`.
-    pub fn with_client(client: Client) -> Self {
-        Self { client }
+    /// Create a new REST accessor with a custom [`ureq::Agent`].
+    pub fn with_agent(agent: ureq::Agent) -> Self {
+        Self { agent }
     }
 }
 
 impl AssetAccessor for RestAssetAccessor {
-    async fn get(&self, uri: &str) -> Result<AssetRequest> {
-        let resp = self
-            .client
-            .get(uri)
-            .send()
-            .await
-            .map_err(|e| I3sError::Network(e.to_string()))?;
+    fn get(&self, uri: &str) -> Result<AssetRequest> {
+        let mut resp = match self.agent.get(uri).call() {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(code)) => {
+                return Ok(AssetRequest {
+                    method: "GET".into(),
+                    uri: uri.to_string(),
+                    request_headers: HashMap::new(),
+                    response: AssetResponse {
+                        status_code: code,
+                        content_type: String::new(),
+                        headers: HashMap::new(),
+                        data: Vec::new(),
+                    },
+                });
+            }
+            Err(e) => return Err(I3sError::Network(e.to_string())),
+        };
 
         let status_code = resp.status().as_u16();
         let content_type = resp
             .headers()
-            .get(reqwest::header::CONTENT_TYPE)
+            .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
         let headers: Headers = resp
             .headers()
             .iter()
-            .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
+            .filter_map(|(k, v)| Some((k.as_str().to_string(), v.to_str().ok()?.to_string())))
             .collect();
         let data = resp
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
+            .body_mut()
+            .read_to_vec()
             .map_err(|e| I3sError::Network(e.to_string()))?;
 
         Ok(AssetRequest {
