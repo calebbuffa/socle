@@ -16,12 +16,12 @@ use crate::cmn::SpatialReference;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudAttributeInfoOrdering {
     #[serde(rename = "attributeValues")]
-    Attributevalues,
+    AttributeValues,
 }
 
 impl Default for PointCloudAttributeInfoOrdering {
     fn default() -> Self {
-        Self::Attributevalues
+        Self::AttributeValues
     }
 }
 
@@ -58,13 +58,12 @@ impl Default for PointCloudDefaultGeometrySchemaGeometryType {
 /// Possible values for `PointCloudDefaultGeometrySchema::topology`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudDefaultGeometrySchemaTopology {
-    #[serde(rename = "PerAttributeArray")]
-    Perattributearray,
+    PerAttributeArray,
 }
 
 impl Default for PointCloudDefaultGeometrySchemaTopology {
     fn default() -> Self {
-        Self::Perattributearray
+        Self::PerAttributeArray
     }
 }
 
@@ -123,13 +122,12 @@ impl Default for PointCloudIndexLodSelectionMetricType {
 /// Possible values for `PointCloudStore::profile`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudStoreProfile {
-    #[serde(rename = "PointCloud")]
-    Pointcloud,
+    PointCloud,
 }
 
 impl Default for PointCloudStoreProfile {
     fn default() -> Self {
-        Self::Pointcloud
+        Self::PointCloud
     }
 }
 
@@ -137,14 +135,11 @@ impl Default for PointCloudStoreProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudValueType {
     Int8,
-    #[serde(rename = "UInt8")]
-    Uint8,
+    UInt8,
     Int16,
-    #[serde(rename = "UInt16")]
-    Uint16,
+    UInt16,
     Int32,
-    #[serde(rename = "UInt32")]
-    Uint32,
+    UInt32,
     Float32,
     Float64,
 }
@@ -198,7 +193,7 @@ pub struct PointCloudAttributeInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct PointCloudBitfieldlabel {
+pub struct PointCloudBitFieldLabel {
     /// Bit number (0 is LSB)
     pub bit_number: i64,
     /// Label string
@@ -306,7 +301,7 @@ pub struct PointCloudLabels {
     pub labels: Option<Vec<PointCloudLabel>>,
     /// Array of string label/bitNumber pairs. This is useful when the attribute represent a bitfield. For example, FLAGS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bitfield_labels: Option<Vec<PointCloudBitfieldlabel>>,
+    pub bitfield_labels: Option<Vec<PointCloudBitFieldLabel>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -438,7 +433,7 @@ pub struct PointCloudStats {
     pub histogram: Option<PointCloudHistogram>,
     /// An array of most frequently used values within the point cloud scene layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub most_frequent_values: Option<Vec<PointCloudValuecount>>,
+    pub most_frequent_values: Option<Vec<PointCloudValueCount>>,
 }
 
 /// Describes storage for the layer.
@@ -482,7 +477,7 @@ pub struct PointCloudValue {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct PointCloudValuecount {
+pub struct PointCloudValueCount {
     /// Type of the attribute values after decompression, if applicable. Please note that `string` is not supported for point cloud scene layer attributes.
     pub value: f64,
     /// Count the number of values. May exceed 32 bit.
@@ -505,5 +500,4 @@ pub struct PointCloudVertexAttributes {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct PointCloudSlpkHashtable {
-}
+pub struct PointCloudSlpkHashtable {}

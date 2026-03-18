@@ -6,7 +6,7 @@
         {
           "name": "attributeStatistics",
           "base_name": "attributestats",
-          "rust_name": "Attributestats",
+          "rust_name": "AttributeStatistics",
           "profile": "bld",
           "module": "bld",
           "description": "Concatenated attribute statistics. If needed, the type of the attribute (string or number) may be inferred from `mostFrequentValues` and/or `min`/`max` fields.",
@@ -4768,7 +4768,7 @@
         {
           "name": "sharedResources",
           "base_name": "sharedResource",
-          "rust_name": "SharedResource",
+          "rust_name": "SharedResources",
           "profile": "cmn",
           "module": "cmn",
           "description": "**Shared Resources are deprecated for v1.7.  They must be included for backwards compatibility, but are not used.**  Shared resources are models or textures that can be shared among features within the same layer. They are stored as a JSON file. Each node has a shared resource that is used by other features in the node or by features in the subtree of the current node. This approach ensures an optimal distribution of shared resources across nodes, while maintaining the node-based updating process. The SharedResource class collects Material definitions, Texture definitions, Shader definitions and geometry symbols that need to be instanced.",
@@ -5774,7 +5774,7 @@
         {
           "name": "valueCount",
           "base_name": "valuecount",
-          "rust_name": "Valuecount",
+          "rust_name": "ValueCount",
           "profile": "cmn",
           "module": "cmn",
           "description": "A string or numeric value.",
@@ -6071,7 +6071,7 @@
         {
           "name": "bitFieldLabel",
           "base_name": "bitfieldlabel",
-          "rust_name": "PointCloudBitfieldlabel",
+          "rust_name": "PointCloudBitFieldLabel",
           "profile": "pcsl",
           "module": "pcsl",
           "description": "Example for LiDAR data:  | Bit Number | Label | description | |:--:|:--:|:--| | 0| Synthetic | If set then this point was created by a technique other than LIDAR collection such as digitized from a photogrammetric stereo model or by traversing a waveform| | 1| Key-Point |If set, this point is considered to be a model key-point and thus generally should not be withheld in a thinning algorithm.| |2| Withheld |If set, this point should not be included in processing (synonymous with Deleted).| |3| Overlap | If set, this point is within the overlap region of two or more swaths or takes. Setting this bit is not mandatory (unless, of course, it is mandated by a particular delivery specification) but allows Classification of overlap points to be preserved.| |4 | Scan Channel 0 | Scanner Channel is used to indicate the channel (scanner head) of a multichannel system. Channel 0 is used for single scanner systems | |5 | Scan Channel 1 |  Scanner Channel is used to    indicate the channel (scanner head) of a multichannel system.| |6| Scan Direction |The Scan Direction Flag denotes the direction at which the scanner mirror was traveling at the time of the output pulse. A bit value of 1 is a positive scan direction, and a bit value of 0 is a negative scan direction (where positive scan direction is a scan moving from the left side of the in-track direction to the right side and negative the opposite). | |7| Edge of flight line | The Edge of Flight Line data bit has a value of 1 only when the point is at the end of a scan. It is the last point on a given scan line before it changes direction or the mirror facet changes. Note that this field has no meaning for 360&deg; Field of View scanners (such as Mobile LIDAR scanners) and should not be set |",
@@ -7136,7 +7136,7 @@
         {
           "name": "valueCount",
           "base_name": "valuecount",
-          "rust_name": "PointCloudValuecount",
+          "rust_name": "PointCloudValueCount",
           "profile": "pcsl",
           "module": "pcsl",
           "description": "A scalar or vector value.",

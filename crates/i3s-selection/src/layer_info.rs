@@ -32,7 +32,7 @@ impl LayerInfo {
         match self {
             LayerInfo::Mesh(info) => info.layer_type.clone(),
             LayerInfo::Point(info) => info.layer_type.clone(),
-            LayerInfo::PointCloud(_) => SceneLayerType::Pointcloud,
+            LayerInfo::PointCloud(_) => SceneLayerType::PointCloud,
             LayerInfo::Building(_) => SceneLayerType::Building,
         }
     }

@@ -184,7 +184,6 @@ class SceneLayer:
     to know when the layer is usable, or simply drive the frame loop — ``tick``
     / ``update_view`` are no-ops until the bootstrap resolves.
     """
-    """
 
     def __init__(
         self,

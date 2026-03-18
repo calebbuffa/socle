@@ -72,9 +72,9 @@ impl GeometryLayout {
                 .feature_id
                 .as_ref()
                 .map(|f| match &f.r#type {
-                    i3s::cmn::GeometryFeatureIDType::Uint64 => 8,
-                    i3s::cmn::GeometryFeatureIDType::Uint32 => 4,
-                    i3s::cmn::GeometryFeatureIDType::Uint16 => 2,
+                    i3s::cmn::GeometryFeatureIDType::UInt64 => 8,
+                    i3s::cmn::GeometryFeatureIDType::UInt32 => 4,
+                    i3s::cmn::GeometryFeatureIDType::UInt16 => 2,
                 })
                 .unwrap_or(8),
             has_face_range: buf.face_range.is_some(),
@@ -120,10 +120,10 @@ impl GeometryLayout {
 fn header_attr_size(t: &i3s::cmn::HeaderAttributeType) -> u32 {
     use i3s::cmn::HeaderAttributeType::*;
     match t {
-        Uint8 => 1,
-        Uint16 | Int16 => 2,
-        Uint32 | Int32 => 4,
-        Uint64 | Int64 => 8,
+        UInt8 => 1,
+        UInt16 | Int16 => 2,
+        UInt32 | Int32 => 4,
+        UInt64 | Int64 => 8,
         Float32 => 4,
         Float64 => 8,
     }

@@ -24,11 +24,9 @@ impl Default for SceneLayerCapabilities {
 pub enum SceneLayerType {
     #[serde(rename = "3DObject")]
     ThreeDObject,
-    #[serde(rename = "IntegratedMesh")]
-    Integratedmesh,
+    IntegratedMesh,
     Point,
-    #[serde(rename = "PointCloud")]
-    Pointcloud,
+    PointCloud,
     Building,
 }
 
@@ -42,14 +40,14 @@ impl Default for SceneLayerType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DomainType {
     #[serde(rename = "codedValue")]
-    Codedvalue,
+    CodedValue,
     #[serde(rename = "range")]
     Range,
 }
 
 impl Default for DomainType {
     fn default() -> Self {
-        Self::Codedvalue
+        Self::CodedValue
     }
 }
 
@@ -211,16 +209,15 @@ impl Default for HeightModelInfoHeightUnit {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AttributeStorageInfoOrdering {
     #[serde(rename = "attributeByteCounts")]
-    Attributebytecounts,
+    AttributeByteCounts,
     #[serde(rename = "attributeValues")]
-    Attributevalues,
-    #[serde(rename = "ObjectIds")]
-    Objectids,
+    AttributeValues,
+    ObjectIds,
 }
 
 impl Default for AttributeStorageInfoOrdering {
     fn default() -> Self {
-        Self::Attributebytecounts
+        Self::AttributeByteCounts
     }
 }
 
@@ -276,14 +273,13 @@ impl Default for DefaultGeometrySchemaGeometryType {
 /// Possible values for `DefaultGeometrySchema::topology`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DefaultGeometrySchemaTopology {
-    #[serde(rename = "PerAttributeArray")]
-    Perattributearray,
+    PerAttributeArray,
     Indexed,
 }
 
 impl Default for DefaultGeometrySchemaTopology {
     fn default() -> Self {
-        Self::Perattributearray
+        Self::PerAttributeArray
     }
 }
 
@@ -291,31 +287,30 @@ impl Default for DefaultGeometrySchemaTopology {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ElevationInfoMode {
     #[serde(rename = "relativeToGround")]
-    Relativetoground,
+    RelativeToGround,
     #[serde(rename = "absoluteHeight")]
-    Absoluteheight,
+    AbsoluteHeight,
     #[serde(rename = "onTheGround")]
-    Ontheground,
+    OnTheGround,
     #[serde(rename = "relativeToScene")]
-    Relativetoscene,
+    RelativeToScene,
 }
 
 impl Default for ElevationInfoMode {
     fn default() -> Self {
-        Self::Relativetoground
+        Self::RelativeToGround
     }
 }
 
 /// Possible values for `GeometryColor::type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryColorType {
-    #[serde(rename = "UInt8")]
-    Uint8,
+    UInt8,
 }
 
 impl Default for GeometryColorType {
     fn default() -> Self {
-        Self::Uint8
+        Self::UInt8
     }
 }
 
@@ -361,13 +356,12 @@ impl Default for GeometryDefinitionTopology {
 /// Possible values for `GeometryFaceRange::type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryFaceRangeType {
-    #[serde(rename = "UInt32")]
-    Uint32,
+    UInt32,
 }
 
 impl Default for GeometryFaceRangeType {
     fn default() -> Self {
-        Self::Uint32
+        Self::UInt32
     }
 }
 
@@ -400,17 +394,14 @@ impl Default for GeometryFaceRangeBinding {
 /// Possible values for `GeometryFeatureID::type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryFeatureIDType {
-    #[serde(rename = "UInt16")]
-    Uint16,
-    #[serde(rename = "UInt32")]
-    Uint32,
-    #[serde(rename = "UInt64")]
-    Uint64,
+    UInt16,
+    UInt32,
+    UInt64,
 }
 
 impl Default for GeometryFeatureIDType {
     fn default() -> Self {
-        Self::Uint16
+        Self::UInt16
     }
 }
 
@@ -557,13 +548,12 @@ impl Default for GeometryUVBinding {
 /// Possible values for `GeometryUVRegion::type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryUVRegionType {
-    #[serde(rename = "UInt16")]
-    Uint16,
+    UInt16,
 }
 
 impl Default for GeometryUVRegionType {
     fn default() -> Self {
-        Self::Uint16
+        Self::UInt16
     }
 }
 
@@ -598,14 +588,10 @@ impl Default for GeometryUVRegionBinding {
 /// Possible values for `HeaderAttribute::type`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HeaderAttributeType {
-    #[serde(rename = "UInt8")]
-    Uint8,
-    #[serde(rename = "UInt16")]
-    Uint16,
-    #[serde(rename = "UInt32")]
-    Uint32,
-    #[serde(rename = "UInt64")]
-    Uint64,
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
     Int16,
     Int32,
     Int64,
@@ -615,7 +601,7 @@ pub enum HeaderAttributeType {
 
 impl Default for HeaderAttributeType {
     fn default() -> Self {
-        Self::Uint8
+        Self::UInt8
     }
 }
 
@@ -623,14 +609,11 @@ impl Default for HeaderAttributeType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HeaderValueType {
     Int8,
-    #[serde(rename = "UInt8")]
-    Uint8,
+    UInt8,
     Int16,
-    #[serde(rename = "UInt16")]
-    Uint16,
+    UInt16,
     Int32,
-    #[serde(rename = "UInt32")]
-    Uint32,
+    UInt32,
     Float32,
     Float64,
     String,
@@ -648,7 +631,7 @@ pub enum HeaderValueProperty {
     #[serde(rename = "count")]
     Count,
     #[serde(rename = "attributeValuesByteCount")]
-    Attributevaluesbytecount,
+    AttributeValuesByteCount,
 }
 
 impl Default for HeaderValueProperty {
@@ -661,20 +644,20 @@ impl Default for HeaderValueProperty {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LodSelectionMetricType {
     #[serde(rename = "maxScreenThreshold")]
-    Maxscreenthreshold,
+    MaxScreenThreshold,
     #[serde(rename = "maxScreenThresholdSQ")]
-    Maxscreenthresholdsq,
+    MaxScreenThresholdSQ,
     #[serde(rename = "screenSpaceRelative")]
-    Screenspacerelative,
+    ScreenSpaceRelative,
     #[serde(rename = "distanceRangeFromDefaultCamera")]
-    Distancerangefromdefaultcamera,
+    DistanceRangeFromDefaultCamera,
     #[serde(rename = "effectiveDensity")]
-    Effectivedensity,
+    EffectiveDensity,
 }
 
 impl Default for LodSelectionMetricType {
     fn default() -> Self {
-        Self::Maxscreenthreshold
+        Self::MaxScreenThreshold
     }
 }
 
@@ -756,14 +739,14 @@ impl Default for MaterialParamsRenderMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodePageDefinitionLodSelectionMetricType {
     #[serde(rename = "maxScreenThreshold")]
-    Maxscreenthreshold,
+    MaxScreenThreshold,
     #[serde(rename = "maxScreenThresholdSQ")]
-    Maxscreenthresholdsq,
+    MaxScreenThresholdSQ,
 }
 
 impl Default for NodePageDefinitionLodSelectionMetricType {
     fn default() -> Self {
-        Self::Maxscreenthreshold
+        Self::MaxScreenThreshold
     }
 }
 
@@ -771,11 +754,10 @@ impl Default for NodePageDefinitionLodSelectionMetricType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreResourcePattern {
     #[serde(rename = "3dNodeIndexDocument")]
-    ThreeDNodeIndexDocument,
-    #[serde(rename = "SharedResource")]
-    Sharedresource,
+    NodeIndexDocument,
+    SharedResource,
     #[serde(rename = "featureData")]
-    Featuredata,
+    FeatureData,
     Geometry,
     Texture,
     Attributes,
@@ -783,7 +765,7 @@ pub enum StoreResourcePattern {
 
 impl Default for StoreResourcePattern {
     fn default() -> Self {
-        Self::ThreeDNodeIndexDocument
+        Self::NodeIndexDocument
     }
 }
 
@@ -807,17 +789,15 @@ impl Default for StoreNormalReferenceFrame {
 /// Possible values for `Store::lodType`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoreLodType {
-    #[serde(rename = "MeshPyramid")]
-    Meshpyramid,
-    #[serde(rename = "AutoThinning")]
-    Autothinning,
+    MeshPyramid,
+    AutoThinning,
     Clustering,
     Generalizing,
 }
 
 impl Default for StoreLodType {
     fn default() -> Self {
-        Self::Meshpyramid
+        Self::MeshPyramid
     }
 }
 
@@ -908,28 +888,26 @@ impl Default for TextureSetDefinitionFormatFormat {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValueTimeEncoding {
     #[serde(rename = "ECMA_ISO8601")]
-    EcmaIso8601,
+    ECMAIS8601,
 }
 
 impl Default for ValueTimeEncoding {
     fn default() -> Self {
-        Self::EcmaIso8601
+        Self::ECMAIS8601
     }
 }
 
 /// Possible values for `VestedGeometryParams::topology`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VestedGeometryParamsTopology {
-    #[serde(rename = "PerAttributeArray")]
-    Perattributearray,
-    #[serde(rename = "InterleavedArray")]
-    Interleavedarray,
+    PerAttributeArray,
+    InterleavedArray,
     Indexed,
 }
 
 impl Default for VestedGeometryParamsTopology {
     fn default() -> Self {
-        Self::Perattributearray
+        Self::PerAttributeArray
     }
 }
 
@@ -1064,8 +1042,7 @@ pub struct ServiceUpdateTimeStamp {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct SlpkHashtable {
-}
+pub struct SlpkHashtable {}
 
 /// The spatialReference object is located at the top level of the JSON hierarchy.  A spatial
 /// reference can be defined using a Well-Known ID (WKID) or Well-Known Text (WKT). The default
@@ -1637,8 +1614,7 @@ pub struct GeometryNormal {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct GeometryParams {
-}
+pub struct GeometryParams {}
 
 /// Position vertex attribute.  Relative to the center of oriented-bounded box of the node.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -2178,7 +2154,7 @@ pub struct Resource {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct SharedResource {
+pub struct SharedResources {
     /// Materials describe how a Feature or a set of Features is to be rendered.
     pub material_definitions: MaterialDefinition,
     /// A Texture is a set of images, with some parameters specific to the texture/uv mapping to geometries.
@@ -2277,7 +2253,7 @@ pub struct StatsInfo {
     pub histogram: Option<Histogram>,
     /// An array of most frequently used values within the point cloud scene layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub most_frequent_values: Option<Vec<Valuecount>>,
+    pub most_frequent_values: Option<Vec<ValueCount>>,
 }
 
 /// The store object describes the exact physical storage of a layer and enables the client to
@@ -2497,7 +2473,7 @@ pub struct Value {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Valuecount {
+pub struct ValueCount {
     /// Type of the attribute values after decompression, if applicable. Please note that `string` is not supported for point cloud scene layer attributes.
     pub value: String,
     /// Count of the number of values. May exceed 32 bits.

@@ -10,6 +10,21 @@ import sys
 import textwrap
 from pathlib import Path
 
+WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z]+|[0-9]+")
+
+LEADING_DIGIT_WORDS = {
+    "0": "Zero",
+    "1": "One",
+    "2": "Two",
+    "3": "Three",
+    "4": "Four",
+    "5": "Five",
+    "6": "Six",
+    "7": "Seven",
+    "8": "Eight",
+    "9": "Nine",
+}
+
 PRIMITIVE_MAP = {
     "string": "String",
     "integer": "i64",
@@ -79,10 +94,24 @@ def to_snake_case(name: str) -> str:
 def to_pascal_case(name: str) -> str:
     """Convert a name to PascalCase."""
     name = re.sub(r"^3D", "ThreeD", name)
-    if "_" in name:
-        parts = name.split("_")
-        name = "".join(p.capitalize() for p in parts)
-    return name[0].upper() + name[1:] if name else name
+    words = []
+    for token in re.split(r"[^0-9A-Za-z]+", name):
+        if not token:
+            continue
+        words.extend(WORD_RE.findall(token) or [token])
+
+    if not words:
+        return name
+
+    result = "".join(
+        word if len(word) > 1 and word.isupper() else word[0].upper() + word[1:]
+        for word in words
+    )
+
+    if result and result[0].isdigit():
+        result = LEADING_DIGIT_WORDS.get(result[0], "N") + result[1:]
+
+    return result
 
 
 def sanitize_enum_variant(value: str) -> str:
@@ -93,33 +122,13 @@ def sanitize_enum_variant(value: str) -> str:
     if value.startswith("esri"):
         return value[4:]
 
-    # Replace hyphens and spaces with underscores, then PascalCase
-    s = re.sub(r"[-\s]+", "_", value)
-    # Split on underscores and capitalize each
-    parts = s.split("_")
-    result = "".join(p.capitalize() if p else "" for p in parts)
-
-    # Handle leading digits
-    if result and result[0].isdigit():
-        num_words = {
-            "0": "Zero",
-            "1": "One",
-            "2": "Two",
-            "3": "Three",
-            "4": "Four",
-            "5": "Five",
-            "6": "Six",
-            "7": "Seven",
-            "8": "Eight",
-            "9": "Nine",
-        }
-        result = num_words.get(result[0], "N") + result[1:]
+    result = to_pascal_case(value)
 
     # Handle special cases
     if result == "3DObject" or value == "3DObject":
         return "ThreeDObject"
     if result == "3dNodeIndexDocument" or value == "3dNodeIndexDocument":
-        return "ThreeDNodeIndexDocument"
+        return "NodeIndexDocument"
 
     return result if result else "Unknown"
 
@@ -228,7 +237,7 @@ def resolve_type(
             return ref_rust_name
         else:
             # Fallback: PascalCase the reference name
-            rust_name = to_pascal_case(ref_base)
+            rust_name = to_pascal_case(type_info.get("name", ref_base))
             return rust_name
 
     return "String"

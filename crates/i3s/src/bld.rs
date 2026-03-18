@@ -10,40 +10,40 @@ use crate::cmn::SceneLayerCapabilities;
 use crate::cmn::SceneLayerType;
 use crate::cmn::SpatialReference;
 
-/// Possible values for `Attributestats::modelName`.
+/// Possible values for `AttributeStatistics::modelName`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AttributestatsModelName {
+pub enum AttributeStatisticsModelName {
     #[serde(rename = "category")]
     Category,
     #[serde(rename = "family")]
     Family,
     #[serde(rename = "familyType")]
-    Familytype,
+    FamilyType,
     #[serde(rename = "bldgLevel")]
-    Bldglevel,
+    BldgLevel,
     #[serde(rename = "createdPhase")]
-    Createdphase,
+    CreatedPhase,
     #[serde(rename = "demolishedPhase")]
-    Demolishedphase,
+    DemolishedPhase,
     #[serde(rename = "discipline")]
     Discipline,
     #[serde(rename = "assemblyCode")]
-    Assemblycode,
+    AssemblyCode,
     #[serde(rename = "omniClass")]
-    Omniclass,
+    OmniClass,
     #[serde(rename = "systemClassifications")]
-    Systemclassifications,
+    SystemClassifications,
     #[serde(rename = "systemType")]
-    Systemtype,
+    SystemType,
     #[serde(rename = "systemName")]
-    Systemname,
+    SystemName,
     #[serde(rename = "systemClass")]
-    Systemclass,
+    SystemClass,
     #[serde(rename = "custom")]
     Custom,
 }
 
-impl Default for AttributestatsModelName {
+impl Default for AttributeStatisticsModelName {
     fn default() -> Self {
         Self::Category
     }
@@ -79,12 +79,12 @@ impl Default for FilterModeSolidType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FilterModeWireFrameType {
     #[serde(rename = "wireFrame")]
-    Wireframe,
+    WireFrame,
 }
 
 impl Default for FilterModeWireFrameType {
     fn default() -> Self {
-        Self::Wireframe
+        Self::WireFrame
     }
 }
 
@@ -126,7 +126,7 @@ impl Default for SublayerLayerType {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Attributestats {
+pub struct AttributeStatistics {
     /// Name of the field.
     pub field_name: String,
     /// Label of the field name. If label is empty, the label and fieldName are identical.
@@ -134,7 +134,7 @@ pub struct Attributestats {
     pub label: Option<String>,
     /// A fixed string of building information, similar to a filter. Used by client applications to define specific behavior for the modelName. The [default filter types](./defaultFilterTypes.bld.md) define t...
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_name: Option<AttributestatsModelName>,
+    pub model_name: Option<AttributeStatisticsModelName>,
     /// Minimum value. Numeric attributes only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
@@ -219,8 +219,7 @@ pub struct FilterBlockAuthoringInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct FilterMode {
-}
+pub struct FilterMode {}
 
 /// Shows all elements that comply with the filter block of a filter in a building scene layer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -339,7 +338,7 @@ pub struct Layer {
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
 pub struct BuildingStats {
     /// Per-attribute statistics for all sublayers.
-    pub summary: Vec<Attributestats>,
+    pub summary: Vec<AttributeStatistics>,
 }
 
 /// Sublayer of a building scene layer. A building scene layer is composed of an overview and the
@@ -387,5 +386,4 @@ pub struct Sublayer {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct DefaultFilterTypes {
-}
+pub struct DefaultFilterTypes {}

@@ -14,7 +14,8 @@ use i3s::bld::Layer as BuildingLayer;
 use i3s::cmn::{
     AttributeStorageInfo, ElevationInfo, Field, FieldType, FullExtent, GeometryDefinition,
     HeightModelInfo, LodSelection, LodSelectionMetricType, MaterialDefinitions, NodePageDefinition,
-    Obb, SceneLayerCapabilities, SceneLayerInfo, SpatialReference, Store, TextureSetDefinition,
+    Obb, SceneLayerCapabilities, SceneLayerInfo, SceneLayerType, SpatialReference, Store,
+    TextureSetDefinition,
 };
 use i3s::pcsl::PointCloudLayer;
 use i3s::psl::{SceneLayerInfoPsl, StorePsl};
@@ -75,12 +76,13 @@ impl PySceneLayerType {
 
 impl From<SceneLayerType> for PySceneLayerType {
     fn from(t: SceneLayerType) -> Self {
-        match t {
-            SceneLayerType::ThreeDObject => Self::ThreeDObject,
-            SceneLayerType::IntegratedMesh => Self::IntegratedMesh,
-            SceneLayerType::Point => Self::Point,
-            SceneLayerType::PointCloud => Self::PointCloud,
-            SceneLayerType::Building => Self::Building,
+        match serde_str(&t).as_str() {
+            "3DObject" => Self::ThreeDObject,
+            "IntegratedMesh" => Self::IntegratedMesh,
+            "Point" => Self::Point,
+            "PointCloud" => Self::PointCloud,
+            "Building" => Self::Building,
+            _ => Self::Point,
         }
     }
 }
@@ -194,14 +196,13 @@ impl PyLodSelectionMetricType {
 
 impl From<LodSelectionMetricType> for PyLodSelectionMetricType {
     fn from(t: LodSelectionMetricType) -> Self {
-        match t {
-            LodSelectionMetricType::Maxscreenthreshold => Self::MaxScreenThreshold,
-            LodSelectionMetricType::Maxscreenthresholdsq => Self::MaxScreenThresholdSQ,
-            LodSelectionMetricType::Screenspacerelative => Self::ScreenSpaceRelative,
-            LodSelectionMetricType::Distancerangefromdefaultcamera => {
-                Self::DistanceRangeFromDefaultCamera
-            }
-            LodSelectionMetricType::Effectivedensity => Self::EffectiveDensity,
+        match serde_str(&t).as_str() {
+            "maxScreenThreshold" => Self::MaxScreenThreshold,
+            "maxScreenThresholdSQ" => Self::MaxScreenThresholdSQ,
+            "screenSpaceRelative" => Self::ScreenSpaceRelative,
+            "distanceRangeFromDefaultCamera" => Self::DistanceRangeFromDefaultCamera,
+            "effectiveDensity" => Self::EffectiveDensity,
+            _ => Self::MaxScreenThreshold,
         }
     }
 }

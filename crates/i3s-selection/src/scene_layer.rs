@@ -20,9 +20,9 @@ use std::sync::Arc;
 
 use glam::{DQuat, DVec3};
 
-use i3s::cmn::{SceneLayerInfo, SceneLayerType, NodePageDefinitionLodSelectionMetricType};
-use i3s::psl::SceneLayerInfoPsl;
+use i3s::cmn::{NodePageDefinitionLodSelectionMetricType, SceneLayerInfo, SceneLayerType};
 use i3s::pcsl::PointCloudLayer;
+use i3s::psl::SceneLayerInfoPsl;
 
 use i3s_async::{AssetAccessor, AsyncError, ResourceUriResolver, SharedFuture};
 use i3s_geometry::obb::OrientedBoundingBox;
@@ -54,7 +54,6 @@ pub struct RenderNode<'a> {
     pub bounding_radius: f64,
     pub renderer_resources: Option<&'a RendererResources>,
 }
-
 
 struct ReadyState {
     info: LayerInfo,
@@ -662,7 +661,7 @@ fn bootstrap_layer(
     let layer_type = probe_layer_type(&layer_bytes)?;
 
     match layer_type {
-        SceneLayerType::Pointcloud => bootstrap_pointcloud(
+        SceneLayerType::PointCloud => bootstrap_pointcloud(
             accessor,
             resolver,
             externals,
@@ -709,10 +708,10 @@ fn bootstrap_mesh(
 
     let lod_metric = match info.node_pages.as_ref() {
         Some(npd) => match npd.lod_selection_metric_type {
-            NodePageDefinitionLodSelectionMetricType::Maxscreenthreshold => {
+            NodePageDefinitionLodSelectionMetricType::MaxScreenThreshold => {
                 LodMetric::MaxScreenThreshold
             }
-            NodePageDefinitionLodSelectionMetricType::Maxscreenthresholdsq => {
+            NodePageDefinitionLodSelectionMetricType::MaxScreenThresholdSQ => {
                 LodMetric::MaxScreenThresholdSQ
             }
         },
@@ -779,10 +778,10 @@ fn bootstrap_point(
 
     let lod_metric = match info.point_node_pages.as_ref() {
         Some(npd) => match npd.lod_selection_metric_type {
-            NodePageDefinitionLodSelectionMetricType::Maxscreenthreshold => {
+            NodePageDefinitionLodSelectionMetricType::MaxScreenThreshold => {
                 LodMetric::MaxScreenThreshold
             }
-            NodePageDefinitionLodSelectionMetricType::Maxscreenthresholdsq => {
+            NodePageDefinitionLodSelectionMetricType::MaxScreenThresholdSQ => {
                 LodMetric::MaxScreenThresholdSQ
             }
         },

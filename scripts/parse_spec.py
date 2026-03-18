@@ -9,6 +9,21 @@ import os
 import re
 from pathlib import Path
 
+WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z]+|[0-9]+")
+
+LEADING_DIGIT_WORDS = {
+    "0": "Zero",
+    "1": "One",
+    "2": "Two",
+    "3": "Three",
+    "4": "Four",
+    "5": "Five",
+    "6": "Six",
+    "7": "Seven",
+    "8": "Eight",
+    "9": "Nine",
+}
+
 # Explicit mappings for types. Key = lowercase base name from filename.
 MODULE_MAP_CMN = {
     # core
@@ -135,14 +150,37 @@ def get_module(base_name: str, profile: str) -> str:
 
 def to_pascal_case(name: str) -> str:
     """Convert camelCase or snake_case name to PascalCase."""
-    # Handle special leading digits: 3DSceneLayer -> ThreeDSceneLayer
     name = re.sub(r"^3D", "ThreeD", name)
-    # Handle underscores: slpk_hashtable -> slpkHashtable first
-    if "_" in name:
-        parts = name.split("_")
-        name = parts[0] + "".join(p.capitalize() for p in parts[1:])
-    # Capitalize first letter
-    return name[0].upper() + name[1:] if name else name
+    words = []
+    for token in re.split(r"[^0-9A-Za-z]+", name):
+        if not token:
+            continue
+        words.extend(WORD_RE.findall(token) or [token])
+
+    if not words:
+        return name
+
+    result = "".join(
+        word if len(word) > 1 and word.isupper() else word[0].upper() + word[1:]
+        for word in words
+    )
+
+    if result and result[0].isdigit():
+        result = LEADING_DIGIT_WORDS.get(result[0], "N") + result[1:]
+
+    return result
+
+
+def select_name_source(base_name: str, type_name: str) -> str:
+    """Prefer the heading when it preserves canonical identifier casing."""
+    if re.fullmatch(r"[A-Za-z0-9_]+", type_name):
+        if type_name.lower() == base_name.lower():
+            return type_name
+        if any(ch.isupper() for ch in type_name[1:]) or any(
+            ch.isdigit() for ch in type_name
+        ):
+            return type_name
+    return base_name
 
 
 def parse_type_column(type_str: str) -> dict:
@@ -357,8 +395,10 @@ def parse_md_file(filepath: Path) -> dict | None:
     examples = parse_examples(content)
     module = get_module(base_name, profile)
 
-    # Apply explicit name overrides, else PascalCase
-    rust_name = RUST_NAME_OVERRIDES.get(base_name, to_pascal_case(base_name))
+    # Apply explicit name overrides, else prefer the canonical identifier heading
+    # when the filename has lost case information.
+    name_source = select_name_source(base_name, type_name)
+    rust_name = RUST_NAME_OVERRIDES.get(base_name, to_pascal_case(name_source))
 
     # Handle name collisions for pcsl types
     # PCSL profile types are pointcloud-specific, so always prefix with "PointCloud"
