@@ -6,7 +6,6 @@ pub mod gunzip;
 pub mod i3s_accessor;
 pub mod request;
 pub mod resolver;
-pub mod resource;
 pub mod rest;
 pub mod slpk;
 pub mod task_processor;
@@ -17,9 +16,8 @@ pub use async_system::{
 };
 pub use gunzip::GunzipAssetAccessor;
 pub use i3s_accessor::I3sAssetAccessor;
-pub use request::{AssetRequest, AssetResponse, Headers};
+pub use request::{AssetRequest, AssetResponse, Headers, TextureRequestFormat};
 pub use resolver::{ResourceUriResolver, RestUriResolver, SlpkUriResolver};
-pub use resource::TextureRequestFormat;
 pub use rest::RestAssetAccessor;
 pub use slpk::SlpkAssetAccessor;
 pub use task_processor::{TaskProcessor, ThreadPoolTaskProcessor};

@@ -4,9 +4,8 @@
 //! PointCloud layers use [`PointCloudNodePageDefinition`]/[`PointCloudNode`].
 //! This enum provides a common interface for the selection algorithm.
 
-use i3s::node::{Node, NodePage};
-use i3s::pointcloud::{PointCloudNode, PointCloudNodePageDefinition};
-use i3s::spatial::Obb;
+use i3s::cmn::{Node, NodePage, Obb};
+use i3s::pcsl::{PointCloudNode, PointCloudNodePageDefinition};
 
 use i3s_reader::json::read_json;
 use i3s_util::Result;
@@ -172,7 +171,7 @@ impl NodeTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use i3s::spatial::Obb;
+    use i3s::cmn::Obb;
 
     fn make_node(children: Option<Vec<i64>>, lod: f64) -> Node {
         Node {

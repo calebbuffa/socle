@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 /// HTTP-style headers (header name → value).
 pub type Headers = HashMap<String, String>;
@@ -34,15 +34,45 @@ pub struct AssetRequest {
 }
 
 impl AssetRequest {
-    /// Returns the body if status is 2xx, otherwise `Err(I3sError::Http)`.
+    /// Returns the body if status is 2xx, otherwise `Err(I3SError::Http)`.
     pub fn into_data(self) -> Result<Vec<u8>> {
         if self.response.is_success() {
             Ok(self.response.data)
         } else {
-            Err(I3sError::Http {
+            Err(I3SError::Http {
                 status: self.response.status_code,
                 url: self.uri,
             })
+        }
+    }
+}
+/// Requested texture format for texture fetches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureRequestFormat {
+    Jpeg,
+    Png,
+    Dds,
+    Ktx2,
+}
+
+impl TextureRequestFormat {
+    /// File extension for this format.
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Dds => "dds",
+            Self::Ktx2 => "ktx2",
+        }
+    }
+
+    /// MIME type for Accept header.
+    pub fn mime_type(&self) -> &'static str {
+        match self {
+            Self::Jpeg => "image/jpeg",
+            Self::Png => "image/png",
+            Self::Dds => "image/vnd-ms.dds",
+            Self::Ktx2 => "image/ktx2",
         }
     }
 }

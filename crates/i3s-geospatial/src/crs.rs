@@ -2,7 +2,7 @@
 
 use glam::{DQuat, DVec3};
 
-use i3s::spatial::{Obb, SpatialReference};
+use i3s::cmn::{Obb, SpatialReference};
 use i3s_geometry::obb::OrientedBoundingBox;
 
 use crate::cartographic::Cartographic;
@@ -276,7 +276,7 @@ impl CrsTransform for WkidTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use i3s::spatial::SpatialReference;
+    use i3s::cmn::SpatialReference;
 
     #[test]
     fn global_crs_from_wkid_4326() {

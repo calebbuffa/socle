@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use flate2::read::GzDecoder;
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 use zip::ZipArchive;
 
 use crate::accessor::AssetAccessor;
@@ -24,7 +24,7 @@ impl SlpkAssetAccessor {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let archive = ZipArchive::new(reader)
-            .map_err(|e| I3sError::InvalidData(format!("failed to read SLPK ZIP: {e}")))?;
+            .map_err(|e| I3SError::InvalidData(format!("failed to read SLPK ZIP: {e}")))?;
         Ok(Self {
             archive: Arc::new(Mutex::new(archive)),
         })
@@ -36,7 +36,7 @@ impl AssetAccessor for SlpkAssetAccessor {
         let mut guard = self
             .archive
             .lock()
-            .map_err(|e| I3sError::InvalidData(format!("SLPK archive lock poisoned: {e}")))?;
+            .map_err(|e| I3SError::InvalidData(format!("SLPK archive lock poisoned: {e}")))?;
 
         // Try gzip-compressed entry first (e.g. "3dSceneLayer.json.gz")
         let gz_name = format!("{uri}.gz");

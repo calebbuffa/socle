@@ -4,7 +4,7 @@
 //! already derive `Deserialize`, so this module provides convenience functions
 //! with proper error mapping.
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 use serde::de::DeserializeOwned;
 
 /// Deserialize any I3S JSON resource from raw bytes.
@@ -14,22 +14,22 @@ use serde::de::DeserializeOwned;
 ///
 /// # Errors
 ///
-/// Returns [`I3sError::Json`] if the bytes are not valid JSON or do not
+/// Returns [`I3SError::Json`] if the bytes are not valid JSON or do not
 /// match the expected type structure.
 pub fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    serde_json::from_slice(bytes).map_err(I3sError::from)
+    serde_json::from_slice(bytes).map_err(I3SError::from)
 }
 
 /// Deserialize from a JSON string.
 pub fn read_json_str<T: DeserializeOwned>(s: &str) -> Result<T> {
-    serde_json::from_str(s).map_err(I3sError::from)
+    serde_json::from_str(s).map_err(I3SError::from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use i3s::node::NodePage;
-    use i3s::spatial::Obb;
+    use i3s::cmn::NodePage;
+    use i3s::cmn::Obb;
 
     #[test]
     fn read_obb() {
@@ -82,6 +82,6 @@ mod tests {
         let result = read_json::<Obb>(b"not valid json");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, I3sError::Json(_)));
+        assert!(matches!(err, I3SError::Json(_)));
     }
 }

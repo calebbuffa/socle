@@ -1,12 +1,14 @@
 //! Auto-generated from i3s-spec. Do not edit manually.
 //!
-//! Module: building
+//! Module: bld
 
 use serde::{Deserialize, Serialize};
 
-use crate::spatial::FullExtent;
-use crate::spatial::HeightModelInfo;
-use crate::spatial::SpatialReference;
+use crate::cmn::FullExtent;
+use crate::cmn::HeightModelInfo;
+use crate::cmn::SceneLayerCapabilities;
+use crate::cmn::SceneLayerType;
+use crate::cmn::SpatialReference;
 
 /// Possible values for `Attributestats::modelName`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,33 +85,6 @@ pub enum FilterModeWireFrameType {
 impl Default for FilterModeWireFrameType {
     fn default() -> Self {
         Self::Wireframe
-    }
-}
-
-/// Possible values for `BuildingLayer::layerType`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum BuildingLayerType {
-    Building,
-}
-
-impl Default for BuildingLayerType {
-    fn default() -> Self {
-        Self::Building
-    }
-}
-
-/// Possible values for `BuildingLayer::capabilities`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum BuildingLayerCapabilities {
-    View,
-    Query,
-    Edit,
-    Extract,
-}
-
-impl Default for BuildingLayerCapabilities {
-    fn default() -> Self {
-        Self::View
     }
 }
 
@@ -244,7 +219,8 @@ pub struct FilterBlockAuthoringInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct FilterMode {}
+pub struct FilterMode {
+}
 
 /// Shows all elements that comply with the filter block of a filter in a building scene layer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -315,7 +291,7 @@ pub struct FilterType {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct BuildingLayer {
+pub struct Layer {
     /// Identifier for the layer. Building scene layer id is not in the same namespace as sublayer id. **Important**: clients should **not** assume it will be `0`.
     pub id: i64,
     /// Layer name.
@@ -326,7 +302,7 @@ pub struct BuildingLayer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     /// Must be:`Building`
-    pub layer_type: BuildingLayerType,
+    pub layer_type: SceneLayerType,
     /// Description for the layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -353,7 +329,7 @@ pub struct BuildingLayer {
     pub statistics_h_ref: Option<String>,
     /// Capabilities supported by building scene layer. Overwrites any capabilities on sublayers.Possible values for each array string:`View`: View is supported.`Query`: Query is supported.`Edit`: Edit is def...
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<BuildingLayerCapabilities>,
+    pub capabilities: Option<SceneLayerCapabilities>,
 }
 
 /// Statistics for all building scene layer sublayers. Captures statistical information for each
@@ -411,4 +387,5 @@ pub struct Sublayer {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct DefaultFilterTypes {}
+pub struct DefaultFilterTypes {
+}

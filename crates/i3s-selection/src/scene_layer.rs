@@ -20,9 +20,9 @@ use std::sync::Arc;
 
 use glam::{DQuat, DVec3};
 
-use i3s::core::{SceneLayerInfo, SceneLayerInfoPsl, SceneLayerType};
-use i3s::node::NodePageDefinitionLodSelectionMetricType;
-use i3s::pointcloud::PointCloudLayer;
+use i3s::cmn::{SceneLayerInfo, SceneLayerType, NodePageDefinitionLodSelectionMetricType};
+use i3s::psl::SceneLayerInfoPsl;
+use i3s::pcsl::PointCloudLayer;
 
 use i3s_async::{AssetAccessor, AsyncError, ResourceUriResolver, SharedFuture};
 use i3s_geometry::obb::OrientedBoundingBox;
@@ -55,9 +55,6 @@ pub struct RenderNode<'a> {
     pub renderer_resources: Option<&'a RendererResources>,
 }
 
-// ---------------------------------------------------------------------------
-// Ready state — everything that only exists once bootstrap completes
-// ---------------------------------------------------------------------------
 
 struct ReadyState {
     info: LayerInfo,
@@ -76,10 +73,6 @@ struct ReadyState {
 
 // SAFETY: all fields are Send (Arc<dyn Trait> where Trait: Send+Sync, plain data)
 unsafe impl Send for ReadyState {}
-
-// ---------------------------------------------------------------------------
-// SceneLayer
-// ---------------------------------------------------------------------------
 
 /// An I3S scene layer backed by an [`AssetAccessor`].
 ///
@@ -344,7 +337,7 @@ impl SceneLayer {
         // Collect any completed page fetches from workers
         self.collect_page_fetches();
 
-        // ---- Page fetch dispatch ----
+        // Page fetch dispatch
         {
             let r = self.ready.as_mut().unwrap();
             for &page_id in &result.pages_needed {
@@ -369,7 +362,7 @@ impl SceneLayer {
             }
         }
 
-        // ---- Load request dispatch ----
+        // Load request dispatch
         {
             let r = self.ready.as_mut().unwrap();
             for req in &result.load_requests {
@@ -384,7 +377,7 @@ impl SceneLayer {
             r.loader.dispatch();
         }
 
-        // ---- Collect completed loads ----
+        // Collect completed loads
         // Precompute the crs_transform Arc so we can call prepare_in_main_thread
         // without holding a &mut borrow on self.ready simultaneously.
         let crs_transform = self.ready.as_ref().unwrap().crs_transform.clone();
@@ -437,7 +430,7 @@ impl SceneLayer {
             }
         }
 
-        // ---- Unload and retry ----
+        // Unload and retry
         {
             let r = self.ready.as_mut().unwrap();
             for &node_id in &result.nodes_to_unload {
@@ -677,7 +670,7 @@ fn bootstrap_layer(
             &layer_bytes,
             crs_transform,
         ),
-        SceneLayerType::Building => Err(i3s_util::I3sError::InvalidData(
+        SceneLayerType::Building => Err(i3s_util::I3SError::InvalidData(
             "Building layers cannot be opened as a single SceneLayer. \
              Use BuildingSceneLayer instead."
                 .into(),

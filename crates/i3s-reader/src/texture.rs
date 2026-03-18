@@ -7,7 +7,7 @@
 
 use image::GenericImageView;
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 /// Decoded texture data.
 #[derive(Debug, Clone)]
@@ -54,10 +54,10 @@ pub fn detect_format(data: &[u8]) -> TextureFormat {
 ///
 /// # Errors
 ///
-/// Returns [`I3sError::Texture`] if the image cannot be decoded.
+/// Returns [`I3SError::Texture`] if the image cannot be decoded.
 pub fn decode_texture(data: &[u8]) -> Result<TextureData> {
     let img = image::load_from_memory(data)
-        .map_err(|e| I3sError::Texture(format!("image decode failed: {e}")))?;
+        .map_err(|e| I3SError::Texture(format!("image decode failed: {e}")))?;
 
     let (width, height) = img.dimensions();
     let rgba = img.to_rgba8();

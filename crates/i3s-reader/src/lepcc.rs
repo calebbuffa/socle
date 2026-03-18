@@ -7,7 +7,7 @@
 //!
 //! Requires the `lepcc` feature flag.
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 use crate::codec::GeometryDecoder;
 use crate::geometry::{GeometryData, GeometryLayout};
@@ -20,7 +20,7 @@ impl GeometryDecoder for LepccGeometryDecoder {
         let ctx = lepcc_ffi::Context::new();
         let points = ctx
             .decode_xyz(data)
-            .map_err(|e| I3sError::Lepcc(e.to_string()))?;
+            .map_err(|e| I3SError::Lepcc(e.to_string()))?;
         let vertex_count = points.len() as u32;
         let positions = points
             .into_iter()

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 use crate::accessor::AssetAccessor;
 use crate::request::{AssetRequest, AssetResponse, Headers};
@@ -49,7 +49,7 @@ impl AssetAccessor for RestAssetAccessor {
                     },
                 });
             }
-            Err(e) => return Err(I3sError::Network(e.to_string())),
+            Err(e) => return Err(I3SError::Network(e.to_string())),
         };
 
         let status_code = resp.status().as_u16();
@@ -67,7 +67,7 @@ impl AssetAccessor for RestAssetAccessor {
         let data = resp
             .body_mut()
             .read_to_vec()
-            .map_err(|e| I3sError::Network(e.to_string()))?;
+            .map_err(|e| I3SError::Network(e.to_string()))?;
 
         Ok(AssetRequest {
             method: "GET".into(),

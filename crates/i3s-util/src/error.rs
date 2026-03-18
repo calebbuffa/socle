@@ -2,7 +2,7 @@
 
 /// Errors that can occur when working with I3S data.
 #[derive(Debug, thiserror::Error)]
-pub enum I3sError {
+pub enum I3SError {
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -31,5 +31,5 @@ pub enum I3sError {
     InvalidData(String),
 }
 
-/// A `Result` alias using [`I3sError`].
-pub type Result<T> = std::result::Result<T, I3sError>;
+/// A `Result` alias using [`I3SError`].
+pub type Result<T> = std::result::Result<T, I3SError>;

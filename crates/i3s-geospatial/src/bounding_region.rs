@@ -158,11 +158,19 @@ mod tests {
         let r = GlobeRectangle::from_degrees(-5.0, -5.0, 5.0, 5.0);
         let br = BoundingRegion::new(r, 0.0, 500.0);
         let obb = br.compute_bounding_box(&Ellipsoid::WGS84);
-        let corners = [(r.west, r.south), (r.west, r.north), (r.east, r.south), (r.east, r.north)];
+        let corners = [
+            (r.west, r.south),
+            (r.west, r.north),
+            (r.east, r.south),
+            (r.east, r.north),
+        ];
         for &(lon, lat) in &corners {
             for &h in &[0.0, 500.0] {
                 let p = Ellipsoid::WGS84.cartographic_to_cartesian(Cartographic::new(lon, lat, h));
-                assert!(obb.contains(p), "corner ({lon}, {lat}, {h}) not contained in OBB");
+                assert!(
+                    obb.contains(p),
+                    "corner ({lon}, {lat}, {h}) not contained in OBB"
+                );
             }
         }
     }

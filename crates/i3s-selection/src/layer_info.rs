@@ -8,10 +8,10 @@
 //!
 //! This enum wraps them and provides uniform access to common fields.
 
-use i3s::building::BuildingLayer;
-use i3s::core::{SceneLayerInfo, SceneLayerInfoPsl, SceneLayerType};
-use i3s::pointcloud::PointCloudLayer;
-use i3s::spatial::SpatialReference;
+use i3s::bld::Layer as BuildingLayer;
+use i3s::cmn::{SceneLayerInfo, SceneLayerType, SpatialReference};
+use i3s::pcsl::PointCloudLayer;
+use i3s::psl::SceneLayerInfoPsl;
 
 /// The typed layer document for an I3S scene layer.
 #[derive(Debug, Clone)]

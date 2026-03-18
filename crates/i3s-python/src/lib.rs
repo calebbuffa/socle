@@ -1,6 +1,6 @@
 //! Python bindings for i3s-native.
 
-mod async_support;
+mod r#async;
 mod geometry;
 mod geospatial;
 mod numpy_conv;
@@ -19,7 +19,7 @@ fn _native(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Submodules
     let async_mod = PyModule::new(py, "async_")?;
-    async_support::register(&async_mod)?;
+    r#async::register(&async_mod)?;
     m.add_submodule(&async_mod)?;
 
     let geom = PyModule::new(py, "geometry")?;

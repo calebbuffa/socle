@@ -92,32 +92,6 @@ MODULE_MAP_CMN = {
     "cacheddrawinginfo": "display",
 }
 
-MODULE_MAP_BLD = {
-    "layer": "building",
-    "sublayer": "building",
-    "filter": "building",
-    "filterauthoringinfo": "building",
-    "filterblock": "building",
-    "filterblockauthoringinfo": "building",
-    "filtermode": "building",
-    "filtermodesolid": "building",
-    "filtermodewireframe": "building",
-    "filtertype": "building",
-    "attributestats": "building",
-    "stats": "building",
-}
-
-MODULE_MAP_PSL = {
-    "3dscenelayer": "core",
-    "store": "core",
-    "resources": "core",
-    "geometrybuffer": "geometry",
-    "geometrydefinition": "geometry",
-}
-
-# All pcsl types go to pointcloud module
-MODULE_MAP_PCSL = {}  # default to "pointcloud"
-
 # Explicit Rust name overrides: base_name -> rust_name
 RUST_NAME_OVERRIDES = {
     "3DSceneLayer": "SceneLayerInfo",
@@ -150,15 +124,13 @@ def parse_base_name(filename: str) -> str:
 
 
 def get_module(base_name: str, profile: str) -> str:
-    key = base_name.lower().replace("_", "")
-    if profile == "bld":
-        return MODULE_MAP_BLD.get(key, "building")
-    if profile == "psl":
-        return MODULE_MAP_PSL.get(key, "core")
-    if profile == "pcsl":
-        return MODULE_MAP_PCSL.get(key, "pointcloud")
-    # cmn
-    return MODULE_MAP_CMN.get(key, "core")
+    """Get the module name based on profile. Organize by profile, not by type category."""
+    # All types are organized by their profile:
+    # - cmn profile types go to cmn.rs
+    # - bld profile types go to bld.rs
+    # - psl profile types go to psl.rs
+    # - pcsl profile types go to pcsl.rs
+    return profile
 
 
 def to_pascal_case(name: str) -> str:
@@ -389,25 +361,27 @@ def parse_md_file(filepath: Path) -> dict | None:
     rust_name = RUST_NAME_OVERRIDES.get(base_name, to_pascal_case(base_name))
 
     # Handle name collisions for pcsl types
+    # PCSL profile types are pointcloud-specific, so always prefix with "PointCloud"
+    # to distinguish from cmn versions (if they exist)
     if profile == "pcsl":
-        # Check if this base name also exists as a cmn type
-        if base_name.lower().replace("_", "") in MODULE_MAP_CMN:
-            rust_name = "PointCloud" + rust_name
-        # Also prefix 'layer' which collides with layer.bld (BuildingLayer)
-        elif base_name.lower() == "layer":
-            rust_name = "PointCloud" + rust_name
+        rust_name = "PointCloud" + rust_name
 
     # Handle psl profile name differentiation
+    # PSL and CMN both types with same name will be in different modules (psl vs cmn),
+    # so we add Psl suffix to disambiguate when the type name appears in user code
     if profile == "psl":
-        # For types that exist in both cmn and psl, add Psl suffix
-        if base_name.lower().replace("_", "") in MODULE_MAP_CMN:
+        key = base_name.lower().replace("_", "")
+        if key in MODULE_MAP_CMN:
+            # Same type name exists in cmn profile, add suffix to distinguish
             rust_name = rust_name + "Psl"
 
-    # Handle bld profile for types that share names with cmn
+    # Handle bld profile name differentiation
+    # BLD types with same name as CMN types will be in different modules (bld vs cmn),
+    # so we add Building prefix when the type name would be ambiguous
     if profile == "bld":
-        if base_name.lower() in ("layer",):
-            rust_name = "Building" + rust_name
-        elif base_name.lower() in ("stats",):
+        key = base_name.lower().replace("_", "")
+        if key in MODULE_MAP_CMN:
+            # Same type name exists in cmn profile, add prefix to distinguish
             rust_name = "Building" + rust_name
 
     type_entry = {

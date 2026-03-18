@@ -8,7 +8,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 use flate2::read::GzDecoder;
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 use crate::accessor::AssetAccessor;
 use crate::request::{AssetRequest, AssetResponse, Headers};
@@ -25,7 +25,7 @@ fn gunzip(data: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     decoder
         .read_to_end(&mut out)
-        .map_err(|e| I3sError::InvalidData(format!("gzip decompression failed: {e}")))?;
+        .map_err(|e| I3SError::InvalidData(format!("gzip decompression failed: {e}")))?;
     Ok(out)
 }
 

@@ -7,7 +7,6 @@
 //! - **Binary attribute buffers**: per-field typed arrays (string, int, float)
 
 pub mod attribute;
-pub mod attribute_compression;
 pub mod codec;
 pub mod geometry;
 pub mod json;

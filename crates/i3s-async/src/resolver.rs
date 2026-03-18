@@ -1,6 +1,6 @@
 //! URI resolution for I3S resources.
 
-use crate::resource::TextureRequestFormat;
+use crate::request::TextureRequestFormat;
 
 /// Maps I3S resource concepts to transport-specific URI strings.
 pub trait ResourceUriResolver: Send + Sync {

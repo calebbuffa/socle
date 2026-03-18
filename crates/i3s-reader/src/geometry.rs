@@ -20,7 +20,7 @@
 //! All values are little-endian.
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 use std::io::{Cursor, Read};
 
 /// Decoded geometry from an I3S binary geometry buffer.
@@ -58,7 +58,7 @@ pub struct GeometryLayout {
 
 impl GeometryLayout {
     /// Build a layout from an `i3s::geometry::GeometryBuffer` (v1.7+).
-    pub fn from_geometry_buffer(buf: &i3s::geometry::GeometryBuffer) -> Self {
+    pub fn from_geometry_buffer(buf: &i3s::cmn::GeometryBuffer) -> Self {
         Self {
             offset: buf.offset.unwrap_or(0) as u32,
             has_position: buf.position.is_some(),
@@ -72,9 +72,9 @@ impl GeometryLayout {
                 .feature_id
                 .as_ref()
                 .map(|f| match &f.r#type {
-                    i3s::geometry::GeometryFeatureIDType::Uint64 => 8,
-                    i3s::geometry::GeometryFeatureIDType::Uint32 => 4,
-                    i3s::geometry::GeometryFeatureIDType::Uint16 => 2,
+                    i3s::cmn::GeometryFeatureIDType::Uint64 => 8,
+                    i3s::cmn::GeometryFeatureIDType::Uint32 => 4,
+                    i3s::cmn::GeometryFeatureIDType::Uint16 => 2,
                 })
                 .unwrap_or(8),
             has_face_range: buf.face_range.is_some(),
@@ -86,7 +86,7 @@ impl GeometryLayout {
     /// The default schema uses a fixed attribute order: position, normal,
     /// uv0, color, uvRegion, featureId, faceRange. Presence is determined
     /// by whether the vertex_attributes/feature_attributes declare them.
-    pub fn from_default_schema(schema: &i3s::geometry::DefaultGeometrySchema) -> Self {
+    pub fn from_default_schema(schema: &i3s::cmn::DefaultGeometrySchema) -> Self {
         // In the default schema, the ordering field lists which attributes exist.
         let ordering: Vec<String> = schema.ordering.clone();
         let has = |name: &str| ordering.iter().any(|s| s == name);
@@ -117,8 +117,8 @@ impl GeometryLayout {
 }
 
 /// Returns the byte size of a header attribute type.
-fn header_attr_size(t: &i3s::feature::HeaderAttributeType) -> u32 {
-    use i3s::feature::HeaderAttributeType::*;
+fn header_attr_size(t: &i3s::cmn::HeaderAttributeType) -> u32 {
+    use i3s::cmn::HeaderAttributeType::*;
     match t {
         Uint8 => 1,
         Uint16 | Int16 => 2,
@@ -136,7 +136,7 @@ fn header_attr_size(t: &i3s::feature::HeaderAttributeType) -> u32 {
 ///
 /// # Errors
 ///
-/// Returns [`I3sError::Buffer`] if the buffer is too short for the declared
+/// Returns [`I3SError::Buffer`] if the buffer is too short for the declared
 /// vertex/feature counts, or if any read fails.
 pub fn parse_geometry_buffer(data: &[u8], layout: &GeometryLayout) -> Result<GeometryData> {
     let mut cursor = Cursor::new(data);
@@ -146,16 +146,16 @@ pub fn parse_geometry_buffer(data: &[u8], layout: &GeometryLayout) -> Result<Geo
         let mut skip = vec![0u8; layout.offset as usize];
         cursor
             .read_exact(&mut skip)
-            .map_err(|e| I3sError::Buffer(format!("failed to skip offset: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("failed to skip offset: {e}")))?;
     }
 
     // Read header: vertexCount, featureCount
     let vertex_count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("failed to read vertex count: {e}")))?;
+        .map_err(|e| I3SError::Buffer(format!("failed to read vertex count: {e}")))?;
     let feature_count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("failed to read feature count: {e}")))?;
+        .map_err(|e| I3SError::Buffer(format!("failed to read feature count: {e}")))?;
 
     let mut geo = GeometryData {
         vertex_count,
@@ -251,7 +251,7 @@ fn read_array<T: ReadElement>(
 ) -> Result<Vec<T>> {
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        out.push(T::read_from(cursor).map_err(|e| I3sError::Buffer(format!("{name}: {e}")))?);
+        out.push(T::read_from(cursor).map_err(|e| I3SError::Buffer(format!("{name}: {e}")))?);
     }
     Ok(out)
 }
@@ -263,14 +263,14 @@ fn read_feature_ids(cursor: &mut Cursor<&[u8]>, count: u32, bytes_per_id: u8) ->
             2 => cursor
                 .read_u16::<LittleEndian>()
                 .map(u64::from)
-                .map_err(|e| I3sError::Buffer(format!("featureId: {e}")))?,
+                .map_err(|e| I3SError::Buffer(format!("featureId: {e}")))?,
             4 => cursor
                 .read_u32::<LittleEndian>()
                 .map(u64::from)
-                .map_err(|e| I3sError::Buffer(format!("featureId: {e}")))?,
+                .map_err(|e| I3SError::Buffer(format!("featureId: {e}")))?,
             _ => cursor
                 .read_u64::<LittleEndian>()
-                .map_err(|e| I3sError::Buffer(format!("featureId: {e}")))?,
+                .map_err(|e| I3SError::Buffer(format!("featureId: {e}")))?,
         };
         out.push(id);
     }
@@ -291,7 +291,7 @@ fn read_color_array(
         for c in 0..components.min(4) {
             rgba[c as usize] = cursor
                 .read_u8()
-                .map_err(|e| I3sError::Buffer(format!("{name}: {e}")))?;
+                .map_err(|e| I3SError::Buffer(format!("{name}: {e}")))?;
         }
         out.push(rgba);
     }

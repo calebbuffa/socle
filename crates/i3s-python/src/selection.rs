@@ -27,7 +27,7 @@ use i3s_selection::selection::LodMetric;
 use i3s_selection::update_result::ViewUpdateResult;
 use i3s_selection::view_state::ViewState;
 
-use crate::async_support::PyAsyncSystem;
+use crate::r#async::PyAsyncSystem;
 use crate::geospatial::{PyEllipsoid, PyWkidTransform};
 use crate::numpy_conv;
 use crate::spec::{PyLayerInfo, PySpatialReference};

@@ -137,6 +137,14 @@ ENUM_NAME_OVERRIDES = {
     ("SceneLayerInfoPsl", "layerType"): "SceneLayerType",
     ("SceneLayerInfo", "capabilities"): "SceneLayerCapabilities",
     ("SceneLayerInfoPsl", "capabilities"): "SceneLayerCapabilities",
+    ("Layer", "layerType"): "SceneLayerType",
+    ("Layer", "capabilities"): "SceneLayerCapabilities",
+    ("PointCloudLayer", "layerType"): "SceneLayerType",
+    ("PointCloudLayer", "capabilities"): "SceneLayerCapabilities",
+    ("StorePsl", "resourcePattern"): "StoreResourcePattern",
+    ("StorePsl", "normalReferenceFrame"): "StoreNormalReferenceFrame",
+    ("StorePsl", "lodType"): "StoreLodType",
+    ("StorePsl", "lodModel"): "StoreLodModel",
 }
 
 # Shared enums with their complete variant list (merged from all profiles).
@@ -149,6 +157,16 @@ SHARED_ENUMS = {
         "values": ["View", "Query", "Edit", "Extract"],
         "doc": "Capabilities supported by a scene layer.",
     },
+}
+
+# Shared enums are emitted in one owner module and imported elsewhere.
+SHARED_ENUM_OWNER_MODULE = {
+    "SceneLayerType": "cmn",
+    "SceneLayerCapabilities": "cmn",
+    "StoreResourcePattern": "cmn",
+    "StoreNormalReferenceFrame": "cmn",
+    "StoreLodType": "cmn",
+    "StoreLodModel": "cmn",
 }
 
 
@@ -313,6 +331,9 @@ def generate_struct(
             if override_key in ENUM_NAME_OVERRIDES:
                 # Shared enum — generated at module level, not here
                 rust_type = ENUM_NAME_OVERRIDES[override_key]
+                owner_module = SHARED_ENUM_OWNER_MODULE.get(rust_type)
+                if owner_module and owner_module != current_module:
+                    imports.add((owner_module, rust_type))
             else:
                 prop_pascal = to_pascal_case(prop_name)
                 # Collapse stutter: if struct name ends with a prefix of the
@@ -423,6 +444,9 @@ def generate_module(module_name: str, types: list[dict], module_types: dict) -> 
     # Shared enums first (generated once with merged variants)
     for enum_name in sorted(shared_needed):
         if enum_name in SHARED_ENUMS:
+            owner_module = SHARED_ENUM_OWNER_MODULE.get(enum_name, module_name)
+            if owner_module != module_name:
+                continue
             info = SHARED_ENUMS[enum_name]
             code = generate_enum(enum_name, info["values"], "", "", doc=info["doc"])
             lines.append(code)
@@ -452,12 +476,6 @@ def generate_lib_rs(module_names: list[str], modules_data: dict) -> str:
     for mod_name in sorted(module_names):
         lines.append(f"pub mod {mod_name};")
 
-    lines.append("")
-
-    # Re-export LayerType from core
-    lines.append("// Re-export key types for convenience")
-    lines.append("pub use core::SceneLayerInfo;")
-    lines.append("pub use core::SceneLayerType as LayerType;")
     lines.append("")
 
     return "\n".join(lines)

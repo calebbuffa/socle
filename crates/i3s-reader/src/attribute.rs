@@ -12,7 +12,7 @@
 //! in the geometry buffer (direct array indexing).
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 use std::io::{Cursor, Read};
 
 /// Decoded attribute data for a single field.
@@ -90,7 +90,7 @@ impl AttributeValueType {
 ///
 /// # Errors
 ///
-/// Returns [`I3sError::Buffer`] if the buffer is truncated or malformed.
+/// Returns [`I3SError::Buffer`] if the buffer is truncated or malformed.
 pub fn parse_attribute_buffer(
     data: &[u8],
     value_type: AttributeValueType,
@@ -113,18 +113,18 @@ fn parse_string_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("string attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("string attr count: {e}")))? as usize;
 
     let _total_bytes = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("string attr totalBytes: {e}")))?;
+        .map_err(|e| I3SError::Buffer(format!("string attr totalBytes: {e}")))?;
 
     // Read string byte lengths (including null terminator)
     let mut sizes = Vec::with_capacity(count);
     for _ in 0..count {
         let s = cursor
             .read_u32::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("string attr size: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("string attr size: {e}")))?;
         sizes.push(s as usize);
     }
 
@@ -138,13 +138,13 @@ fn parse_string_attribute(data: &[u8]) -> Result<AttributeData> {
         let mut bytes = vec![0u8; size];
         cursor
             .read_exact(&mut bytes)
-            .map_err(|e| I3sError::Buffer(format!("string attr data[{i}]: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("string attr data[{i}]: {e}")))?;
         // Remove null terminator if present
         if bytes.last() == Some(&0) {
             bytes.pop();
         }
         let s = String::from_utf8(bytes)
-            .map_err(|e| I3sError::Buffer(format!("string attr UTF-8[{i}]: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("string attr UTF-8[{i}]: {e}")))?;
         strings.push(s);
     }
 
@@ -159,18 +159,18 @@ fn parse_f64_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("f64 attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("f64 attr count: {e}")))? as usize;
 
     // 4 bytes padding for 8-byte alignment
     let _padding = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("f64 attr padding: {e}")))?;
+        .map_err(|e| I3SError::Buffer(format!("f64 attr padding: {e}")))?;
 
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         let v = cursor
             .read_f64::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("f64 attr value: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("f64 attr value: {e}")))?;
         values.push(v);
     }
 
@@ -185,13 +185,13 @@ fn parse_f32_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("f32 attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("f32 attr count: {e}")))? as usize;
 
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         let v = cursor
             .read_f32::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("f32 attr value: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("f32 attr value: {e}")))?;
         values.push(v);
     }
 
@@ -206,13 +206,13 @@ fn parse_i32_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("i32 attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("i32 attr count: {e}")))? as usize;
 
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         let v = cursor
             .read_i32::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("i32 attr value: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("i32 attr value: {e}")))?;
         values.push(v);
     }
 
@@ -227,13 +227,13 @@ fn parse_u32_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("u32 attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("u32 attr count: {e}")))? as usize;
 
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         let v = cursor
             .read_u32::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("u32 attr value: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("u32 attr value: {e}")))?;
         values.push(v);
     }
 
@@ -248,13 +248,13 @@ fn parse_u16_attribute(data: &[u8]) -> Result<AttributeData> {
 
     let count = cursor
         .read_u32::<LittleEndian>()
-        .map_err(|e| I3sError::Buffer(format!("u16 attr count: {e}")))? as usize;
+        .map_err(|e| I3SError::Buffer(format!("u16 attr count: {e}")))? as usize;
 
     let mut values = Vec::with_capacity(count);
     for _ in 0..count {
         let v = cursor
             .read_u16::<LittleEndian>()
-            .map_err(|e| I3sError::Buffer(format!("u16 attr value: {e}")))?;
+            .map_err(|e| I3SError::Buffer(format!("u16 attr value: {e}")))?;
         values.push(v);
     }
 

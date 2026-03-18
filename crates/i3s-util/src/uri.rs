@@ -143,6 +143,9 @@ mod tests {
 
     #[test]
     fn dir_of_normal() {
-        assert_eq!(dir_of("https://example.com/a/b/file.json"), "https://example.com/a/b/");
+        assert_eq!(
+            dir_of("https://example.com/a/b/file.json"),
+            "https://example.com/a/b/"
+        );
     }
 }

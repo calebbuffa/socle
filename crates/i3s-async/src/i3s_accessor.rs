@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use flate2::read::GzDecoder;
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 use zip::ZipArchive;
 
 use crate::accessor::AssetAccessor;
@@ -47,7 +47,7 @@ impl I3sAssetAccessor {
             .http_agent
             .get(uri)
             .call()
-            .map_err(|e| I3sError::Network(e.to_string()))?;
+            .map_err(|e| I3SError::Network(e.to_string()))?;
 
         let status_code = response.status();
         let content_type = response
@@ -66,7 +66,7 @@ impl I3sAssetAccessor {
         let data = response
             .into_body()
             .read_to_vec()
-            .map_err(|e| I3sError::Network(e.to_string()))?;
+            .map_err(|e| I3SError::Network(e.to_string()))?;
 
         Ok(AssetRequest {
             method: "GET".into(),
@@ -99,7 +99,7 @@ impl I3sAssetAccessor {
         let archive = self.get_or_open_archive(slpk_path)?;
         let mut guard = archive
             .lock()
-            .map_err(|_| I3sError::InvalidData("SLPK archive lock poisoned".into()))?;
+            .map_err(|_| I3SError::InvalidData("SLPK archive lock poisoned".into()))?;
 
         let gz_name = format!("{entry_path}.gz");
         let gz_found = guard.by_name(&gz_name).is_ok();
@@ -108,12 +108,12 @@ impl I3sAssetAccessor {
         match guard.by_name(name) {
             Ok(mut entry) => {
                 let mut raw = Vec::new();
-                entry.read_to_end(&mut raw).map_err(I3sError::Io)?;
+                entry.read_to_end(&mut raw).map_err(I3SError::Io)?;
 
                 let data = if entry.name().ends_with(".gz") {
                     let mut dec = GzDecoder::new(&raw[..]);
                     let mut out = Vec::new();
-                    dec.read_to_end(&mut out).map_err(I3sError::Io)?;
+                    dec.read_to_end(&mut out).map_err(I3SError::Io)?;
                     out
                 } else {
                     raw
@@ -151,7 +151,7 @@ impl I3sAssetAccessor {
             let cache = self
                 .slpk_cache
                 .lock()
-                .map_err(|_| I3sError::InvalidData("SLPK cache lock poisoned".into()))?;
+                .map_err(|_| I3SError::InvalidData("SLPK cache lock poisoned".into()))?;
             if let Some(arc) = cache.get(&key) {
                 return Ok(Arc::clone(arc));
             }
@@ -161,7 +161,7 @@ impl I3sAssetAccessor {
         let mut cache = self
             .slpk_cache
             .lock()
-            .map_err(|_| I3sError::InvalidData("SLPK cache lock poisoned".into()))?;
+            .map_err(|_| I3SError::InvalidData("SLPK cache lock poisoned".into()))?;
         let arc = Arc::new(Mutex::new(archive));
         cache.insert(key, Arc::clone(&arc));
         Ok(arc)
@@ -207,9 +207,9 @@ impl AssetAccessor for I3sAssetAccessor {
 }
 
 fn open_slpk(path: &Path) -> Result<ZipArchive<BufReader<File>>> {
-    let file = File::open(path).map_err(I3sError::Io)?;
+    let file = File::open(path).map_err(I3SError::Io)?;
     ZipArchive::new(BufReader::new(file))
-        .map_err(|e| I3sError::InvalidData(format!("failed to read SLPK ZIP: {e}")))
+        .map_err(|e| I3SError::InvalidData(format!("failed to read SLPK ZIP: {e}")))
 }
 
 fn guess_content_type(uri: &str) -> String {

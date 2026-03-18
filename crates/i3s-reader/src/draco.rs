@@ -8,7 +8,7 @@
 
 use draco_core::{DecoderBuffer, GeometryAttributeType, MeshDecoder, PointIndex};
 
-use i3s_util::{I3sError, Result};
+use i3s_util::{I3SError, Result};
 
 use crate::codec::GeometryDecoder;
 use crate::geometry::{GeometryData, GeometryLayout};
@@ -29,7 +29,7 @@ impl GeometryDecoder for DracoGeometryDecoder {
 ///
 /// # Errors
 ///
-/// Returns [`I3sError::Draco`] if the Draco decoder fails.
+/// Returns [`I3SError::Draco`] if the Draco decoder fails.
 pub fn decode_draco_geometry(
     data: &[u8],
     scale_x: Option<f64>,
@@ -41,7 +41,7 @@ pub fn decode_draco_geometry(
 
     decoder
         .decode(&mut buffer, &mut mesh)
-        .map_err(|e| I3sError::Draco(format!("{e}")))?;
+        .map_err(|e| I3SError::Draco(format!("{e}")))?;
 
     let num_points = mesh.num_points() as u32;
 

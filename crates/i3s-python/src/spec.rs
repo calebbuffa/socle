@@ -10,16 +10,14 @@ use pyo3::types::PyDict;
 use pythonize::pythonize;
 use serde::Serialize;
 
-use i3s::building::BuildingLayer;
-use i3s::core::{
-    SceneLayerCapabilities, SceneLayerInfo, SceneLayerInfoPsl, SceneLayerType, Store, StorePsl,
+use i3s::bld::Layer as BuildingLayer;
+use i3s::cmn::{
+    AttributeStorageInfo, ElevationInfo, Field, FieldType, FullExtent, GeometryDefinition,
+    HeightModelInfo, LodSelection, LodSelectionMetricType, MaterialDefinitions, NodePageDefinition,
+    Obb, SceneLayerCapabilities, SceneLayerInfo, SpatialReference, Store, TextureSetDefinition,
 };
-use i3s::feature::{AttributeStorageInfo, Field, FieldType};
-use i3s::geometry::GeometryDefinition;
-use i3s::material::{MaterialDefinitions, TextureSetDefinition};
-use i3s::node::{LodSelection, LodSelectionMetricType, NodePageDefinition};
-use i3s::pointcloud::PointCloudLayer;
-use i3s::spatial::{ElevationInfo, FullExtent, HeightModelInfo, Obb, SpatialReference};
+use i3s::pcsl::PointCloudLayer;
+use i3s::psl::{SceneLayerInfoPsl, StorePsl};
 use i3s_selection::layer_info::LayerInfo;
 
 fn to_dict_via_serde<T: Serialize>(py: Python<'_>, value: &T) -> PyResult<Py<PyDict>> {
@@ -79,9 +77,9 @@ impl From<SceneLayerType> for PySceneLayerType {
     fn from(t: SceneLayerType) -> Self {
         match t {
             SceneLayerType::ThreeDObject => Self::ThreeDObject,
-            SceneLayerType::Integratedmesh => Self::IntegratedMesh,
+            SceneLayerType::IntegratedMesh => Self::IntegratedMesh,
             SceneLayerType::Point => Self::Point,
-            SceneLayerType::Pointcloud => Self::PointCloud,
+            SceneLayerType::PointCloud => Self::PointCloud,
             SceneLayerType::Building => Self::Building,
         }
     }

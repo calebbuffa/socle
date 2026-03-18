@@ -1,31 +1,33 @@
 //! Auto-generated from i3s-spec. Do not edit manually.
 //!
-//! Module: pointcloud
+//! Module: pcsl
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::ServiceUpdateTimeStamp;
-use crate::feature::Field;
-use crate::spatial::HeightModelInfo;
-use crate::spatial::Obb;
-use crate::spatial::SpatialReference;
+use crate::cmn::Field;
+use crate::cmn::HeightModelInfo;
+use crate::cmn::Obb;
+use crate::cmn::SceneLayerCapabilities;
+use crate::cmn::SceneLayerType;
+use crate::cmn::ServiceUpdateTimeStamp;
+use crate::cmn::SpatialReference;
 
-/// Possible values for `AttributeInfo::ordering`.
+/// Possible values for `PointCloudAttributeInfo::ordering`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AttributeInfoOrdering {
+pub enum PointCloudAttributeInfoOrdering {
     #[serde(rename = "attributeValues")]
     Attributevalues,
 }
 
-impl Default for AttributeInfoOrdering {
+impl Default for PointCloudAttributeInfoOrdering {
     fn default() -> Self {
         Self::Attributevalues
     }
 }
 
-/// Possible values for `AttributeInfo::encoding`.
+/// Possible values for `PointCloudAttributeInfo::encoding`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AttributeInfoEncoding {
+pub enum PointCloudAttributeInfoEncoding {
     #[serde(rename = "embedded-elevation")]
     EmbeddedElevation,
     #[serde(rename = "lepcc-intensity")]
@@ -34,7 +36,7 @@ pub enum AttributeInfoEncoding {
     LepccRgb,
 }
 
-impl Default for AttributeInfoEncoding {
+impl Default for PointCloudAttributeInfoEncoding {
     fn default() -> Self {
         Self::EmbeddedElevation
     }
@@ -92,56 +94,29 @@ impl Default for PointCloudDefaultGeometrySchemaOrdering {
     }
 }
 
-/// Possible values for `Index::boundingVolumeType`.
+/// Possible values for `PointCloudIndex::boundingVolumeType`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum IndexBoundingVolumeType {
+pub enum PointCloudIndexBoundingVolumeType {
     #[serde(rename = "obb")]
     Obb,
 }
 
-impl Default for IndexBoundingVolumeType {
+impl Default for PointCloudIndexBoundingVolumeType {
     fn default() -> Self {
         Self::Obb
     }
 }
 
-/// Possible values for `Index::lodSelectionMetricType`.
+/// Possible values for `PointCloudIndex::lodSelectionMetricType`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum IndexLodSelectionMetricType {
+pub enum PointCloudIndexLodSelectionMetricType {
     #[serde(rename = "density-threshold")]
     DensityThreshold,
 }
 
-impl Default for IndexLodSelectionMetricType {
+impl Default for PointCloudIndexLodSelectionMetricType {
     fn default() -> Self {
         Self::DensityThreshold
-    }
-}
-
-/// Possible values for `PointCloudLayer::layerType`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PointCloudLayerType {
-    #[serde(rename = "PointCloud")]
-    Pointcloud,
-}
-
-impl Default for PointCloudLayerType {
-    fn default() -> Self {
-        Self::Pointcloud
-    }
-}
-
-/// Possible values for `PointCloudLayer::capabilities`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PointCloudLayerCapabilities {
-    View,
-    Query,
-    Extract,
-}
-
-impl Default for PointCloudLayerCapabilities {
-    fn default() -> Self {
-        Self::View
     }
 }
 
@@ -184,17 +159,17 @@ impl Default for PointCloudValueType {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct AttributeInfo {
+pub struct PointCloudAttributeInfo {
     /// Represents the attribute key. Key is the same as `id' used in the resource URL to fetch the binary buffers.
     pub key: String,
     /// The attribute name. Must be unique for this layer.
     pub name: String,
     /// Mapping between attribute to point. Only 1-to-1 is currently supported.Possible values for each array string:`attributeValues`
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ordering: Option<AttributeInfoOrdering>,
+    pub ordering: Option<PointCloudAttributeInfoOrdering>,
     /// Encoding (i.e. compression) for the attribute binary buffer if different from GZIP or no-compression.Possible values are:`embedded-elevation`: No binary buffer but stats for this pseudo attribute will...
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<AttributeInfoEncoding>,
+    pub encoding: Option<PointCloudAttributeInfoEncoding>,
     /// Represents the description for value encoding, for example scalar or vector encoding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribute_values: Option<PointCloudValue>,
@@ -223,7 +198,7 @@ pub struct AttributeInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Bitfieldlabel {
+pub struct PointCloudBitfieldlabel {
     /// Bit number (0 is LSB)
     pub bit_number: i64,
     /// Label string
@@ -248,7 +223,7 @@ pub struct PointCloudDefaultGeometrySchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordering: Option<PointCloudDefaultGeometrySchemaOrdering>,
     /// The vertex buffer description.
-    pub vertex_attributes: VertexAttributes,
+    pub vertex_attributes: PointCloudVertexAttributes,
 }
 
 /// The drawingInfo object contains drawing information for a point cloud scene layer.
@@ -295,17 +270,17 @@ pub struct PointCloudHistogram {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Index {
+pub struct PointCloudIndex {
     /// The version of the individual nodes format.
     pub node_version: i64,
     /// The page size describes the number of nodes per paged index document. 64 is currently expected.
     pub nodes_per_page: i64,
     /// The bounding volume type. Only OBB is currently supported.Must be:`obb`: Oriented bounding box
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bounding_volume_type: Option<IndexBoundingVolumeType>,
+    pub bounding_volume_type: Option<PointCloudIndexBoundingVolumeType>,
     /// Defines how `node.lodThreshold` should be interpretedMust be:`density-threshold`: nodes[i].lodThreshold will represent an 'effective' 2D area for the node. This estimation works best when the point cl...
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lod_selection_metric_type: Option<IndexLodSelectionMetricType>,
+    pub lod_selection_metric_type: Option<PointCloudIndexLodSelectionMetricType>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub href: Option<String>,
 }
@@ -314,7 +289,7 @@ pub struct Index {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Label {
+pub struct PointCloudLabel {
     /// Value
     pub value: f64,
     /// Label string
@@ -325,13 +300,13 @@ pub struct Label {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Labels {
+pub struct PointCloudLabels {
     /// Array of string label/value pairs. Used when attribute represents a set of values. For example, ClassCode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub labels: Option<Vec<Label>>,
+    pub labels: Option<Vec<PointCloudLabel>>,
     /// Array of string label/bitNumber pairs. This is useful when the attribute represent a bitfield. For example, FLAGS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bitfield_labels: Option<Vec<Bitfieldlabel>>,
+    pub bitfield_labels: Option<Vec<PointCloudBitfieldlabel>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -341,7 +316,7 @@ pub struct PointCloudLayer {
     /// A unique identifying number for the layer. For point cloud scene layer, only a single layer is supported, therefore, id is always 0.
     pub id: i64,
     /// String indicating the layer typeMust be:`PointCloud`
-    pub layer_type: PointCloudLayerType,
+    pub layer_type: SceneLayerType,
     /// Represents the layer name.
     pub name: String,
     /// Represents the alias layer name.
@@ -355,7 +330,7 @@ pub struct PointCloudLayer {
     pub copyright_text: Option<String>,
     /// Capabilities supported by this layer.Possible values for each array string:`View`: View is supported.`Query`: Query is supported.`Extract`: Extract is defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<PointCloudLayerCapabilities>,
+    pub capabilities: Option<SceneLayerCapabilities>,
     /// An object containing the WKID or WKT identifying the spatial reference of the layer's geometry.
     pub spatial_reference: SpatialReference,
     /// An object containing the vertical coordinate system information.
@@ -367,7 +342,7 @@ pub struct PointCloudLayer {
     /// The storage for the layer.
     pub store: PointCloudStore,
     /// List of attributes included for this layer.
-    pub attribute_storage_info: Vec<AttributeInfo>,
+    pub attribute_storage_info: Vec<PointCloudAttributeInfo>,
     /// An object containing drawing information.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drawing_info: Option<PointCloudDrawingInfo>,
@@ -422,7 +397,7 @@ pub struct PointCloudNodePageDefinition {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Statistics {
+pub struct PointCloudStatistics {
     /// Attribute name. Must match the name specified for this attribute in `layer.attributeStorageInfo`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribute: Option<String>,
@@ -431,7 +406,7 @@ pub struct Statistics {
     pub stats: Option<PointCloudStats>,
     /// The statistics document may contain labeling information for the attribute values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub labels: Option<Labels>,
+    pub labels: Option<PointCloudLabels>,
 }
 
 /// Contains statistics about each attribute. Statistics are useful to estimate attribute
@@ -481,7 +456,7 @@ pub struct PointCloudStore {
     /// 2D extent of the point cloud scene layer in the layers spatial reference units.
     pub extent: [f64; 4],
     /// Describes the index (i.e. bounding volume tree) of the layer.
-    pub index: Index,
+    pub index: PointCloudIndex,
     /// Attribute description as field.
     pub default_geometry_schema: PointCloudDefaultGeometrySchema,
     /// MIME type for the encoding used for the Geometry Resources. For example: application/octet-stream; version=1.6.
@@ -518,7 +493,7 @@ pub struct PointCloudValuecount {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct VertexAttributes {
+pub struct PointCloudVertexAttributes {
     /// Only LEPCC compressed (X,Y,Z) is supported. Decompressed data will be absolute `Float64` position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<PointCloudValue>,
@@ -530,4 +505,5 @@ pub struct VertexAttributes {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct SlpkHashtable {}
+pub struct PointCloudSlpkHashtable {
+}

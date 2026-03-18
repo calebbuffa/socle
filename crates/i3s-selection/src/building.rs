@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use i3s::building::{BuildingLayer, Sublayer, SublayerLayerType};
+use i3s::bld::{Layer as BuildingLayer, Sublayer, SublayerLayerType};
 
 use i3s_async::{AssetAccessor, ResourceUriResolver};
 use i3s_geospatial::crs::CrsTransform;
@@ -197,11 +197,11 @@ impl<A: AssetAccessor + 'static> BuildingSceneLayer<A> {
             .iter()
             .position(|e| e.sublayer_id == sublayer_id)
             .ok_or_else(|| {
-                i3s_util::I3sError::InvalidData(format!("sublayer {sublayer_id} not found"))
+                i3s_util::I3SError::InvalidData(format!("sublayer {sublayer_id} not found"))
             })?;
 
         if self.sublayer_entries[idx].is_group {
-            return Err(i3s_util::I3sError::InvalidData(
+            return Err(i3s_util::I3SError::InvalidData(
                 "cannot open a group sublayer".into(),
             ));
         }

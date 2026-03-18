@@ -50,15 +50,9 @@ pub fn equals_epsilon(a: f64, b: f64, relative_epsilon: f64) -> bool {
 
 /// Returns `true` if `|a - b| <= absoluteEpsilon` or the relative tolerance holds.
 #[inline]
-pub fn equals_epsilon_abs(
-    a: f64,
-    b: f64,
-    relative_epsilon: f64,
-    absolute_epsilon: f64,
-) -> bool {
+pub fn equals_epsilon_abs(a: f64, b: f64, relative_epsilon: f64, absolute_epsilon: f64) -> bool {
     let diff = (a - b).abs();
-    diff <= absolute_epsilon
-        || diff <= relative_epsilon * a.abs().max(b.abs())
+    diff <= absolute_epsilon || diff <= relative_epsilon * a.abs().max(b.abs())
 }
 
 /// Returns 1.0 if `value >= 0.0`, otherwise -1.0.
@@ -136,7 +130,11 @@ mod tests {
         let v = 0.75_f64;
         let snorm = to_snorm(v, 255.0);
         let back = from_snorm(snorm, 255.0);
-        assert!((back - v).abs() < 1.0 / 255.0, "roundtrip error too large: {}", (back - v).abs());
+        assert!(
+            (back - v).abs() < 1.0 / 255.0,
+            "roundtrip error too large: {}",
+            (back - v).abs()
+        );
     }
 
     #[test]
