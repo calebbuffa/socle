@@ -30,7 +30,7 @@ signal-and-slot model that integrates with any threading backend.
 
 ```rust
 use std::sync::Arc;
-use orkester::{AsyncSystem, ThreadPoolTaskProcessor};
+use orkester::{AsyncSystem, Context, ThreadPoolTaskProcessor};
 
 // Create a system with a 4-thread pool
 let system = AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(4)));
@@ -41,14 +41,14 @@ promise.resolve(42);
 assert_eq!(future.wait().unwrap(), 42);
 
 // Run work on a background thread
-let result = system.run_in_worker_thread(|| 5);
+let result = system.run(Context::Worker, || 5);
 assert_eq!(result.wait().unwrap(), 5);
 
 // Continuation chains — closures can return values or Future<T>
 let chained = system
     .create_resolved_future(3)
-    .then_in_worker_thread(|v| v + 1)
-    .then_in_worker_thread({
+    .then(Context::Worker, |v| v + 1)
+    .then(Context::Worker, {
         let system = system.clone();
         move |v| system.create_resolved_future(v * 2)
     });
@@ -57,13 +57,15 @@ assert_eq!(chained.wait().unwrap(), 8);
 
 ## Scheduling Contexts
 
-orkester provides three scheduling contexts:
+orkester provides scheduling via the `Context` enum:
 
-| Context | Scheduled via | Runs on |
-|---------|--------------|---------|
-| Worker | `run_in_worker_thread` / `then_in_worker_thread` | `TaskProcessor` thread |
-| Main | `run_in_main_thread` / `then_in_main_thread` | Main thread (pumped or inline) |
-| Pool | `run_in_thread_pool` / `then_in_thread_pool` | Dedicated `ThreadPool` |
+| Context | Description |
+|---------|-------------|
+| `Context::Worker` | Runs on `TaskProcessor` thread |
+| `Context::Main` | Runs on main thread (pumped or inline) |
+| `Context::Immediate` | Runs inline on the completing thread |
+
+For dedicated thread pools, use `run_in_pool` / `then_in_pool`.
 
 Main-thread work is either executed inline (inside `enter_main_thread` scope) or queued
 for explicit pumping via `dispatch_main_thread_tasks()`.
@@ -82,9 +84,8 @@ AsyncSystem::create_future<T, F>(&self, f: F) -> Future<T>
 AsyncSystem::create_resolved_future<T>(&self, value: T) -> Future<T>
 
 // Schedule work
-AsyncSystem::run_in_worker_thread<T, F>(&self, f: F) -> Future<T>
-AsyncSystem::run_in_main_thread<T, F>(&self, f: F) -> Future<T>
-AsyncSystem::run_in_thread_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Future<T>
+AsyncSystem::run<T, F>(&self, context: Context, f: F) -> Future<T>
+AsyncSystem::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Future<T>
 
 // Main-thread dispatch
 AsyncSystem::dispatch_main_thread_tasks(&self) -> usize
@@ -114,13 +115,12 @@ Future::wait(self) -> Result<T, AsyncError>
 Future::wait_in_main_thread(self) -> Result<T, AsyncError>
 
 // Continuations — closures may return T or Future<T> (auto-flattened)
-Future::then_in_worker_thread<U, F>(self, f: F) -> Future<U>
-Future::then_in_main_thread<U, F>(self, f: F) -> Future<U>
-Future::then_in_thread_pool<U, F>(self, pool: &ThreadPool, f: F) -> Future<U>
+Future::then<U, F>(self, context: Context, f: F) -> Future<U>
+Future::then_in_pool<U, F>(self, pool: &ThreadPool, f: F) -> Future<U>
 Future::then_immediately<U, F>(self, f: F) -> Future<U>
 
 // Error recovery
-Future::catch_in_main_thread<F>(self, f: F) -> Future<T>
+Future::catch<F>(self, context: Context, f: F) -> Future<T>
 Future::catch_immediately<F>(self, f: F) -> Future<T>
 
 // Convert to multi-consumer (requires T: Clone)
@@ -163,13 +163,13 @@ Built-in implementations:
 
 ```rust
 // Outside enter_main_thread: main-thread work is queued
-let main_result = system.run_in_main_thread(|| 7);
+let main_result = system.run(Context::Main, || 7);
 system.dispatch_main_thread_tasks();
 assert_eq!(main_result.wait().unwrap(), 7);
 
 // Inside enter_main_thread: main-thread work runs inline
 let _scope = system.enter_main_thread();
-let immediate = system.run_in_main_thread(|| 9);
+let immediate = system.run(Context::Main, || 9);
 assert!(immediate.is_ready());
 ```
 
@@ -178,7 +178,7 @@ assert!(immediate.is_ready());
 ```rust
 let recovered = system
     .create_future(|promise| promise.reject("boom"))
-    .catch_in_main_thread(|_err| 99);
+    .catch(Context::Main, |_err| 99);
 assert_eq!(recovered.wait_in_main_thread().unwrap(), 99);
 ```
 
@@ -186,8 +186,8 @@ assert_eq!(recovered.wait_in_main_thread().unwrap(), 99);
 
 ```rust
 let shared = system.create_resolved_future(10).share();
-let a = shared.then_in_worker_thread(|v| v + 1);
-let b = shared.then_in_worker_thread(|v| v * 3);
+let a = shared.then(Context::Worker, |v| v + 1);
+let b = shared.then(Context::Worker, |v| v * 3);
 assert_eq!(a.wait().unwrap(), 11);
 assert_eq!(b.wait().unwrap(), 30);
 ```
