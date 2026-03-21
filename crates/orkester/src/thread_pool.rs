@@ -18,7 +18,7 @@ struct PoolImpl {
     _workers: Vec<thread::JoinHandle<()>>,
 }
 
-/// Explicit thread-pool handle used by `run_in_thread_pool` and `then_in_thread_pool`.
+/// Explicit thread-pool handle used by `run_in_pool` and `then_in_pool`.
 #[derive(Clone)]
 pub struct ThreadPool {
     inner: Arc<PoolImpl>,

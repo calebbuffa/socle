@@ -184,6 +184,7 @@ impl AsyncSystem {
         future
     }
 
+    #[deprecated(since = "0.2.0", note = "use `run(Context::Worker, f)` instead")]
     pub fn run_in_worker_thread<T, F, R>(&self, f: F) -> Future<T>
     where
         T: Send + 'static,
@@ -193,6 +194,7 @@ impl AsyncSystem {
         self.run(Context::Worker, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `run(Context::Main, f)` instead")]
     pub fn run_in_main_thread<T, F, R>(&self, f: F) -> Future<T>
     where
         T: Send + 'static,
@@ -202,6 +204,7 @@ impl AsyncSystem {
         self.run(Context::Main, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `run_in_pool(pool, f)` instead")]
     pub fn run_in_thread_pool<T, F, R>(&self, thread_pool: &ThreadPool, f: F) -> Future<T>
     where
         T: Send + 'static,

@@ -22,7 +22,7 @@ mod thread_pool;
 
 pub use cancellation::CancellationToken;
 pub use channel::{Receiver, SendError, Sender, TrySendError};
-pub use combinators::{delay, race, retry, timeout};
+pub use combinators::{delay, race, retry, timeout, RetryConfig};
 pub use context::Context;
 pub use error::{AsyncError, ErrorCode};
 #[doc(hidden)]

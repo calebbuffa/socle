@@ -180,7 +180,7 @@ fn retry_succeeds_on_first_attempt() {
     let c = counter.clone();
     let sys2 = sys.clone();
 
-    let result = retry(&sys, 3, move || {
+    let result = retry(&sys, 3, Default::default(), move || {
         c.fetch_add(1, Ordering::SeqCst);
         sys2.create_resolved_future(Ok(42i32))
     })
@@ -199,7 +199,7 @@ fn retry_fails_after_max_attempts() {
     let c = counter.clone();
     let sys2 = sys.clone();
 
-    let result: Result<i32, _> = retry(&sys, 3, move || {
+    let result: Result<i32, _> = retry(&sys, 3, Default::default(), move || {
         c.fetch_add(1, Ordering::SeqCst);
         let (p, f) = sys2.create_promise();
         p.resolve(Err::<i32, _>(orkester::AsyncError::msg("nope")));
@@ -219,7 +219,7 @@ fn join_set_collects_all_results() {
     let mut js = sys.join_set::<i32>();
 
     for i in 0..5 {
-        let f = sys.run_in_worker_thread(move || i * 10);
+        let f = sys.run(orkester::Context::Worker, move || i * 10);
         js.push(f);
     }
 

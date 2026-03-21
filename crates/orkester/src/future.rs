@@ -189,6 +189,7 @@ impl<T: Send + 'static> Future<T> {
         next_future
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then(Context::Worker, f)` instead")]
     pub fn then_in_worker_thread<U, F, R>(self, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -198,6 +199,7 @@ impl<T: Send + 'static> Future<T> {
         self.then(Context::Worker, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then(Context::Main, f)` instead")]
     pub fn then_in_main_thread<U, F, R>(self, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -207,6 +209,7 @@ impl<T: Send + 'static> Future<T> {
         self.then(Context::Main, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then_in_pool(pool, f)` instead")]
     pub fn then_in_thread_pool<U, F, R>(self, thread_pool: &ThreadPool, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -274,6 +277,7 @@ impl<T: Send + 'static> Future<T> {
         next_future
     }
 
+    #[deprecated(since = "0.2.0", note = "use `catch(Context::Main, f)` instead")]
     pub fn catch_in_main_thread<F>(self, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
@@ -470,6 +474,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         next_future
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then(Context::Worker, f)` instead")]
     pub fn then_in_worker_thread<U, F, R>(&self, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -479,6 +484,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         self.then(Context::Worker, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then(Context::Main, f)` instead")]
     pub fn then_in_main_thread<U, F, R>(&self, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -488,6 +494,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         self.then(Context::Main, f)
     }
 
+    #[deprecated(since = "0.2.0", note = "use `then_in_pool(pool, f)` instead")]
     pub fn then_in_thread_pool<U, F, R>(&self, thread_pool: &ThreadPool, f: F) -> Future<U>
     where
         U: Send + 'static,
@@ -550,6 +557,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         next_future
     }
 
+    #[deprecated(since = "0.2.0", note = "use `catch(Context::Main, f)` instead")]
     pub fn catch_in_main_thread<F>(&self, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,

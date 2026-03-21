@@ -42,10 +42,10 @@ fn run_cross_context_roundtrip_stress(system: &AsyncSystem, iterations: usize, m
         };
 
         let chain = base
-            .then_in_worker_thread(|v| v + 2)
-            .then_in_main_thread(|v| v * 2)
-            .catch_in_main_thread(|_| -5)
-            .then_in_worker_thread(|v| v - 1);
+            .then(orkester::Context::Worker, |v| v + 2)
+            .then(orkester::Context::Main, |v| v * 2)
+            .catch(orkester::Context::Main, |_| -5)
+            .then(orkester::Context::Worker, |v| v - 1);
 
         let observed = chain.wait_in_main_thread().unwrap();
         let expected = if should_fail {
@@ -95,7 +95,7 @@ fn create_promise_pair_resolves() {
 fn run_in_main_thread_is_inline_inside_scope() {
     let system = AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(1)));
     let _scope = system.enter_main_thread();
-    let future = system.run_in_main_thread(|| 7_i32);
+    let future = system.run(orkester::Context::Main, || 7_i32);
     assert!(future.is_ready());
     assert_eq!(future.wait().unwrap(), 7);
 }
@@ -103,7 +103,7 @@ fn run_in_main_thread_is_inline_inside_scope() {
 #[test]
 fn wait_in_main_thread_pumps_queue() {
     let system = AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(1)));
-    let future = system.run_in_main_thread(|| 9_i32);
+    let future = system.run(orkester::Context::Main, || 9_i32);
     assert_eq!(future.wait_in_main_thread().unwrap(), 9);
 }
 
@@ -111,7 +111,7 @@ fn wait_in_main_thread_pumps_queue() {
 fn shared_future_then_chain() {
     let system = AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(1)));
     let shared = system.create_resolved_future(10_i32).share();
-    let doubled = shared.then_in_worker_thread(|value| value * 2);
+    let doubled = shared.then(orkester::Context::Worker, |value| value * 2);
 
     assert_eq!(doubled.wait().unwrap(), 20);
     assert_eq!(shared.wait().unwrap(), 10);
@@ -136,7 +136,7 @@ fn run_in_worker_thread_flattens_future_result() {
     let system_clone = system.clone();
 
     let flattened: orkester::Future<i32> =
-        system.run_in_worker_thread(move || system_clone.create_resolved_future(21_i32));
+        system.run(orkester::Context::Worker, move || system_clone.create_resolved_future(21_i32));
     assert_eq!(flattened.wait().unwrap(), 21);
 }
 
@@ -147,7 +147,7 @@ fn then_in_worker_thread_flattens_future_result() {
 
     let flattened: orkester::Future<i32> = system
         .create_resolved_future(5_i32)
-        .then_in_worker_thread(move |value| system_clone.run_in_worker_thread(move || value * 3));
+        .then(orkester::Context::Worker, move |value| system_clone.run(orkester::Context::Worker, move || value * 3));
 
     assert_eq!(flattened.wait().unwrap(), 15);
 }
@@ -159,7 +159,7 @@ fn run_in_main_thread_flattens_future_result() {
     let system_clone = system.clone();
 
     let flattened: orkester::Future<i32> =
-        system.run_in_main_thread(move || system_clone.create_resolved_future(33_i32));
+        system.run(orkester::Context::Main, move || system_clone.create_resolved_future(33_i32));
     assert!(flattened.is_ready());
     assert_eq!(flattened.wait().unwrap(), 33);
 }
@@ -171,7 +171,7 @@ fn then_in_worker_thread_flattens_rejected_future_result() {
 
     let flattened: orkester::Future<i32> = system
         .create_resolved_future(1_i32)
-        .then_in_worker_thread(move |_| {
+        .then(orkester::Context::Worker, move |_| {
             system_clone.create_future(|promise| promise.reject("boom"))
         });
 
@@ -280,7 +280,7 @@ fn shared_future_continuations_before_and_after_resolution_run_once() {
     let mut before = Vec::with_capacity(BEFORE);
     for _ in 0..BEFORE {
         let callback_count_clone = Arc::clone(&callback_count);
-        before.push(shared.then_in_worker_thread(move |value| {
+        before.push(shared.then(orkester::Context::Worker, move |value| {
             callback_count_clone.fetch_add(1, Ordering::SeqCst);
             value
         }));
@@ -295,7 +295,7 @@ fn shared_future_continuations_before_and_after_resolution_run_once() {
     let mut after = Vec::with_capacity(AFTER);
     for _ in 0..AFTER {
         let callback_count_clone = Arc::clone(&callback_count);
-        after.push(shared.then_in_worker_thread(move |value| {
+        after.push(shared.then(orkester::Context::Worker, move |value| {
             callback_count_clone.fetch_add(1, Ordering::SeqCst);
             value
         }));
@@ -314,7 +314,7 @@ fn wait_in_main_thread_handles_large_queue_backlog() {
     let mut futures = Vec::new();
 
     for value in 0_i32..128_i32 {
-        futures.push(system.run_in_main_thread(move || value));
+        futures.push(system.run(orkester::Context::Main, move || value));
     }
 
     let last = futures.pop().unwrap();
@@ -333,7 +333,7 @@ fn long_worker_then_chain_preserves_value_ordering() {
     let mut current = system.create_resolved_future(0_usize);
 
     for _ in 0..STEPS {
-        current = current.then_in_worker_thread(|value| value + 1);
+        current = current.then(orkester::Context::Worker, |value| value + 1);
     }
 
     assert_eq!(current.wait().unwrap(), STEPS);
@@ -347,14 +347,14 @@ fn worker_to_main_to_worker_chain_completes_with_main_pump() {
     let ran_on_main_clone = Arc::clone(&ran_on_main);
 
     let chained = system
-        .run_in_worker_thread(|| 3_i32)
-        .then_in_main_thread(move |value| {
+        .run(orkester::Context::Worker, || 3_i32)
+        .then(orkester::Context::Main, move |value| {
             if std::thread::current().id() == caller_thread {
                 ran_on_main_clone.fetch_add(1, Ordering::SeqCst);
             }
             value + 1
         })
-        .then_in_worker_thread(|value| value * 2);
+        .then(orkester::Context::Worker, |value| value * 2);
 
     assert_eq!(chained.wait_in_main_thread().unwrap(), 8);
     assert_eq!(ran_on_main.load(Ordering::SeqCst), 1);
@@ -368,18 +368,18 @@ fn rejected_chain_skips_then_and_recovers_in_main_thread() {
     let catch_on_main = Arc::new(AtomicUsize::new(0));
     let system_clone = system.clone();
 
-    let failed: orkester::Future<i32> = system.run_in_worker_thread(move || {
+    let failed: orkester::Future<i32> = system.run(orkester::Context::Worker, move || {
         system_clone.create_future(|promise| promise.reject("worker failure"))
     });
 
     let then_called_clone = Arc::clone(&then_called);
     let catch_on_main_clone = Arc::clone(&catch_on_main);
     let recovered = failed
-        .then_in_main_thread(move |value| {
+        .then(orkester::Context::Main, move |value| {
             then_called_clone.fetch_add(1, Ordering::SeqCst);
             value + 1
         })
-        .catch_in_main_thread(move |error| {
+        .catch(orkester::Context::Main, move |error| {
             assert_eq!(error.to_string(), "worker failure");
             if std::thread::current().id() == caller_thread {
                 catch_on_main_clone.fetch_add(1, Ordering::SeqCst);
@@ -404,7 +404,7 @@ fn randomized_repeated_flatten_and_recovery_stress() {
         let value = ((sample >> 8) % 1000) as i32;
         let system_clone = system.clone();
 
-        let outcome: orkester::Future<i32> = system.run_in_worker_thread(move || {
+        let outcome: orkester::Future<i32> = system.run(orkester::Context::Worker, move || {
             if should_fail {
                 system_clone.create_future(|promise| promise.reject("random failure"))
             } else {
@@ -476,7 +476,7 @@ fn catch_in_main_thread_is_not_called_on_success() {
 
     let passthrough = system
         .create_resolved_future(5_i32)
-        .catch_in_main_thread(move |_| {
+        .catch(orkester::Context::Main, move |_| {
             catch_called_clone.fetch_add(1, Ordering::SeqCst);
             -1
         });
@@ -494,7 +494,7 @@ fn catch_in_main_thread_recovers_on_main_when_pumped() {
 
     let recovered = system
         .create_future(|promise| promise.reject("main recover"))
-        .catch_in_main_thread(move |error| {
+        .catch(orkester::Context::Main, move |error| {
             assert_eq!(error.to_string(), "main recover");
             if std::thread::current().id() == caller_thread {
                 ran_on_main_clone.fetch_add(1, Ordering::SeqCst);
@@ -512,8 +512,8 @@ fn then_in_thread_pool_runs_inline_on_same_pool_thread() {
     let pool = system.create_thread_pool(1);
 
     let same_thread = system
-        .run_in_thread_pool(&pool, || std::thread::current().id())
-        .then_in_thread_pool(&pool, |source_thread| {
+        .run_in_pool(&pool, || std::thread::current().id())
+        .then_in_pool(&pool, |source_thread| {
             std::thread::current().id() == source_thread
         });
 
@@ -526,13 +526,13 @@ fn then_in_thread_pool_runs_on_target_pool_context() {
     let pool = system.create_thread_pool(1);
 
     let pool_thread = system
-        .run_in_thread_pool(&pool, || std::thread::current().id())
+        .run_in_pool(&pool, || std::thread::current().id())
         .wait()
         .unwrap();
 
     let observed = system
-        .run_in_worker_thread(|| 1_i32)
-        .then_in_thread_pool(&pool, move |_| std::thread::current().id());
+        .run(orkester::Context::Worker, || 1_i32)
+        .then_in_pool(&pool, move |_| std::thread::current().id());
 
     assert_eq!(observed.wait().unwrap(), pool_thread);
 }
@@ -600,7 +600,7 @@ fn future_poll_ready_then_wait_reports_consumed() {
 fn dispatch_one_main_thread_task_reports_queue_progress() {
     let system = AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(1)));
     let futures: Vec<_> = (0_i32..3_i32)
-        .map(|value| system.run_in_main_thread(move || value))
+        .map(|value| system.run(orkester::Context::Main, move || value))
         .collect();
 
     assert!(system.has_pending_main_thread_tasks());

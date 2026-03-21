@@ -1044,7 +1044,7 @@ pub unsafe extern "C" fn orkester_retry(
         context: SendCtx(ctx),
     };
     let system_clone = system_ref.clone();
-    let result = orkester::retry(system_ref, max_attempts, move || {
+    let result = orkester::retry(system_ref, max_attempts, Default::default(), move || {
         let cb = &cb; // force whole-struct capture
         let handle = unsafe { (cb.func)(cb.context.0) };
         if handle.is_null() {

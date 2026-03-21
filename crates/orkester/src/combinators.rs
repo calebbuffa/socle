@@ -99,14 +99,40 @@ pub fn race<T: Send + 'static>(system: &AsyncSystem, futures: Vec<Future<T>>) ->
     output
 }
 
+/// Configuration for exponential backoff in [`retry`].
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Initial delay before the first retry (default: 50 ms).
+    pub initial_backoff: Duration,
+    /// Maximum delay between retries (default: 5 s).
+    pub max_backoff: Duration,
+    /// Multiplier applied to the backoff after each attempt (default: 2).
+    pub multiplier: u32,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_millis(50),
+            max_backoff: Duration::from_secs(5),
+            multiplier: 2,
+        }
+    }
+}
+
 /// Retry a fallible async operation with exponential backoff.
 ///
 /// Calls `f()` up to `max_attempts` times. If an attempt returns `Ok(v)`,
 /// the returned future resolves with `v`. If all attempts fail, the last
 /// error is propagated.
 ///
-/// Back-off starts at 50 ms and doubles each attempt (capped at 5 s).
-pub fn retry<T, F>(system: &AsyncSystem, max_attempts: u32, f: F) -> Future<T>
+/// Use [`RetryConfig::default()`] for standard backoff (50 ms initial, 5 s cap, 2x multiplier).
+pub fn retry<T, F>(
+    system: &AsyncSystem,
+    max_attempts: u32,
+    config: RetryConfig,
+    f: F,
+) -> Future<T>
 where
     T: Send + 'static,
     F: Fn() -> Future<Result<T, AsyncError>> + Send + 'static,
@@ -116,8 +142,7 @@ where
 
     system.inner.worker_scheduler().schedule(Box::new(move || {
         let mut last_err = AsyncError::msg("retry: no attempts");
-        let mut backoff = Duration::from_millis(50);
-        let max_backoff = Duration::from_secs(5);
+        let mut backoff = config.initial_backoff;
 
         for _ in 0..max_attempts {
             match f().wait() {
@@ -133,7 +158,7 @@ where
                 }
             }
             std::thread::sleep(backoff);
-            backoff = (backoff * 2).min(max_backoff);
+            backoff = (backoff * config.multiplier).min(config.max_backoff);
         }
 
         promise.reject(last_err);
