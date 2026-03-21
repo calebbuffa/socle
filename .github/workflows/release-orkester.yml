@@ -1,9 +1,9 @@
-name: Release
+name: Release orkester
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'orkester/v*'
 
 permissions:
   contents: write
@@ -39,7 +39,7 @@ jobs:
 
       - name: Package Linux x64
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#orkester/v}
           mkdir -p staging/lib staging/include staging/lib/cmake/orkester
           cp target/x86_64-unknown-linux-gnu/release/liborkester_ffi.a staging/lib/
           cp include/orkester.h staging/include/
@@ -50,7 +50,7 @@ jobs:
 
       - name: Package macOS x64
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#orkester/v}
           mkdir -p staging/lib staging/include staging/lib/cmake/orkester
           cp target/x86_64-apple-darwin/release/liborkester_ffi.a staging/lib/
           cp include/orkester.h staging/include/
@@ -61,7 +61,7 @@ jobs:
 
       - name: Package macOS arm64
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#orkester/v}
           mkdir -p staging/lib staging/include staging/lib/cmake/orkester
           cp target/aarch64-apple-darwin/release/liborkester_ffi.a staging/lib/
           cp include/orkester.h staging/include/
@@ -91,7 +91,7 @@ jobs:
       - name: Package Windows x64
         shell: bash
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#orkester/v}
           mkdir -p staging/lib staging/include staging/lib/cmake/orkester
           cp target/release/orkester_ffi.lib staging/lib/
           cp include/orkester.h staging/include/
