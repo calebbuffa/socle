@@ -1,0 +1,16 @@
+[package]
+name = "orkester-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "C ABI for the orkester async runtime"
+repository = "https://github.com/calebbuffa/socle"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+orkester = { path = "../orkester" }
+
+[build-dependencies]
+cbindgen = "0.28"

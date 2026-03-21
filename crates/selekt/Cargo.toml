@@ -1,0 +1,19 @@
+[package]
+name = "selekt"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Format-agnostic tile selection engine for spatial data"
+repository = "https://github.com/calebbuffa/socle"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+glam = ["zukei/glam"]
+
+[dependencies]
+orkester = { path = "../orkester" }
+orkester-io = { path = "../orkester-io" }
+zukei = { path = "../zukei", default-features = false }

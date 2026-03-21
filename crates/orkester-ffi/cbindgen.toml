@@ -1,0 +1,9 @@
+language = "C"
+cpp_compat = true
+pragma_once = true
+
+[parse]
+parse_deps = false
+
+[enum]
+prefix_with_name = true

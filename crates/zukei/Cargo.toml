@@ -1,0 +1,14 @@
+[package]
+name = "zukei"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "FFI-safe math primitives for geospatial runtimes"
+repository = "https://github.com/calebbuffa/socle"
+
+[features]
+default = []
+glam = ["dep:glam_dep"]
+
+[dependencies]
+glam_dep = { package = "glam", version = "0.32", features = ["std"], optional = true }

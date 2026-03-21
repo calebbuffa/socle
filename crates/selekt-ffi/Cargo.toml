@@ -1,0 +1,18 @@
+[package]
+name = "selekt-ffi"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "C ABI for the selekt tile selection engine"
+repository = "https://github.com/calebbuffa/socle"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+orkester = { path = "../orkester" }
+selekt = { path = "../selekt", features = ["glam"] }
+zukei = { path = "../zukei", default-features = false }
+
+[build-dependencies]
+cbindgen = "0.28"

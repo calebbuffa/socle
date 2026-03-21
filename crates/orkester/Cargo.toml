@@ -1,0 +1,10 @@
+[package]
+name = "orkester"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Runtime-agnostic async continuation library"
+repository = "https://github.com/calebbuffa/socle"
+
+[lib]
+crate-type = ["rlib"]

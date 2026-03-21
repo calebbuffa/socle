@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build (Linux x64 + macOS cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Build Linux x64
+        run: cargo build -p orkester-ffi --release --target x86_64-unknown-linux-gnu
+
+      - name: Build macOS x64 (cross)
+        run: cargo build -p orkester-ffi --release --target x86_64-apple-darwin
+        env:
+          # staticlib doesn't invoke the linker, so no macOS SDK needed
+          CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER: "true"
+
+      - name: Build macOS arm64 (cross)
+        run: cargo build -p orkester-ffi --release --target aarch64-apple-darwin
+        env:
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER: "true"
+
+      - name: Package Linux x64
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging/lib staging/include staging/lib/cmake/orkester
+          cp target/x86_64-unknown-linux-gnu/release/liborkester_ffi.a staging/lib/
+          cp include/orkester.h staging/include/
+          cp cmake/orkesterConfig.cmake.in staging/lib/cmake/orkester/orkesterConfig.cmake
+          sed "s/@VERSION@/$VERSION/g" cmake/orkesterConfigVersion.cmake.in > staging/lib/cmake/orkester/orkesterConfigVersion.cmake
+          tar czf orkester-x86_64-unknown-linux-gnu.tar.gz -C staging .
+          rm -rf staging
+
+      - name: Package macOS x64
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging/lib staging/include staging/lib/cmake/orkester
+          cp target/x86_64-apple-darwin/release/liborkester_ffi.a staging/lib/
+          cp include/orkester.h staging/include/
+          cp cmake/orkesterConfig.cmake.in staging/lib/cmake/orkester/orkesterConfig.cmake
+          sed "s/@VERSION@/$VERSION/g" cmake/orkesterConfigVersion.cmake.in > staging/lib/cmake/orkester/orkesterConfigVersion.cmake
+          tar czf orkester-x86_64-apple-darwin.tar.gz -C staging .
+          rm -rf staging
+
+      - name: Package macOS arm64
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging/lib staging/include staging/lib/cmake/orkester
+          cp target/aarch64-apple-darwin/release/liborkester_ffi.a staging/lib/
+          cp include/orkester.h staging/include/
+          cp cmake/orkesterConfig.cmake.in staging/lib/cmake/orkester/orkesterConfig.cmake
+          sed "s/@VERSION@/$VERSION/g" cmake/orkesterConfigVersion.cmake.in > staging/lib/cmake/orkester/orkesterConfigVersion.cmake
+          tar czf orkester-aarch64-apple-darwin.tar.gz -C staging .
+          rm -rf staging
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-and-macos
+          path: orkester-*.tar.gz
+
+  build-windows:
+    name: Build (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows x64
+        run: cargo build -p orkester-ffi --release
+
+      - name: Package Windows x64
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p staging/lib staging/include staging/lib/cmake/orkester
+          cp target/release/orkester_ffi.lib staging/lib/
+          cp include/orkester.h staging/include/
+          cp cmake/orkesterConfig.cmake.in staging/lib/cmake/orkester/orkesterConfig.cmake
+          sed "s/@VERSION@/$VERSION/g" cmake/orkesterConfigVersion.cmake.in > staging/lib/cmake/orkester/orkesterConfigVersion.cmake
+          tar czf orkester-x86_64-pc-windows-msvc.tar.gz -C staging .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: orkester-x86_64-pc-windows-msvc.tar.gz
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: orkester-*.tar.gz
+          generate_release_notes: true

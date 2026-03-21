@@ -1,0 +1,19 @@
+language = "C"
+cpp_compat = true
+pragma_once = true
+
+[export]
+exclude = ["Plane", "ViewGroupHandle", "ViewState", "ViewUpdateResult", "LoadPassResult", "ViewGroupOptions"]
+
+[parse]
+parse_deps = true
+include = ["selekt", "zukei"]
+
+[fn]
+rename_args = "None"
+
+[struct]
+rename_fields = "None"
+
+[enum]
+prefix_with_name = true

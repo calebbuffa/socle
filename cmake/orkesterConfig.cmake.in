@@ -1,0 +1,55 @@
+# orkesterConfig.cmake
+#
+# Provides imported target:
+#   orkester::ffi  – static library for the orkester async runtime
+#
+# Usage:
+#   find_package(orkester CONFIG REQUIRED)
+#   target_link_libraries(MyTarget PRIVATE orkester::ffi)
+#
+# Platform link dependencies (Rust std runtime) are handled automatically.
+
+# ── platform link dependencies ───────────────────────────────────────────────
+
+if(WIN32)
+    set(_ORKESTER_PLATFORM_LIBS ws2_32 userenv bcrypt ntdll advapi32)
+    if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        list(APPEND _ORKESTER_PLATFORM_LIBS synchronization)
+    endif()
+elseif(APPLE)
+    set(_ORKESTER_PLATFORM_LIBS "-framework Security" "-framework CoreFoundation" dl pthread)
+else()
+    set(_ORKESTER_PLATFORM_LIBS dl pthread m)
+endif()
+
+# ── locate artifacts ─────────────────────────────────────────────────────────
+
+get_filename_component(_ORKESTER_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
+# Relative path: <prefix>/lib/cmake/orkester -> <prefix>
+get_filename_component(_ORKESTER_PREFIX "${_ORKESTER_CMAKE_DIR}/../../.." ABSOLUTE)
+
+set(_ORKESTER_LIB_DIR "${_ORKESTER_PREFIX}/lib")
+set(_ORKESTER_INCLUDE_DIR "${_ORKESTER_PREFIX}/include")
+
+set(_ORKESTER_LIB_NAME
+    "${CMAKE_STATIC_LIBRARY_PREFIX}orkester_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
+
+# ── orkester::ffi ────────────────────────────────────────────────────────────
+
+if(NOT TARGET orkester::ffi)
+    add_library(orkester::ffi STATIC IMPORTED)
+    set_target_properties(orkester::ffi PROPERTIES
+        IMPORTED_LOCATION "${_ORKESTER_LIB_DIR}/${_ORKESTER_LIB_NAME}"
+    )
+    target_include_directories(orkester::ffi INTERFACE "${_ORKESTER_INCLUDE_DIR}")
+    target_link_libraries(orkester::ffi INTERFACE ${_ORKESTER_PLATFORM_LIBS})
+endif()
+
+# ── cleanup ──────────────────────────────────────────────────────────────────
+
+unset(_ORKESTER_CMAKE_DIR)
+unset(_ORKESTER_PREFIX)
+unset(_ORKESTER_LIB_DIR)
+unset(_ORKESTER_INCLUDE_DIR)
+unset(_ORKESTER_LIB_NAME)
+unset(_ORKESTER_PLATFORM_LIBS)

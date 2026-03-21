@@ -1,0 +1,13 @@
+[package]
+name = "orkester-io"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Async network I/O traits for orkester"
+repository = "https://github.com/calebbuffa/socle"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+orkester = { path = "../orkester" }
