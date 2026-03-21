@@ -25,9 +25,7 @@ typedef enum orkester_error_code_t {
 } orkester_error_code_t;
 
 /**
- * Opaque async runtime handle exposed to C. Wraps `orkester::AsyncSystem`.
- *
- * cbindgen sees this as an opaque struct so it emits a forward declaration.
+ * Opaque async runtime handle. Wraps `orkester::AsyncSystem`.
  */
 typedef struct orkester_async_t {
   uint8_t _opaque;
@@ -42,7 +40,6 @@ typedef void (*orkester_callback_fn_t)(void*);
  * Dispatch function type for scheduling work on a background thread.
  *
  * The host calls `work(work_data)` on a background thread.
- * Every language can implement this trivially — it's just `void(*)(void*)`.
  */
 typedef void (*orkester_dispatch_fn_t)(void *ctx, orkester_callback_fn_t work, void *work_data);
 
@@ -166,14 +163,8 @@ void orkester_promise_reject(orkester_promise_t promise,
                              const char *message,
                              uintptr_t message_len);
 
-/**
- * Drop a promise without resolving.
- */
 void orkester_promise_drop(orkester_promise_t promise);
 
-/**
- * Check if a future has completed.
- */
 bool orkester_future_is_ready(orkester_future_t future);
 
 /**
@@ -227,19 +218,10 @@ orkester_future_t orkester_future_then_immediately(orkester_future_t future,
  */
 orkester_shared_future_t orkester_future_share(orkester_future_t future);
 
-/**
- * Drop a future handle.
- */
 void orkester_future_drop(orkester_future_t future);
 
-/**
- * Clone a shared future handle.
- */
 orkester_shared_future_t orkester_shared_future_clone(orkester_shared_future_t shared);
 
-/**
- * Check if a shared future has completed.
- */
 bool orkester_shared_future_is_ready(orkester_shared_future_t shared);
 
 /**
@@ -281,16 +263,11 @@ orkester_future_t orkester_shared_future_then_immediately(orkester_shared_future
                                                           orkester_callback_fn_t callback,
                                                           void *context);
 
-/**
- * Drop a shared future handle.
- */
 void orkester_shared_future_drop(orkester_shared_future_t shared);
 
 /**
  * Convert a shared future into a unique future. Consumes the shared handle.
- *
- * Creates a `Future<()>` that completes when the shared future completes.
- * The shared handle is consumed (dropped); other clones remain valid.
+ * Other clones remain valid.
  */
 orkester_future_t orkester_shared_future_into_unique(orkester_shared_future_t shared);
 
@@ -354,9 +331,6 @@ void orkester_main_thread_scope_drop(orkester_main_thread_scope_t scope);
  */
 orkester_thread_pool_t orkester_thread_pool_create(uintptr_t num_threads);
 
-/**
- * Drop a thread pool handle. Consumes the handle.
- */
 void orkester_thread_pool_drop(orkester_thread_pool_t pool);
 
 /**
@@ -389,8 +363,7 @@ orkester_future_t orkester_shared_future_then_in_pool(orkester_shared_future_t s
                                                       void *context);
 
 /**
- * Create an `orkester_async_t` with a built-in thread pool task processor.
- * No vtable needed — orkester manages its own threads.
+ * Create an `orkester_async_t` with a built-in thread pool.
  */
 struct orkester_async_t *orkester_async_create_default(uintptr_t num_threads);
 
@@ -422,14 +395,8 @@ bool orkester_future_wait_with_code(orkester_future_t future,
                                     const char **out_error_ptr,
                                     uintptr_t *out_error_len);
 
-/**
- * Create a new cancellation token.
- */
 orkester_cancel_token_t orkester_cancel_token_create(void);
 
-/**
- * Clone a cancellation token handle.
- */
 orkester_cancel_token_t orkester_cancel_token_clone(orkester_cancel_token_t token);
 
 /**
@@ -437,14 +404,8 @@ orkester_cancel_token_t orkester_cancel_token_clone(orkester_cancel_token_t toke
  */
 void orkester_cancel_token_cancel(orkester_cancel_token_t token);
 
-/**
- * Check if a cancellation token has been signalled.
- */
 bool orkester_cancel_token_is_cancelled(orkester_cancel_token_t token);
 
-/**
- * Drop a cancellation token handle.
- */
 void orkester_cancel_token_drop(orkester_cancel_token_t token);
 
 /**
@@ -503,9 +464,6 @@ orkester_semaphore_permit_t orkester_semaphore_acquire(orkester_semaphore_t sem)
  */
 orkester_semaphore_permit_t orkester_semaphore_try_acquire(orkester_semaphore_t sem);
 
-/**
- * Return the number of available permits.
- */
 uintptr_t orkester_semaphore_available(orkester_semaphore_t sem);
 
 /**
@@ -513,9 +471,6 @@ uintptr_t orkester_semaphore_available(orkester_semaphore_t sem);
  */
 void orkester_semaphore_permit_drop(orkester_semaphore_permit_t permit);
 
-/**
- * Drop a semaphore handle.
- */
 void orkester_semaphore_drop(orkester_semaphore_t sem);
 
 orkester_future_t orkester_future_catch(orkester_future_t future,
@@ -554,9 +509,6 @@ orkester_join_set_t orkester_join_set_create(const struct orkester_async_t *syst
  */
 void orkester_join_set_push(orkester_join_set_t js, orkester_future_t future);
 
-/**
- * Return the number of futures in the JoinSet.
- */
 uintptr_t orkester_join_set_len(orkester_join_set_t js);
 
 /**
@@ -593,9 +545,6 @@ void orkester_channel_create(uintptr_t capacity,
 void orkester_channel_create_oneshot(orkester_sender_t *out_sender,
                                      orkester_receiver_t *out_receiver);
 
-/**
- * Clone a sender handle.
- */
 orkester_sender_t orkester_sender_clone(orkester_sender_t sender);
 
 /**
@@ -620,14 +569,8 @@ uint32_t orkester_sender_send_timeout(orkester_sender_t sender,
                                       uint64_t timeout_ms,
                                       void **out_value);
 
-/**
- * Check if the receiver has been dropped.
- */
 bool orkester_sender_is_closed(orkester_sender_t sender);
 
-/**
- * Drop a sender handle.
- */
 void orkester_sender_drop(orkester_sender_t sender);
 
 /**
@@ -655,9 +598,6 @@ bool orkester_receiver_recv_timeout(orkester_receiver_t receiver,
  */
 bool orkester_receiver_is_closed(orkester_receiver_t receiver);
 
-/**
- * Drop a receiver handle.
- */
 void orkester_receiver_drop(orkester_receiver_t receiver);
 
 #ifdef __cplusplus

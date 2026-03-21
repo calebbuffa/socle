@@ -57,8 +57,6 @@ pub trait SpatialHierarchy: Send + Sync + 'static {
     /// Optional tighter bounding volume covering only this node's content,
     /// excluding child contributions. Returns `None` by default, meaning
     /// `bounds()` is used for both spatial and content culling.
-    ///
-    /// Analogous to cesium-native's `getContentBoundingVolume()`.
     fn content_bounds(&self, node: NodeId) -> Option<&SpatialBounds> {
         let _ = node;
         None

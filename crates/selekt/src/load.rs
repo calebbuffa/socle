@@ -25,7 +25,6 @@ pub enum PriorityGroup {
 }
 
 /// Full load priority for a candidate. Ordering: group tier first, then score within tier.
-/// Inspired by Cesium3DTilesSelection three-tier approach.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LoadPriority {

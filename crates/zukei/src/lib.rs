@@ -1,8 +1,4 @@
-//! `zukei` — low-level FFI-safe math and bounds primitives.
-//!
-//! This crate is the shared ownership point for foundational geometry values used
-//! across the runtime stack. It intentionally stays below traversal, selection,
-//! loading, and geospatial policy layers.
+//! `zukei` — FFI-safe math types and bounding-volume operations.
 
 #[cfg(feature = "glam")]
 pub mod aabb;

@@ -1,11 +1,7 @@
 //! Async network I/O traits for orkester.
 //!
-//! This crate defines the [`AssetAccessor`] trait and supporting types
-//! for asynchronous HTTP/network operations. It is the I/O companion
-//! to orkester's scheduling primitives.
-//!
-//! Implementations may use HTTP (reqwest, curl), local files, or
-//! delegate to a C++ backend via FFI.
+//! Defines the [`AssetAccessor`] trait and supporting types
+//! for asynchronous HTTP/network operations.
 
 use orkester::{AsyncSystem, Future};
 use std::collections::HashMap;
@@ -14,8 +10,6 @@ use std::collections::HashMap;
 pub type HttpHeaders = HashMap<String, String>;
 
 /// A completed HTTP response.
-///
-/// Mirrors `CesiumAsync::IAssetResponse`.
 pub trait AssetResponse: Send + Sync {
     /// HTTP status code (e.g. 200, 404). Returns 0 for non-HTTP responses.
     fn status_code(&self) -> u16;
@@ -32,8 +26,6 @@ pub trait AssetResponse: Send + Sync {
 
 /// A completed asset request, containing the original request metadata
 /// and the response.
-///
-/// Mirrors `CesiumAsync::IAssetRequest`.
 pub trait AssetRequest: Send + Sync {
     /// HTTP method used (e.g. `"GET"`, `"POST"`).
     fn method(&self) -> &str;
@@ -48,9 +40,9 @@ pub trait AssetRequest: Send + Sync {
     fn response(&self) -> Option<&dyn AssetResponse>;
 }
 
-/// Asynchronous asset accessor — the primary network I/O abstraction.
+/// Asynchronous asset accessor.
 ///
-/// Mirrors `CesiumAsync::IAssetAccessor`. Implementors provide HTTP (or other
+/// Implementors provide HTTP (or other
 /// protocol) access to remote assets. The engine invokes these methods from
 /// any thread; implementations must be `Send + Sync`.
 pub trait AssetAccessor: Send + Sync {

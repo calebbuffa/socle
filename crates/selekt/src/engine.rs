@@ -92,19 +92,12 @@ impl ViewGroupTable {
 
 /// Format-agnostic 3D tile selection engine.
 ///
-/// This is the selekt equivalent of cesium-native's `Tileset`. It owns a
-/// spatial hierarchy, LOD evaluator, content loader, scheduler, and
+/// Owns a spatial hierarchy, LOD evaluator, content loader, scheduler, and
 /// policy, and drives the traversal → load pipeline.
-///
-/// GPU preparation is **not** part of selekt. Consumers that need GPU
-/// resources should use `belag::RendererPreparer` on the content returned
-/// by this engine. Consumers that don't need a GPU (analytics, Python,
-/// server-side) access content directly from the resident map.
 ///
 /// # Frame loop
 ///
-/// The recommended frame loop mirrors cesium-native's `updateViewGroup` /
-/// `loadTiles` split:
+/// The recommended frame loop splits traversal from loading:
 ///
 /// ```ignore
 /// // 1. Traversal — decide which nodes to select and request.
@@ -113,10 +106,10 @@ impl ViewGroupTable {
 /// // 2. Loading — dispatch queued requests across all view groups.
 /// engine.load_tiles();
 ///
-/// // 3. (Optional) Access loaded content for GPU prep or processing.
+/// // 3. (Optional) Access loaded content for processing.
 /// for &node_id in &result.selected {
 ///     if let Some(content) = engine.content(node_id) {
-///         // hand to belag::RendererPreparer, or process directly
+///         // process content
 ///     }
 /// }
 /// ```
@@ -175,7 +168,6 @@ where
 {
     /// Create a new engine from shared externals.
     ///
-    /// This mirrors cesium-native's `Tileset(externals, ..., options)` pattern.
     /// The async system and scheduler are taken from the shared externals,
     /// ensuring fair load distribution when multiple engines share the same
     /// externals.
@@ -252,8 +244,7 @@ where
 
     /// Update a single view group, returning traversal results without loading.
     ///
-    /// Mirrors cesium-native's `Tileset::updateViewGroup`. Call this once per
-    /// view group per frame, then call [`load`](Self::load) to
+    /// Call once per view group per frame, then call [`load`](Self::load) to
     /// dispatch the queued requests.
     pub fn update_view_group(
         &mut self,
@@ -308,9 +299,8 @@ where
     /// Update a view group and block until all tiles meeting the LOD threshold
     /// are loaded and ready to render.
     ///
-    /// Mirrors cesium-native's `Tileset::updateViewGroupOffline`. Significantly
-    /// slower than [`update_view_group`](Self::update_view_group) — only use
-    /// for movie capture or other non-realtime situations.
+    /// Significantly slower than [`update_view_group`](Self::update_view_group)
+    /// — only use for movie capture or other non-realtime situations.
     pub fn update_view_group_offline(
         &mut self,
         handle: ViewGroupHandle,
@@ -332,9 +322,8 @@ where
 
     /// Load tiles deemed most important across all view groups.
     ///
-    /// Mirrors cesium-native's `Tileset::loadTiles`. Call frequently (e.g.
-    /// once per render frame) after updating view groups. Returns quickly
-    /// when there is nothing to do.
+    /// Call frequently (e.g. once per render frame) after updating view groups.
+    /// Returns quickly when there is nothing to do.
     pub fn load(&mut self) -> LoadPassResult {
         let result = self.run_load_pass();
         let _ = self.evict_if_needed();
@@ -378,7 +367,6 @@ where
     /// reached the `Renderable` state. Returns `100.0` when there are
     /// no tracked nodes (nothing to load).
     ///
-    /// Mirrors cesium-native's `Tileset::computeLoadProgress`.
     pub fn compute_load_progress(&self) -> f32 {
         if self.node_states.is_empty() {
             return 100.0;
@@ -448,7 +436,6 @@ where
     /// For engines created synchronously, this returns `None` (root is
     /// immediately available).
     ///
-    /// Mirrors cesium-native's `Tileset::getRootTileAvailableEvent()`.
     pub fn root_available(&self) -> Option<&SharedFuture<()>> {
         self.root_available.as_ref()
     }

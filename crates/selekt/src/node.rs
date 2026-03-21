@@ -28,9 +28,7 @@ pub enum NodeKind {
 /// Any state ──► Evicted  (memory pressure)
 /// ```
 ///
-/// Note: GPU preparation (`Prepared` → `Renderable`) is handled by the
-/// `belag` crate, not by selekt. Content becomes `Renderable` as soon as
-/// the content loader delivers it.
+/// Note: content becomes `Renderable` as soon as the content loader delivers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NodeLifecycleState {
     /// Not yet queued for load.

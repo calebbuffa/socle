@@ -1,8 +1,7 @@
 //! C-ABI FFI for orkester scheduling primitives.
 //!
-//! This crate provides the thin C boundary for orkester's async runtime.
-//! All callbacks use the simple `void(*)(void*)` signature.
-//! No orchestration protocol — typed value handling stays in the consumer language.
+//! All callbacks use `void(*)(void*)`. Values are managed on the host side;
+//! Rust handles scheduling, continuation chaining, and error propagation.
 
 // C-style snake_case naming is intentional for FFI types.
 #![allow(non_camel_case_types)]
@@ -16,9 +15,7 @@ use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
 
-/// Opaque async runtime handle exposed to C. Wraps `orkester::AsyncSystem`.
-///
-/// cbindgen sees this as an opaque struct so it emits a forward declaration.
+/// Opaque async runtime handle. Wraps `orkester::AsyncSystem`.
 #[repr(C)]
 pub struct orkester_async_t {
     _opaque: u8,
@@ -64,7 +61,6 @@ impl orkester_context_t {
 /// Dispatch function type for scheduling work on a background thread.
 ///
 /// The host calls `work(work_data)` on a background thread.
-/// Every language can implement this trivially — it's just `void(*)(void*)`.
 pub type orkester_dispatch_fn_t =
     unsafe extern "C" fn(ctx: *mut c_void, work: orkester_callback_fn_t, work_data: *mut c_void);
 
@@ -220,7 +216,6 @@ pub unsafe extern "C" fn orkester_promise_reject(
     promise.reject(orkester::AsyncError::msg(msg));
 }
 
-/// Drop a promise without resolving.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_promise_drop(promise: orkester_promise_t) {
     if !promise.is_null() {
@@ -229,7 +224,6 @@ pub unsafe extern "C" fn orkester_promise_drop(promise: orkester_promise_t) {
 }
 
 
-/// Check if a future has completed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_future_is_ready(future: orkester_future_t) -> bool {
     let future = unsafe { &*(future as *const Future<()>) };
@@ -352,7 +346,6 @@ pub unsafe extern "C" fn orkester_future_share(
     Box::into_raw(Box::new(shared)) as orkester_shared_future_t
 }
 
-/// Drop a future handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_future_drop(future: orkester_future_t) {
     if !future.is_null() {
@@ -361,7 +354,6 @@ pub unsafe extern "C" fn orkester_future_drop(future: orkester_future_t) {
 }
 
 
-/// Clone a shared future handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_shared_future_clone(
     shared: orkester_shared_future_t,
@@ -370,7 +362,6 @@ pub unsafe extern "C" fn orkester_shared_future_clone(
     Box::into_raw(Box::new(shared.clone())) as orkester_shared_future_t
 }
 
-/// Check if a shared future has completed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_shared_future_is_ready(shared: orkester_shared_future_t) -> bool {
     let shared = unsafe { &*(shared as *const orkester::SharedFuture<()>) };
@@ -462,7 +453,6 @@ pub unsafe extern "C" fn orkester_shared_future_then_immediately(
     }
 }
 
-/// Drop a shared future handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_shared_future_drop(shared: orkester_shared_future_t) {
     if !shared.is_null() {
@@ -471,9 +461,7 @@ pub unsafe extern "C" fn orkester_shared_future_drop(shared: orkester_shared_fut
 }
 
 /// Convert a shared future into a unique future. Consumes the shared handle.
-///
-/// Creates a `Future<()>` that completes when the shared future completes.
-/// The shared handle is consumed (dropped); other clones remain valid.
+/// Other clones remain valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_shared_future_into_unique(
     shared: orkester_shared_future_t,
@@ -594,7 +582,6 @@ pub unsafe extern "C" fn orkester_thread_pool_create(num_threads: usize) -> orke
     Box::into_raw(Box::new(pool)) as orkester_thread_pool_t
 }
 
-/// Drop a thread pool handle. Consumes the handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_thread_pool_drop(pool: orkester_thread_pool_t) {
     if !pool.is_null() {
@@ -672,8 +659,7 @@ pub unsafe extern "C" fn orkester_shared_future_then_in_pool(
 }
 
 
-/// Create an `orkester_async_t` with a built-in thread pool task processor.
-/// No vtable needed — orkester manages its own threads.
+/// Create an `orkester_async_t` with a built-in thread pool.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_async_create_default(
     num_threads: usize,
@@ -785,13 +771,11 @@ pub unsafe extern "C" fn orkester_future_wait_with_code(
 /// Opaque handle to a `CancellationToken`.
 pub type orkester_cancel_token_t = *mut c_void;
 
-/// Create a new cancellation token.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_cancel_token_create() -> orkester_cancel_token_t {
     Box::into_raw(Box::new(CancellationToken::new())) as orkester_cancel_token_t
 }
 
-/// Clone a cancellation token handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_cancel_token_clone(
     token: orkester_cancel_token_t,
@@ -809,7 +793,6 @@ pub unsafe extern "C" fn orkester_cancel_token_cancel(token: orkester_cancel_tok
     }
 }
 
-/// Check if a cancellation token has been signalled.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_cancel_token_is_cancelled(
     token: orkester_cancel_token_t,
@@ -821,7 +804,6 @@ pub unsafe extern "C" fn orkester_cancel_token_is_cancelled(
     token.is_cancelled()
 }
 
-/// Drop a cancellation token handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_cancel_token_drop(token: orkester_cancel_token_t) {
     if !token.is_null() {
@@ -951,7 +933,6 @@ pub unsafe extern "C" fn orkester_semaphore_try_acquire(
     }
 }
 
-/// Return the number of available permits.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_semaphore_available(sem: orkester_semaphore_t) -> usize {
     let sem = unsafe { &*(sem as *const Semaphore) };
@@ -966,7 +947,6 @@ pub unsafe extern "C" fn orkester_semaphore_permit_drop(permit: orkester_semapho
     }
 }
 
-/// Drop a semaphore handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_semaphore_drop(sem: orkester_semaphore_t) {
     if !sem.is_null() {
@@ -1103,7 +1083,6 @@ pub unsafe extern "C" fn orkester_join_set_push(
     js.push(future);
 }
 
-/// Return the number of futures in the JoinSet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_join_set_len(js: orkester_join_set_t) -> usize {
     let js = unsafe { &*(js as *const JoinSet<()>) };
@@ -1192,7 +1171,6 @@ pub unsafe extern "C" fn orkester_channel_create_oneshot(
     }
 }
 
-/// Clone a sender handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_sender_clone(sender: orkester_sender_t) -> orkester_sender_t {
     let sender = unsafe { &*(sender as *const Sender<*mut c_void>) };
@@ -1263,14 +1241,12 @@ pub unsafe extern "C" fn orkester_sender_send_timeout(
     }
 }
 
-/// Check if the receiver has been dropped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_sender_is_closed(sender: orkester_sender_t) -> bool {
     let sender = unsafe { &*(sender as *const Sender<*mut c_void>) };
     sender.is_closed()
 }
 
-/// Drop a sender handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_sender_drop(sender: orkester_sender_t) {
     if !sender.is_null() {
@@ -1343,7 +1319,6 @@ pub unsafe extern "C" fn orkester_receiver_is_closed(receiver: orkester_receiver
     receiver.is_closed()
 }
 
-/// Drop a receiver handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_receiver_drop(receiver: orkester_receiver_t) {
     if !receiver.is_null() {

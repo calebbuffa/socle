@@ -1,10 +1,7 @@
-//! Content loader factory (mirrors `TilesetContentLoaderFactory`).
+//! Content loader factory.
 //!
 //! A [`ContentLoaderFactory`] asynchronously creates a content loader and
-//! hierarchy from a data source (URL, asset ID, SLPK path, etc.). This is
-//! the async initialization pattern cesium-native uses: the `Tileset`
-//! constructor kicks off async work and the root tile becomes available
-//! via a `SharedFuture<void>`.
+//! hierarchy from a data source (URL, asset ID, SLPK path, etc.).
 
 use std::sync::Arc;
 
@@ -17,8 +14,8 @@ use crate::lod::LodEvaluator;
 
 /// Result produced by a [`ContentLoaderFactory`].
 ///
-/// Mirrors `TilesetContentLoaderResult` — packages together the constructed
-/// loader, hierarchy, LOD evaluator, and any errors/credits that arose.
+/// Packages together the constructed loader, hierarchy, LOD evaluator,
+/// and any errors that arose.
 pub struct ContentLoaderFactoryResult<C, H, B, L>
 where
     C: Send + 'static,
@@ -68,9 +65,8 @@ where
 
 /// Async factory for creating a content loader and hierarchy.
 ///
-/// Mirrors `TilesetContentLoaderFactory`. Implementations parse a tileset
-/// descriptor (URL, file path, asset ID) and produce the hierarchy + loader
-/// asynchronously.
+/// Implementations parse a tileset descriptor (URL, file path, asset ID)
+/// and produce the hierarchy + loader asynchronously.
 ///
 /// # Usage
 ///

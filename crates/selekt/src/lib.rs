@@ -1,27 +1,23 @@
 //! `selekt` — format-agnostic 3D tile selection engine.
 //!
-//! Abstracts cesium-native's `Cesium3DTilesSelection` into idiomatic Rust.
-//! Provides the core data structures and traits for LOD-driven tile traversal,
-//! async content loading, and GPU resource lifetime management.
+//! Core data structures and traits for LOD-driven tile traversal,
+//! async content loading, and resource lifetime management.
 //! Format adapters (I3S, Cesium 3D Tiles, etc.) plug in via the trait
 //! interfaces.
 //!
 //! # Main types
 //!
-//! - [`SelectionEngine`] — the central engine (mirrors `Tileset`)
-//! - [`SelectionEngineExternals`] — shared infrastructure (mirrors `TilesetExternals`)
-//! - [`SelectionOptions`] — configuration (mirrors `TilesetOptions`)
+//! - [`SelectionEngine`] — the central engine
+//! - [`SelectionEngineExternals`] — shared infrastructure
+//! - [`SelectionOptions`] — configuration
 //!
 //! # Trait interfaces
 //!
 //! - [`SpatialHierarchy`] / [`HierarchyResolver`] — read and extend the tile tree
-//! - [`ContentLoader`] — fetch tile data (mirrors `TilesetContentLoader`)
-//! - [`ContentLoaderFactory`] — async factory (mirrors `TilesetContentLoaderFactory`)
+//! - [`ContentLoader`] — fetch tile data
+//! - [`ContentLoaderFactory`] — async factory
 //! - [`LodEvaluator`] — LOD refinement decision
 //! - [`Policy`] = [`VisibilityPolicy`] + [`ResidencyPolicy`] — culling and eviction
-//!
-//! GPU preparation (`RendererPreparer`) and raster overlay concerns live in
-//! the `belag` crate. Selekt is about "what to render", not "make it GPU-ready".
 
 mod engine;
 mod factory;
@@ -83,18 +79,16 @@ use std::sync::{Arc, Mutex};
 
 /// Shared infrastructure for multiple [`SelectionEngine`] instances.
 ///
-/// Mirrors cesium-native's `TilesetExternals`. Create once per application,
-/// then pass a reference to each engine. The shared scheduler ensures fair
-/// load distribution across all engines.
+/// Create once per application, then pass a reference to each engine.
+/// The shared scheduler ensures fair load distribution across all engines.
 #[derive(Clone)]
 pub struct SelectionEngineExternals {
     /// Async runtime for spawning worker tasks and scheduling main-thread
-    /// callbacks. Mirrors `TilesetExternals::asyncSystem`.
+    /// callbacks.
     pub async_system: AsyncSystem,
     /// Shared load queue for fair scheduling across all engines.
     pub scheduler: Arc<Mutex<WeightedFairScheduler>>,
-    /// Async network I/O. Mirrors `TilesetExternals::pAssetAccessor`.
-    /// Format-specific loaders use this to fetch tile data.
+    /// Async network I/O. Format-specific loaders use this to fetch tile data.
     pub asset_accessor: Arc<dyn AssetAccessor>,
 }
 

@@ -1,7 +1,4 @@
 /// Core engine options. Format-agnostic; no format-specific flags belong here.
-///
-/// Mirrors cesium-native's `TilesetOptions` — all tuning parameters live here
-/// rather than being passed per-call.
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct SelectionOptions {
@@ -20,13 +17,11 @@ pub struct SelectionOptions {
     /// If `true`, ancestors of rendered nodes are pre-loaded at `Preload`
     /// priority. This improves the zoom-out experience by ensuring parent
     /// tiles are ready before they are needed.
-    /// Mirrors cesium-native's `TilesetOptions::preloadAncestors`.
     pub preload_ancestors: bool,
 
     /// If `true`, siblings of rendered nodes are pre-loaded at `Preload`
     /// priority. This improves panning by loading tiles adjacent to the
     /// current view so they are ready when the camera moves.
-    /// Mirrors cesium-native's `TilesetOptions::preloadSiblings`.
     pub preload_siblings: bool,
 
     /// Maximum number of load retry attempts before a node transitions to `Failed`.
@@ -36,24 +31,21 @@ pub struct SelectionOptions {
     pub retry_backoff_frames: u32,
 
     /// Maximum new load requests to dispatch per load pass.
-    /// Mirrors cesium-native's `maximumSimultaneousTileLoads`.
     pub max_simultaneous_tile_loads: usize,
 
     /// Maximum main-thread finalization tasks to run per frame.
     pub max_main_thread_tasks: usize,
 
     /// Memory ceiling in bytes for resident content. Eviction is triggered when
-    /// exceeded. Mirrors cesium-native's `maximumCachedBytes`.
+    /// exceeded.
     pub max_cached_bytes: usize,
 
     /// Whether frustum culling is enabled. When `false`, all nodes are treated
     /// as visible (useful for debugging).
-    /// Mirrors cesium-native's `enableFrustumCulling`.
     pub enable_frustum_culling: bool,
 
     /// Whether occlusion-driven refinement deferral is enabled.
     /// Requires an [`OcclusionTester`] to be wired into the engine.
-    /// Mirrors cesium-native's `enableOcclusionCulling`.
     pub enable_occlusion_culling: bool,
 }
 
