@@ -24,6 +24,7 @@ macOS targets are cross-compiled from Linux. Since `orkester-ffi` produces a
 `staticlib` (no linking step), no macOS SDK is required.
 
 Each tarball contains:
+
 ```
 lib/orkester_ffi.lib (or .a)
 include/orkester.h
@@ -36,6 +37,7 @@ lib/cmake/orkester/orkesterConfigVersion.cmake
 1. Make sure all changes are committed and pushed.
 
 2. Tag and push:
+
    ```sh
    git tag orkester/v0.1.0
    git push origin orkester/v0.1.0
@@ -45,12 +47,11 @@ lib/cmake/orkester/orkesterConfigVersion.cmake
    `https://github.com/calebbuffa/socle/releases/tag/orkester/v0.1.0`
    with the 4 platform tarballs attached.
 
-4. Update the SHA512 hashes in the cesium-native vcpkg overlay port:
-   ```
-   cesium-native/extern/vcpkg/ports/orkester/portfile.cmake
-   ```
+4. Update the SHA512 hashes in the cesium-native vcpkg overlay port
+   (`cesium-native/extern/vcpkg/ports/orkester/portfile.cmake`).
 
    Download each tarball and compute its hash:
+
    ```sh
    sha512sum orkester-x86_64-unknown-linux-gnu.tar.gz
    sha512sum orkester-x86_64-apple-darwin.tar.gz
@@ -58,19 +59,22 @@ lib/cmake/orkester/orkesterConfigVersion.cmake
    sha512sum orkester-x86_64-pc-windows-msvc.tar.gz
    ```
 
-   Replace the placeholder `"0"` values in `portfile.cmake` with the real
-   hashes.
+   Replace the `ORKESTER_SHA512` values in `portfile.cmake` with the new
+   hashes. This step is required for every release because the tarball
+   contents change, producing new hashes. vcpkg will reject downloads
+   whose hash doesn't match.
+
+5. Update `ORKESTER_VERSION` in `portfile.cmake` and `version-semver` in
+   `vcpkg.json` to the new version.
 
 ### Bumping the version
 
 1. Update `version` in `crates/orkester/Cargo.toml` and
    `crates/orkester-ffi/Cargo.toml`.
 2. Update `VERSION` in the root `CMakeLists.txt`.
-3. Update `ORKESTER_VERSION` in
-   `cesium-native/extern/vcpkg/ports/orkester/portfile.cmake`.
-4. Update `version-semver` in
-   `cesium-native/extern/vcpkg/ports/orkester/vcpkg.json`.
-5. Tag and push (see above).
+3. Tag and push (see above).
+4. After CI finishes, update the portfile hashes and version (steps 4-5
+   above).
 
 ## Adding a new crate release
 
