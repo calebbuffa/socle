@@ -2,9 +2,9 @@
 name = "selekt-ffi"
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
+license.workspace = true
 description = "C ABI for the selekt tile selection engine"
-repository = "https://github.com/calebbuffa/socle"
+repository.workspace = true
 
 [lib]
 crate-type = ["staticlib"]

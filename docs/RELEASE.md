@@ -69,11 +69,12 @@ lib/cmake/orkester/orkesterConfigVersion.cmake
 
 ### Bumping the version
 
-1. Update `version` in `crates/orkester/Cargo.toml` and
-   `crates/orkester-ffi/Cargo.toml`.
-2. Update `VERSION` in the root `CMakeLists.txt`.
-3. Tag and push (see above).
-4. After CI finishes, update the portfile hashes and version (steps 4-5
+1. Update `version` in the root `Cargo.toml` under `[workspace.package]`.
+   The crate Cargo.toml files and CMakeLists.txt inherit from it
+   automatically.
+2. Tag and push (see above).
+3. After CI finishes, update the portfile hashes, `ORKESTER_VERSION`, and
+   `version-semver` in the cesium-native vcpkg overlay port (steps 4-5
    above).
 
 ## Adding a new crate release

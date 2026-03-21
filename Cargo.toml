@@ -1,3 +1,8 @@
 [workspace]
 members = ["crates/*"]
 resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+license = "Apache-2.0"
+repository = "https://github.com/calebbuffa/socle"

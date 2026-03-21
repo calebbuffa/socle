@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.15)
-project(socle VERSION 0.1.0 LANGUAGES CXX)
+
+# Read version from workspace Cargo.toml (single source of truth).
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" _CARGO_TOML)
+string(REGEX MATCH "version = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _ "${_CARGO_TOML}")
+set(SOCLE_VERSION "${CMAKE_MATCH_1}")
+
+project(socle VERSION ${SOCLE_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
