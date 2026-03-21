@@ -24,11 +24,12 @@ endif()
 
 # ── locate artifacts ─────────────────────────────────────────────────────────
 
-get_filename_component(_ORKESTER_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}" ABSOLUTE)
-get_filename_component(_ORKESTER_PREFIX "${_ORKESTER_CMAKE_DIR}/../../.." ABSOLUTE)
+# <prefix>/lib/cmake/orkester/ -> <prefix>
+# vcpkg_cmake_config_fixup patches PACKAGE_PREFIX_DIR when relocating to share/.
+get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 
-set(_ORKESTER_LIB_DIR "${_ORKESTER_PREFIX}/lib")
-set(_ORKESTER_INCLUDE_DIR "${_ORKESTER_PREFIX}/include")
+set(_ORKESTER_LIB_DIR "${PACKAGE_PREFIX_DIR}/lib")
+set(_ORKESTER_INCLUDE_DIR "${PACKAGE_PREFIX_DIR}/include")
 
 set(_ORKESTER_LIB_NAME
     "${CMAKE_STATIC_LIBRARY_PREFIX}orkester_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
@@ -46,8 +47,7 @@ endif()
 
 # ── cleanup ──────────────────────────────────────────────────────────────────
 
-unset(_ORKESTER_CMAKE_DIR)
-unset(_ORKESTER_PREFIX)
+unset(PACKAGE_PREFIX_DIR)
 unset(_ORKESTER_LIB_DIR)
 unset(_ORKESTER_INCLUDE_DIR)
 unset(_ORKESTER_LIB_NAME)
