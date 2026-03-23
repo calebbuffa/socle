@@ -3,8 +3,20 @@ name = "orkester"
 version.workspace = true
 edition = "2024"
 license.workspace = true
-description = "Runtime-agnostic async continuation library"
+description = "Context-aware task scheduling for Rust. Works with tokio, ships with FFI."
 repository.workspace = true
+keywords = ["scheduler", "async", "ffi", "game-engine", "main-thread"]
+categories = ["asynchronous", "concurrency", "game-development"]
 
 [lib]
 crate-type = ["rlib"]
+
+[features]
+default = ["custom-runtime"]
+custom-runtime = []
+tokio-runtime = ["dep:tokio"]
+wasm = ["dep:wasm-bindgen-futures"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt"], optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }

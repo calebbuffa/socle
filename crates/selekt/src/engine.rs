@@ -515,7 +515,7 @@ where
                 continue;
             };
 
-            match future.wait() {
+            match future.block() {
                 Ok(Ok(loaded)) => {
                     let content_handle = self.next_content_handle;
                     self.next_content_handle += 1;
@@ -570,7 +570,7 @@ where
                 continue;
             };
 
-            match future.wait() {
+            match future.block() {
                 Ok(Ok(Some(patch))) => {
                     if self.hierarchy.apply_patch(patch).is_ok() {
                         self.insert_resident(node_id, content_handle, None, byte_size);

@@ -1,9 +1,9 @@
-use orkester::{AsyncSystem, Semaphore, ThreadPoolTaskProcessor};
+use orkester::{AsyncSystem, Semaphore};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn test_system() -> AsyncSystem {
-    AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(4)))
+    AsyncSystem::with_threads(4)
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn acquire_async_works() {
     // Release the first permit — should unblock the async acquire.
     drop(p1);
 
-    let p2 = fut.wait().expect("async acquire should succeed");
+    let p2 = fut.block().expect("async acquire should succeed");
     assert_eq!(sem.available_permits(), 0);
 
     drop(p2);

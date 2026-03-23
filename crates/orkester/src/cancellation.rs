@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AsyncError, ErrorCode};
-use crate::future::{Future, create_pair};
+use crate::future::{Future, SharedFuture, create_pair};
 
 type Callback = Box<dyn FnOnce() + Send + 'static>;
 
@@ -123,6 +123,54 @@ impl<T: Send + 'static> Future<T> {
             };
             if let Some(promise) = promise {
                 match source_ref.take_result() {
+                    Some(Ok(v)) => promise.resolve(v),
+                    Some(Err(e)) => promise.reject(e),
+                    None => promise.reject(AsyncError::msg("Future already consumed")),
+                }
+            }
+        }));
+
+        // Path 2: token cancelled first → reject.
+        let sp2 = shared_promise;
+        token.on_cancel(Box::new(move || {
+            let promise = {
+                let mut guard = sp2.lock().expect("cancel promise lock");
+                guard.take()
+            };
+            if let Some(promise) = promise {
+                promise.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            }
+        }));
+
+        output
+    }
+}
+
+impl<T: Clone + Send + 'static> SharedFuture<T> {
+    /// Attach a cancellation token. If the token is signalled before the
+    /// upstream future completes, the returned future rejects with a
+    /// `"cancelled"` error. Does NOT consume the shared future.
+    pub fn with_cancellation(&self, token: &CancellationToken) -> Future<T> {
+        if token.is_cancelled() {
+            let (p, f) = create_pair(self.system.clone());
+            p.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            return f;
+        }
+
+        let source = Arc::clone(&self.state);
+        let (promise, output) = create_pair::<T>(self.system.clone());
+        let shared_promise = Arc::new(Mutex::new(Some(promise)));
+
+        // Path 1: upstream completes first → forward result.
+        let sp1 = shared_promise.clone();
+        let source_ref = Arc::clone(&source);
+        source.register_continuation(Box::new(move || {
+            let promise = {
+                let mut guard = sp1.lock().expect("cancel promise lock");
+                guard.take()
+            };
+            if let Some(promise) = promise {
+                match source_ref.clone_result() {
                     Some(Ok(v)) => promise.resolve(v),
                     Some(Err(e)) => promise.reject(e),
                     None => promise.reject(AsyncError::msg("Future already consumed")),

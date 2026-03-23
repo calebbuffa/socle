@@ -1,8 +1,9 @@
 use crate::context::Context;
 use crate::error::AsyncError;
+use crate::executor::Executor;
 use crate::promise::Promise;
 use crate::state::SharedState;
-use crate::system::{AsyncSystem, SchedulerHandle};
+use crate::system::AsyncSystem;
 use crate::thread_pool::ThreadPool;
 use std::fmt::{self, Debug, Formatter};
 use std::future::Future as StdFuture;
@@ -96,7 +97,12 @@ impl<T: Send + 'static> Future<T> {
         self.state.as_ref().is_some_and(|state| state.is_ready())
     }
 
-    pub fn wait(mut self) -> Result<T, AsyncError> {
+    /// Returns a clone of the `AsyncSystem` that owns this future.
+    pub fn system(&self) -> AsyncSystem {
+        self.system.clone()
+    }
+
+    pub fn block(mut self) -> Result<T, AsyncError> {
         let state = self.state.take().ok_or_else(Self::consumed_error)?;
         state.wait_until_ready();
         state
@@ -104,7 +110,7 @@ impl<T: Send + 'static> Future<T> {
             .unwrap_or_else(|| Err(Self::consumed_error()))
     }
 
-    pub fn wait_in_main_thread(mut self) -> Result<T, AsyncError> {
+    pub fn block_with_main(mut self) -> Result<T, AsyncError> {
         let state = self.state.take().ok_or_else(Self::consumed_error)?;
 
         while !state.is_ready() {
@@ -118,12 +124,7 @@ impl<T: Send + 'static> Future<T> {
             .unwrap_or_else(|| Err(Self::consumed_error()))
     }
 
-    /// Access the async system that owns this future.
-    pub fn system(&self) -> AsyncSystem {
-        self.system.clone()
-    }
-
-    fn then_with_scheduler<U, F, R>(mut self, scheduler: SchedulerHandle, f: F) -> Future<U>
+    fn then_with_executor<U, F, R>(mut self, executor: Arc<dyn Executor>, f: F) -> Future<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
@@ -143,10 +144,10 @@ impl<T: Send + 'static> Future<T> {
                     let run = move || {
                         f(value).resolve_into(promise);
                     };
-                    if scheduler.is_current_thread() {
+                    if executor.is_current_thread() {
                         run();
                     } else {
-                        scheduler.schedule(Box::new(run));
+                        executor.execute(Box::new(run));
                     }
                 }
                 Some(Err(error)) => promise.reject(error),
@@ -157,7 +158,7 @@ impl<T: Send + 'static> Future<T> {
         next_future
     }
 
-    fn catch_with_scheduler<F>(mut self, scheduler: SchedulerHandle, f: F) -> Future<T>
+    fn catch_with_executor<F>(mut self, executor: Arc<dyn Executor>, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
@@ -176,10 +177,10 @@ impl<T: Send + 'static> Future<T> {
                     let run = move || {
                         promise.resolve(f(error));
                     };
-                    if scheduler.is_current_thread() {
+                    if executor.is_current_thread() {
                         run();
                     } else {
-                        scheduler.schedule(Box::new(run));
+                        executor.execute(Box::new(run));
                     }
                 }
                 None => promise.reject(Self::consumed_error()),
@@ -189,43 +190,15 @@ impl<T: Send + 'static> Future<T> {
         next_future
     }
 
-    #[deprecated(since = "0.2.0", note = "use `then(Context::Worker, f)` instead")]
-    pub fn then_in_worker_thread<U, F, R>(self, f: F) -> Future<U>
+    /// Transform the value inline (on the completing thread).
+    /// Equivalent to `then(Context::IMMEDIATE, f)`.
+    pub fn map<U, F, R>(self, f: F) -> Future<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        self.then(Context::Worker, f)
-    }
-
-    #[deprecated(since = "0.2.0", note = "use `then(Context::Main, f)` instead")]
-    pub fn then_in_main_thread<U, F, R>(self, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then(Context::Main, f)
-    }
-
-    #[deprecated(since = "0.2.0", note = "use `then_in_pool(pool, f)` instead")]
-    pub fn then_in_thread_pool<U, F, R>(self, thread_pool: &ThreadPool, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then_in_pool(thread_pool, f)
-    }
-
-    pub fn then_immediately<U, F, R>(self, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then(Context::Immediate, f)
+        self.then(Context::IMMEDIATE, f)
     }
 
     /// Chain a continuation in the given scheduling context.
@@ -235,8 +208,8 @@ impl<T: Send + 'static> Future<T> {
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        match self.system.inner.scheduler_for(context) {
-            Some(scheduler) => self.then_with_scheduler(scheduler, f),
+        match self.system.inner.executor_for(context) {
+            Some(executor) => self.then_with_executor(executor, f),
             None => self.then_immediate(f),
         }
     }
@@ -248,8 +221,59 @@ impl<T: Send + 'static> Future<T> {
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        let scheduler = self.system.inner.thread_pool_scheduler(thread_pool);
-        self.then_with_scheduler(scheduler, f)
+        let executor = self.system.inner.pool_executor(thread_pool);
+        self.then_with_executor(executor, f)
+    }
+
+    /// Chain an async continuation in the given scheduling context.
+    ///
+    /// The closure receives the resolved value, returns a future, and that
+    /// future is driven to completion on the target context.
+    ///
+    /// ```rust,ignore
+    /// let result = system.resolved(42)
+    ///     .then_async(Context::BACKGROUND, |v| async move {
+    ///         async_transform(v).await
+    ///     })
+    ///     .block()
+    ///     .unwrap();
+    /// ```
+    pub fn then_async<U, F, Fut>(mut self, context: Context, f: F) -> Future<U>
+    where
+        U: Send + 'static,
+        F: FnOnce(T) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = U> + Send + 'static,
+    {
+        let system = self.system.clone();
+        let source = match self.state.take() {
+            Some(state) => state,
+            None => return Self::rejected_future(system, Self::consumed_error()),
+        };
+
+        let (promise, next_future) = create_pair::<U>(system.clone());
+        let source_for_continuation = Arc::clone(&source);
+        source.register_continuation(Box::new(move || {
+            match source_for_continuation.take_result() {
+                Some(Ok(value)) => {
+                    let fut = f(value);
+                    match system.inner.executor_for(context) {
+                        Some(executor) => {
+                            executor.spawn_future(Box::pin(async move {
+                                promise.resolve(fut.await);
+                            }));
+                        }
+                        None => {
+                            // IMMEDIATE: block_on inline
+                            promise.resolve(crate::block_on::block_on(fut));
+                        }
+                    }
+                }
+                Some(Err(error)) => promise.reject(error),
+                None => promise.reject(Self::consumed_error()),
+            }
+        }));
+
+        next_future
     }
 
     fn then_immediate<U, F, R>(mut self, f: F) -> Future<U>
@@ -277,19 +301,27 @@ impl<T: Send + 'static> Future<T> {
         next_future
     }
 
-    #[deprecated(since = "0.2.0", note = "use `catch(Context::Main, f)` instead")]
-    pub fn catch_in_main_thread<F>(self, f: F) -> Future<T>
+    /// Recover from an error inline (on the completing thread).
+    /// Equivalent to `catch(Context::IMMEDIATE, f)`.
+    pub fn or_else<F>(self, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
-        self.catch(Context::Main, f)
+        self.catch(Context::IMMEDIATE, f)
     }
 
-    pub fn catch_immediately<F>(self, f: F) -> Future<T>
+    /// Flat-map over a `Result` value inline.
+    ///
+    /// If the future resolves with `Ok(v)`, applies `f(v)` and flattens.
+    /// If the future resolves with `Err(e)`, the returned future resolves
+    /// with `Err(e)` unchanged.
+    pub fn and_then<V, E, F>(self, f: F) -> Future<Result<V, E>>
     where
-        F: FnOnce(AsyncError) -> T + Send + 'static,
+        V: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(T) -> Result<V, E> + Send + 'static,
     {
-        self.catch(Context::Immediate, f)
+        self.map(f)
     }
 
     /// Catch an error in the given scheduling context.
@@ -297,8 +329,8 @@ impl<T: Send + 'static> Future<T> {
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
-        match self.system.inner.scheduler_for(context) {
-            Some(scheduler) => self.catch_with_scheduler(scheduler, f),
+        match self.system.inner.executor_for(context) {
+            Some(executor) => self.catch_with_executor(executor, f),
             None => self.catch_immediate(f),
         }
     }
@@ -392,14 +424,18 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         self.state.is_ready()
     }
 
-    pub fn wait(&self) -> Result<T, AsyncError> {
+    /// Returns a clone of the `AsyncSystem` that owns this future.
+    pub fn system(&self) -> AsyncSystem {
+        self.system.clone()
+    }
+    pub fn block(&self) -> Result<T, AsyncError> {
         self.state.wait_until_ready();
         self.state
             .clone_result()
             .unwrap_or_else(|| Err(Self::consumed_error()))
     }
 
-    pub fn wait_in_main_thread(&self) -> Result<T, AsyncError> {
+    pub fn block_with_main(&self) -> Result<T, AsyncError> {
         while !self.state.is_ready() {
             if !self.system.inner.main_queue.dispatch_one() {
                 self.state.wait_timeout(Duration::from_millis(2));
@@ -411,12 +447,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
             .unwrap_or_else(|| Err(Self::consumed_error()))
     }
 
-    /// Access the async system that owns this future.
-    pub fn system(&self) -> AsyncSystem {
-        self.system.clone()
-    }
-
-    fn then_with_scheduler<U, F, R>(&self, scheduler: SchedulerHandle, f: F) -> Future<U>
+    fn then_with_executor<U, F, R>(&self, executor: Arc<dyn Executor>, f: F) -> Future<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
@@ -432,10 +463,10 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
                     let run = move || {
                         f(value).resolve_into(promise);
                     };
-                    if scheduler.is_current_thread() {
+                    if executor.is_current_thread() {
                         run();
                     } else {
-                        scheduler.schedule(Box::new(run));
+                        executor.execute(Box::new(run));
                     }
                 }
                 Some(Err(error)) => promise.reject(error),
@@ -446,7 +477,7 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         next_future
     }
 
-    fn catch_with_scheduler<F>(&self, scheduler: SchedulerHandle, f: F) -> Future<T>
+    fn catch_with_executor<F>(&self, executor: Arc<dyn Executor>, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
@@ -461,10 +492,10 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
                     let run = move || {
                         promise.resolve(f(error));
                     };
-                    if scheduler.is_current_thread() {
+                    if executor.is_current_thread() {
                         run();
                     } else {
-                        scheduler.schedule(Box::new(run));
+                        executor.execute(Box::new(run));
                     }
                 }
                 None => promise.reject(Self::consumed_error()),
@@ -474,43 +505,15 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         next_future
     }
 
-    #[deprecated(since = "0.2.0", note = "use `then(Context::Worker, f)` instead")]
-    pub fn then_in_worker_thread<U, F, R>(&self, f: F) -> Future<U>
+    /// Transform the value inline (on the completing thread).
+    /// Equivalent to `then(Context::IMMEDIATE, f)`.
+    pub fn map<U, F, R>(&self, f: F) -> Future<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        self.then(Context::Worker, f)
-    }
-
-    #[deprecated(since = "0.2.0", note = "use `then(Context::Main, f)` instead")]
-    pub fn then_in_main_thread<U, F, R>(&self, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then(Context::Main, f)
-    }
-
-    #[deprecated(since = "0.2.0", note = "use `then_in_pool(pool, f)` instead")]
-    pub fn then_in_thread_pool<U, F, R>(&self, thread_pool: &ThreadPool, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then_in_pool(thread_pool, f)
-    }
-
-    pub fn then_immediately<U, F, R>(&self, f: F) -> Future<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then(Context::Immediate, f)
+        self.then(Context::IMMEDIATE, f)
     }
 
     /// Chain a continuation in the given scheduling context.
@@ -520,8 +523,8 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        match self.system.inner.scheduler_for(context) {
-            Some(scheduler) => self.then_with_scheduler(scheduler, f),
+        match self.system.inner.executor_for(context) {
+            Some(executor) => self.then_with_executor(executor, f),
             None => self.then_immediate(f),
         }
     }
@@ -533,7 +536,45 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        self.then_with_scheduler(self.system.inner.thread_pool_scheduler(thread_pool), f)
+        self.then_with_executor(self.system.inner.pool_executor(thread_pool), f)
+    }
+
+    /// Chain an async continuation in the given scheduling context.
+    ///
+    /// See [`Future::then_async`] for details. This variant borrows `&self`
+    /// (cloning the resolved value) rather than consuming the future.
+    pub fn then_async<U, F, Fut>(&self, context: Context, f: F) -> Future<U>
+    where
+        U: Send + 'static,
+        F: FnOnce(T) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = U> + Send + 'static,
+    {
+        let source = Arc::clone(&self.state);
+        let system = self.system.clone();
+        let (promise, next_future) = create_pair::<U>(system.clone());
+
+        let source_for_continuation = Arc::clone(&source);
+        source.register_continuation(Box::new(move || {
+            match source_for_continuation.clone_result() {
+                Some(Ok(value)) => {
+                    let fut = f(value);
+                    match system.inner.executor_for(context) {
+                        Some(executor) => {
+                            executor.spawn_future(Box::pin(async move {
+                                promise.resolve(fut.await);
+                            }));
+                        }
+                        None => {
+                            promise.resolve(crate::block_on::block_on(fut));
+                        }
+                    }
+                }
+                Some(Err(error)) => promise.reject(error),
+                None => promise.reject(Self::consumed_error()),
+            }
+        }));
+
+        next_future
     }
 
     fn then_immediate<U, F, R>(&self, f: F) -> Future<U>
@@ -557,19 +598,27 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
         next_future
     }
 
-    #[deprecated(since = "0.2.0", note = "use `catch(Context::Main, f)` instead")]
-    pub fn catch_in_main_thread<F>(&self, f: F) -> Future<T>
+    /// Recover from an error inline (on the completing thread).
+    /// Equivalent to `catch(Context::IMMEDIATE, f)`.
+    pub fn or_else<F>(&self, f: F) -> Future<T>
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
-        self.catch(Context::Main, f)
+        self.catch(Context::IMMEDIATE, f)
     }
 
-    pub fn catch_immediately<F>(&self, f: F) -> Future<T>
+    /// Flat-map over a `Result` value inline.
+    ///
+    /// If the future resolves with `Ok(v)`, applies `f(v)` and flattens.
+    /// If the future resolves with `Err(e)`, the returned future resolves
+    /// with `Err(e)` unchanged.
+    pub fn and_then<V, E, F>(&self, f: F) -> Future<Result<V, E>>
     where
-        F: FnOnce(AsyncError) -> T + Send + 'static,
+        V: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce(T) -> Result<V, E> + Send + 'static,
     {
-        self.catch(Context::Immediate, f)
+        self.map(f)
     }
 
     /// Catch an error in the given scheduling context.
@@ -577,8 +626,8 @@ impl<T: Clone + Send + 'static> SharedFuture<T> {
     where
         F: FnOnce(AsyncError) -> T + Send + 'static,
     {
-        match self.system.inner.scheduler_for(context) {
-            Some(scheduler) => self.catch_with_scheduler(scheduler, f),
+        match self.system.inner.executor_for(context) {
+            Some(executor) => self.catch_with_executor(executor, f),
             None => self.catch_immediate(f),
         }
     }

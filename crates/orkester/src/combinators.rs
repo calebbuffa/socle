@@ -14,8 +14,8 @@ use crate::system::AsyncSystem;
 /// This is appropriate for coarse timeouts; sub-millisecond precision is
 /// not guaranteed.
 pub fn delay(system: &AsyncSystem, duration: Duration) -> Future<()> {
-    let (promise, future) = system.create_promise::<()>();
-    system.spawn(crate::context::Context::Worker, move || {
+    let (promise, future) = system.promise::<()>();
+    system.spawn_detached(crate::context::Context::BACKGROUND, move || {
         std::thread::sleep(duration);
         promise.resolve(());
     });
@@ -30,7 +30,7 @@ pub fn timeout<T: Send + 'static>(
     duration: Duration,
 ) -> Future<T> {
     let timer = delay(system, duration);
-    let (resolve_promise, output) = system.create_promise::<T>();
+    let (resolve_promise, output) = system.promise::<T>();
     let shared_promise = Arc::new(Mutex::new(Some(resolve_promise)));
 
     // Path 1: upstream completes in time
@@ -69,12 +69,12 @@ pub fn timeout<T: Send + 'static>(
 /// If the input vector is empty, the returned future is immediately rejected.
 pub fn race<T: Send + 'static>(system: &AsyncSystem, futures: Vec<Future<T>>) -> Future<T> {
     if futures.is_empty() {
-        let (promise, future) = system.create_promise::<T>();
+        let (promise, future) = system.promise::<T>();
         promise.reject(AsyncError::msg("race called with no futures"));
         return future;
     }
 
-    let (resolve_promise, output) = system.create_promise::<T>();
+    let (resolve_promise, output) = system.promise::<T>();
     let shared_promise = Arc::new(Mutex::new(Some(resolve_promise)));
 
     for mut f in futures {
@@ -127,42 +127,41 @@ impl Default for RetryConfig {
 /// error is propagated.
 ///
 /// Use [`RetryConfig::default()`] for standard backoff (50 ms initial, 5 s cap, 2x multiplier).
-pub fn retry<T, F>(
-    system: &AsyncSystem,
-    max_attempts: u32,
-    config: RetryConfig,
-    f: F,
-) -> Future<T>
+pub fn retry<T, F>(system: &AsyncSystem, max_attempts: u32, config: RetryConfig, f: F) -> Future<T>
 where
     T: Send + 'static,
     F: Fn() -> Future<Result<T, AsyncError>> + Send + 'static,
 {
     let system = system.clone();
-    let (promise, future) = system.create_promise::<T>();
+    let (promise, future) = system.promise::<T>();
 
-    system.inner.worker_scheduler().schedule(Box::new(move || {
-        let mut last_err = AsyncError::msg("retry: no attempts");
-        let mut backoff = config.initial_backoff;
+    system
+        .inner
+        .executor_for(crate::context::Context::BACKGROUND)
+        .expect("Background executor")
+        .execute(Box::new(move || {
+            let mut last_err = AsyncError::msg("retry: no attempts");
+            let mut backoff = config.initial_backoff;
 
-        for _ in 0..max_attempts {
-            match f().wait() {
-                Ok(Ok(v)) => {
-                    promise.resolve(v);
-                    return;
+            for _ in 0..max_attempts {
+                match f().block() {
+                    Ok(Ok(v)) => {
+                        promise.resolve(v);
+                        return;
+                    }
+                    Ok(Err(e)) => {
+                        last_err = e;
+                    }
+                    Err(e) => {
+                        last_err = e;
+                    }
                 }
-                Ok(Err(e)) => {
-                    last_err = e;
-                }
-                Err(e) => {
-                    last_err = e;
-                }
+                std::thread::sleep(backoff);
+                backoff = (backoff * config.multiplier).min(config.max_backoff);
             }
-            std::thread::sleep(backoff);
-            backoff = (backoff * config.multiplier).min(config.max_backoff);
-        }
 
-        promise.reject(last_err);
-    }));
+            promise.reject(last_err);
+        }));
 
     future
 }

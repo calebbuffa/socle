@@ -359,7 +359,7 @@ impl ContentLoader<FfiContent> for FfiContentLoader {
         OrkFuture<Result<LoadedContent<FfiContent>, Self::Error>>,
     ) {
         // Create a typed promise/future pair for the delivery signal.
-        let (signal_promise, signal_future) = self.async_system.create_promise();
+        let (signal_promise, signal_future) = self.async_system.promise();
 
         // Slot for the C side to deposit the loaded content.
         let slot: Arc<Mutex<Option<Result<LoadedContent<FfiContent>, String>>>> =
@@ -387,7 +387,7 @@ impl ContentLoader<FfiContent> for FfiContentLoader {
         // When the signal fires, read the slot.
         let content_destroy = self.content_destroy;
         let _ = content_destroy; // will be captured in resolve path
-        let result_future = signal_future.then_immediately(move |_| {
+        let result_future = signal_future.map(move |_| {
             let value = slot
                 .lock()
                 .unwrap()
@@ -446,7 +446,7 @@ impl HierarchyResolver for FfiHierarchyResolver {
         _async_system: &AsyncSystem,
         reference: HierarchyReference,
     ) -> OrkFuture<Result<Option<HierarchyPatch>, Self::Error>> {
-        let (signal_promise, signal_future) = self.async_system.create_promise();
+        let (signal_promise, signal_future) = self.async_system.promise();
 
         let slot: Arc<Mutex<Option<Result<Option<HierarchyPatch>, String>>>> =
             Arc::new(Mutex::new(None));
@@ -483,7 +483,7 @@ impl HierarchyResolver for FfiHierarchyResolver {
             );
         }
 
-        signal_future.then_immediately(move |_| {
+        signal_future.map(move |_| {
             let value = slot
                 .lock()
                 .unwrap()

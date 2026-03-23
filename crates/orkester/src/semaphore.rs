@@ -72,7 +72,7 @@ impl Semaphore {
         }
 
         // Slow path: queue a promise and wait.
-        let (promise, future) = self.inner.system.create_promise::<()>();
+        let (promise, future) = self.inner.system.promise::<()>();
         {
             let mut state = self.inner.state.lock().expect("semaphore lock");
             // Re-check after acquiring lock (permit may have been released).
@@ -88,7 +88,7 @@ impl Semaphore {
         }
 
         // Block until our promise is resolved.
-        let _ = future.wait();
+        let _ = future.block();
         SemaphorePermit {
             inner: Arc::clone(&self.inner),
         }
@@ -123,7 +123,7 @@ impl Semaphore {
     /// to a [`SemaphorePermit`] when a slot becomes available.
     pub fn acquire_async(&self) -> Future<SemaphorePermit> {
         let inner = Arc::clone(&self.inner);
-        let (outer_promise, outer_future) = self.inner.system.create_promise::<SemaphorePermit>();
+        let (outer_promise, outer_future) = self.inner.system.promise::<SemaphorePermit>();
 
         {
             let mut state = inner.state.lock().expect("semaphore lock");
@@ -138,7 +138,7 @@ impl Semaphore {
 
         // Queue: create an inner promise that gets resolved when a permit
         // is released. When it fires, resolve the outer promise with a permit.
-        let (inner_promise, inner_future) = self.inner.system.create_promise::<()>();
+        let (inner_promise, inner_future) = self.inner.system.promise::<()>();
         {
             let mut state = inner.state.lock().expect("semaphore lock");
             if state.permits > 0 {
@@ -153,7 +153,7 @@ impl Semaphore {
         }
 
         let inner2 = Arc::clone(&inner);
-        let next = inner_future.then(crate::context::Context::Immediate, move |()| {
+        let next = inner_future.then(crate::context::Context::IMMEDIATE, move |()| {
             SemaphorePermit { inner: inner2 }
         });
 

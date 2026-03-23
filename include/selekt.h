@@ -422,9 +422,6 @@ typedef void (*selekt_content_destroy_fn_t)(void *content);
 
 /**
  * Core engine options. Format-agnostic; no format-specific flags belong here.
- *
- * Mirrors cesium-native's `TilesetOptions` — all tuning parameters live here
- * rather than being passed per-call.
  */
 typedef struct SelectionOptions {
   /**
@@ -445,14 +442,12 @@ typedef struct SelectionOptions {
    * If `true`, ancestors of rendered nodes are pre-loaded at `Preload`
    * priority. This improves the zoom-out experience by ensuring parent
    * tiles are ready before they are needed.
-   * Mirrors cesium-native's `TilesetOptions::preloadAncestors`.
    */
   bool preload_ancestors;
   /**
    * If `true`, siblings of rendered nodes are pre-loaded at `Preload`
    * priority. This improves panning by loading tiles adjacent to the
    * current view so they are ready when the camera moves.
-   * Mirrors cesium-native's `TilesetOptions::preloadSiblings`.
    */
   bool preload_siblings;
   /**
@@ -465,7 +460,6 @@ typedef struct SelectionOptions {
   uint32_t retry_backoff_frames;
   /**
    * Maximum new load requests to dispatch per load pass.
-   * Mirrors cesium-native's `maximumSimultaneousTileLoads`.
    */
   uintptr_t max_simultaneous_tile_loads;
   /**
@@ -474,19 +468,17 @@ typedef struct SelectionOptions {
   uintptr_t max_main_thread_tasks;
   /**
    * Memory ceiling in bytes for resident content. Eviction is triggered when
-   * exceeded. Mirrors cesium-native's `maximumCachedBytes`.
+   * exceeded.
    */
   uintptr_t max_cached_bytes;
   /**
    * Whether frustum culling is enabled. When `false`, all nodes are treated
    * as visible (useful for debugging).
-   * Mirrors cesium-native's `enableFrustumCulling`.
    */
   bool enable_frustum_culling;
   /**
    * Whether occlusion-driven refinement deferral is enabled.
    * Requires an [`OcclusionTester`] to be wired into the engine.
-   * Mirrors cesium-native's `enableOcclusionCulling`.
    */
   bool enable_occlusion_culling;
 } SelectionOptions;

@@ -7,12 +7,12 @@ use std::thread;
 type Task = Box<dyn FnOnce() + Send + 'static>;
 
 /// Dispatches work to background threads.
-pub trait TaskProcessor: Send + Sync {
+pub(crate) trait TaskProcessor: Send + Sync {
     fn start_task(&self, task: Task);
 }
 
 /// Thread-pool [`TaskProcessor`] backed by `std::thread`.
-pub struct ThreadPoolTaskProcessor {
+pub(crate) struct ThreadPoolTaskProcessor {
     sender: mpsc::Sender<Task>,
     _workers: Vec<thread::JoinHandle<()>>,
 }

@@ -4,15 +4,14 @@ C ABI for the orkester async runtime.
 
 ## Overview
 
-`orkester-ffi` exposes orkester's scheduling primitives over a pure C interface. All types
-use `orkester_*_t` snake_case naming. All callbacks use a single pattern: `void(*)(void*)`.
+`orkester-ffi` exposes orkester's scheduling primitives over a pure C interface.
 
-This makes orkester trivially bindable from **any language** that can call C functions —
-no special types, no structs to pass by value, no protocol to learn.
+Futures carry an optional **payload** — a `void*` value pointer plus optional
+clone/destroy callbacks. Values travel *inside* the future through Rust, so the
+host side needs no external bookkeeping (no `ValueSlot<T>`, no shared pointers).
 
-The FFI operates on `Future<()>` signals. Values are managed on the host side
-(e.g. C++ `ValueSlot<T>`), while Rust handles scheduling, continuation chaining,
-and error propagation.
+This makes orkester trivially bindable from **any language** that can call C
+functions.
 
 ## Building
 
@@ -30,28 +29,52 @@ cargo build -p orkester-ffi
 
 ```c
 typedef struct orkester_async_t orkester_async_t;   // AsyncSystem
-typedef void* orkester_future_t;                     // Future<()>
-typedef void* orkester_shared_future_t;              // SharedFuture<()>
-typedef void* orkester_promise_t;                    // Promise<()>
+typedef void* orkester_future_t;                     // Future<Payload>
+typedef void* orkester_shared_future_t;              // SharedFuture<Payload>
+typedef void* orkester_promise_t;                    // Promise<Payload>
 typedef void* orkester_main_thread_scope_t;          // MainThreadScope
-typedef void (*orkester_callback_fn_t)(void*);       // Callback
-typedef void (*orkester_dispatch_fn_t)(void* ctx,    // Dispatch function
-              orkester_callback_fn_t work,
-              void* work_data);
+typedef void* orkester_thread_pool_t;                // ThreadPool
+```
+
+## Callback Types
+
+```c
+// Fire-and-forget (used by orkester_async_run, orkester_spawn)
+typedef void  (*orkester_callback_fn_t)(void* ctx);
+
+// Value transform (used by orkester_future_then, _map, _then_in_pool)
+// Receives (ctx, input_value), returns output_value.
+// The callback takes ownership of input_value.
+typedef void* (*orkester_then_fn_t)(void* ctx, void* value);
+
+// Value producer (used by orkester_async_run_with_value)
+// Receives ctx, returns a value pointer.
+typedef void* (*orkester_producer_fn_t)(void* ctx);
+
+// Error handler (used by orkester_future_catch)
+typedef void  (*orkester_catch_fn_t)(void* ctx, const char* err, size_t len);
+
+// Dispatch function (bring your own thread pool)
+typedef void  (*orkester_dispatch_fn_t)(void* ctx,
+              orkester_callback_fn_t work, void* work_data);
+```
+
+## Scheduling Contexts
+
+```c
+enum orkester_context_t {
+    ORKESTER_BACKGROUND = 0,  // Background thread pool
+    ORKESTER_MAIN       = 1,  // Main thread queue
+    ORKESTER_IMMEDIATE  = 2,  // Inline on current thread
+};
 ```
 
 ## Creating an Async System
 
-You provide a `dispatch` function that receives `work` + `work_data` and calls
-`work(work_data)` from a background thread. That's it.
-
 ```c
 // Option 1: Bring your own dispatch
 orkester_async_t* orkester_async_create(
-    orkester_dispatch_fn_t dispatch,
-    void* ctx,
-    void (*destroy)(void*)    // nullable
-);
+    orkester_dispatch_fn_t dispatch, void* ctx, void (*destroy)(void*));
 
 // Option 2: Built-in thread pool
 orkester_async_t* orkester_async_create_default(size_t num_threads);
@@ -69,50 +92,101 @@ void orkester_promise_create(
     orkester_promise_t* out_promise,
     orkester_future_t* out_future);
 
+// Resolve with no payload (signal-only)
 void orkester_promise_resolve(orkester_promise_t promise);
+
+// Resolve with a value payload
+void orkester_promise_resolve_with(orkester_promise_t promise,
+    void* value,
+    void* (*clone_fn)(void*),    // nullable — needed for SharedFuture
+    void  (*destroy)(void*));    // nullable
+
 void orkester_promise_reject(orkester_promise_t promise, const char* msg, size_t len);
 void orkester_promise_reject_with_code(
     orkester_promise_t promise, int32_t code, const char* msg, size_t len);
 void orkester_promise_drop(orkester_promise_t promise);
 
-// Create an already-resolved future
+// Create an already-resolved future (empty payload)
 orkester_future_t orkester_future_create_resolved(const orkester_async_t* system);
+```
 
-// Inspection and waiting
+## Waiting for Results
+
+```c
+// Block until complete; writes payload value to out_value (nullable)
+bool orkester_future_block(orkester_future_t future,
+    void** out_value, const char** err, size_t* err_len);
+
+// Wait while pumping the main-thread queue
+bool orkester_future_block_with_main(orkester_future_t future,
+    void** out_value, const char** err, size_t* err_len);
+
+// Wait with structured error code
+bool orkester_future_block_with_code(orkester_future_t future,
+    void** out_value, orkester_error_code_t* code,
+    const char** err, size_t* err_len);
+
 bool orkester_future_is_ready(orkester_future_t future);
-bool orkester_future_wait(orkester_future_t future, const char** err, size_t* err_len);
-bool orkester_future_wait_in_main(orkester_future_t future, const char** err, size_t* err_len);
 void orkester_future_drop(orkester_future_t future);
 ```
 
 ## Scheduling Work
 
 ```c
-orkester_future_t orkester_async_run_in_worker(
-    const orkester_async_t* system, orkester_callback_fn_t cb, void* ctx);
+// Fire-and-forget — returns a future with an empty payload
+orkester_future_t orkester_async_run(
+    const orkester_async_t* system, orkester_context_t context,
+    orkester_callback_fn_t cb, void* ctx);
 
-orkester_future_t orkester_async_run_in_main(
-    const orkester_async_t* system, orkester_callback_fn_t cb, void* ctx);
+// Value-producing — the producer callback returns a void*
+orkester_future_t orkester_async_run_with_value(
+    const orkester_async_t* system, orkester_context_t context,
+    orkester_producer_fn_t producer, void* ctx,
+    void (*result_destroy)(void*));
 
+// Thread pool variants
 orkester_future_t orkester_async_run_in_pool(
     const orkester_async_t* system, orkester_thread_pool_t pool,
     orkester_callback_fn_t cb, void* ctx);
+orkester_future_t orkester_async_run_in_pool_with_value(
+    const orkester_async_t* system, orkester_thread_pool_t pool,
+    orkester_producer_fn_t producer, void* ctx,
+    void (*result_destroy)(void*));
+
+// Fire-and-forget (no future returned)
+void orkester_spawn(const orkester_async_t* system, orkester_context_t context,
+    orkester_callback_fn_t cb, void* ctx);
 ```
 
-## Continuations
+## Continuations (Value-Carrying)
 
-All continuations consume the input future and return a new one:
+All continuations consume the input future and return a new one.
+The `orkester_then_fn_t` callback receives the previous payload value and
+returns a new one. The callback takes ownership of the input value.
 
 ```c
-orkester_future_t orkester_future_then_in_worker(
-    orkester_future_t future, orkester_callback_fn_t cb, void* ctx);
-orkester_future_t orkester_future_then_in_main(
-    orkester_future_t future, orkester_callback_fn_t cb, void* ctx);
-orkester_future_t orkester_future_then_immediately(
-    orkester_future_t future, orkester_callback_fn_t cb, void* ctx);
+// Chain in any context
+orkester_future_t orkester_future_then(
+    orkester_future_t future, orkester_context_t context,
+    orkester_then_fn_t transform, void* ctx,
+    void (*result_destroy)(void*));
+
+// Chain inline (immediate, no scheduling)
+orkester_future_t orkester_future_map(
+    orkester_future_t future,
+    orkester_then_fn_t transform, void* ctx,
+    void (*result_destroy)(void*));
+
+// Chain in a thread pool
 orkester_future_t orkester_future_then_in_pool(
     orkester_future_t future, orkester_thread_pool_t pool,
-    orkester_callback_fn_t cb, void* ctx);
+    orkester_then_fn_t transform, void* ctx,
+    void (*result_destroy)(void*));
+
+// Error recovery (catch callback receives error message)
+orkester_future_t orkester_future_catch(
+    orkester_future_t future, orkester_context_t context,
+    orkester_catch_fn_t cb, void* ctx);
 ```
 
 ## Shared Future
@@ -121,16 +195,24 @@ orkester_future_t orkester_future_then_in_pool(
 orkester_shared_future_t orkester_future_share(orkester_future_t future);
 orkester_shared_future_t orkester_shared_future_clone(orkester_shared_future_t shared);
 bool orkester_shared_future_is_ready(orkester_shared_future_t shared);
-bool orkester_shared_future_wait(
-    orkester_shared_future_t shared, const char** err, size_t* err_len);
+bool orkester_shared_future_block(
+    orkester_shared_future_t shared,
+    void** out_value, const char** err, size_t* err_len);
 void orkester_shared_future_drop(orkester_shared_future_t shared);
 orkester_future_t orkester_shared_future_into_unique(orkester_shared_future_t shared);
 
 // Shared future continuations (borrow — do not consume the shared handle)
-orkester_future_t orkester_shared_future_then_in_worker(...);
-orkester_future_t orkester_shared_future_then_in_main(...);
-orkester_future_t orkester_shared_future_then_immediately(...);
-orkester_future_t orkester_shared_future_then_in_pool(...);
+orkester_future_t orkester_shared_future_then(
+    orkester_shared_future_t shared, orkester_context_t context,
+    orkester_then_fn_t transform, void* ctx,
+    void (*result_destroy)(void*));
+orkester_future_t orkester_shared_future_then_in_pool(
+    orkester_shared_future_t shared, orkester_thread_pool_t pool,
+    orkester_then_fn_t transform, void* ctx,
+    void (*result_destroy)(void*));
+orkester_future_t orkester_shared_future_catch(
+    orkester_shared_future_t shared, orkester_context_t context,
+    orkester_catch_fn_t cb, void* ctx);
 ```
 
 ## Main-Thread Dispatch
@@ -144,18 +226,87 @@ orkester_main_thread_scope_t orkester_main_thread_scope_create(
 void orkester_main_thread_scope_drop(orkester_main_thread_scope_t scope);
 ```
 
+## Cancellation
+
+```c
+orkester_cancel_token_t orkester_cancel_token_create(void);
+orkester_cancel_token_t orkester_cancel_token_clone(orkester_cancel_token_t token);
+void orkester_cancel_token_cancel(orkester_cancel_token_t token);
+bool orkester_cancel_token_is_cancelled(orkester_cancel_token_t token);
+void orkester_cancel_token_drop(orkester_cancel_token_t token);
+
+orkester_future_t orkester_future_with_cancellation(
+    orkester_future_t future, orkester_cancel_token_t token);
+orkester_future_t orkester_shared_future_with_cancellation(
+    orkester_shared_future_t shared, orkester_cancel_token_t token);
+```
+
 ## Combinators
 
 ```c
 orkester_future_t orkester_future_all(
     const orkester_async_t* system, orkester_future_t* futures, size_t count);
+orkester_future_t orkester_race(
+    const orkester_async_t* system, orkester_future_t* futures, size_t count);
+orkester_future_t orkester_delay(const orkester_async_t* system, uint64_t millis);
+orkester_future_t orkester_timeout(
+    const orkester_async_t* system, orkester_future_t future, uint64_t millis);
+orkester_future_t orkester_retry(
+    const orkester_async_t* system, uint32_t max_attempts,
+    orkester_retry_fn_t factory, void* ctx);
+```
+
+## Semaphore
+
+```c
+orkester_semaphore_t orkester_semaphore_create(
+    const orkester_async_t* system, size_t permits);
+orkester_semaphore_permit_t orkester_semaphore_acquire(orkester_semaphore_t sem);
+orkester_semaphore_permit_t orkester_semaphore_try_acquire(orkester_semaphore_t sem);
+size_t orkester_semaphore_available(orkester_semaphore_t sem);
+void orkester_semaphore_permit_drop(orkester_semaphore_permit_t permit);
+void orkester_semaphore_drop(orkester_semaphore_t sem);
+```
+
+## JoinSet
+
+```c
+orkester_join_set_t orkester_join_set_create(const orkester_async_t* system);
+void orkester_join_set_push(orkester_join_set_t js, orkester_future_t future);
+size_t orkester_join_set_len(orkester_join_set_t js);
+size_t orkester_join_set_join_all(orkester_join_set_t js, size_t* out_total);
+bool orkester_join_set_join_next(orkester_join_set_t js, bool* out_ok);
+void orkester_join_set_drop(orkester_join_set_t js);
+```
+
+## Channel (mpsc)
+
+```c
+void orkester_channel_create(size_t capacity,
+    orkester_sender_t* out_sender, orkester_receiver_t* out_receiver);
+void orkester_channel_create_oneshot(
+    orkester_sender_t* out_sender, orkester_receiver_t* out_receiver);
+
+orkester_sender_t orkester_sender_clone(orkester_sender_t sender);
+bool orkester_sender_send(orkester_sender_t sender, void* value, void** out_value);
+uint32_t orkester_sender_try_send(orkester_sender_t sender, void* value, void** out_value);
+uint32_t orkester_sender_send_timeout(
+    orkester_sender_t sender, void* value, uint64_t timeout_ms, void** out_value);
+bool orkester_sender_is_closed(orkester_sender_t sender);
+void orkester_sender_drop(orkester_sender_t sender);
+
+bool orkester_receiver_recv(orkester_receiver_t receiver, void** out_value);
+bool orkester_receiver_try_recv(orkester_receiver_t receiver, void** out_value);
+bool orkester_receiver_recv_timeout(
+    orkester_receiver_t receiver, uint64_t timeout_ms, void** out_value);
+bool orkester_receiver_is_closed(orkester_receiver_t receiver);
+void orkester_receiver_drop(orkester_receiver_t receiver);
 ```
 
 ## Thread Pool
 
 ```c
-orkester_thread_pool_t orkester_thread_pool_create(
-    const orkester_async_t* system, size_t num_threads);
+orkester_thread_pool_t orkester_thread_pool_create(size_t num_threads);
 void orkester_thread_pool_drop(orkester_thread_pool_t pool);
 orkester_thread_pool_t orkester_thread_pool_clone(orkester_thread_pool_t pool);
 ```
@@ -174,86 +325,53 @@ void orkester_string_drop(const char* ptr, size_t len);
 | `*_clone` | Borrowed | Caller owns |
 | `*_drop` / `*_destroy` | Consumed | — |
 | `*_resolve` / `*_reject` | Consumed | — |
-| `*_wait` | Consumed | — |
-| `*_then_*` (future) | Consumed | Caller owns |
-| `*_then_*` (shared) | Borrowed | Caller owns |
+| `*_wait` (future) | Consumed | Caller owns value |
+| `*_wait` (shared) | Borrowed | Caller owns cloned value |
+| `*_then` / `*_map` (future) | Consumed | Caller owns |
+| `*_then` / `*_catch` (shared) | Borrowed | Caller owns |
 | `*_share` | Consumed | Caller owns |
 | `*_into_unique` | Consumed | Caller owns |
 | `*_is_ready` | Borrowed | — |
 
-## Language Integration Examples
+## Payload Flow Example (C++)
 
-### C
-
-```c
-#include "orkester.h"
-
-orkester_async_t* sys = orkester_async_create_default(4);
-
-orkester_promise_t p;
-orkester_future_t f;
-orkester_promise_create(sys, &p, &f);
-orkester_promise_resolve(p);
-orkester_future_wait(f, NULL, NULL);
-
-orkester_async_destroy(sys);
-```
-
-### C++ (Custom Thread Pool)
+Values travel inside futures — no external `ValueSlot<T>` needed.
 
 ```cpp
 #include "orkester.h"
-#include <thread>
 
-auto* sys = orkester_async_create_default(
-    std::thread::hardware_concurrency());
+// Produce a value on a background thread
+static void* produce_value(void* ctx) {
+    int* result = new int(42);
+    return result;
+}
 
-int result = 0;
-auto f = orkester_future_create_resolved(sys);
-f = orkester_future_then_in_worker(f,
-    [](void* ctx) { *static_cast<int*>(ctx) = 42; }, &result);
-orkester_future_wait(f, nullptr, nullptr);
-// result == 42
+// Transform the value
+static void* double_value(void* ctx, void* value) {
+    int* input = static_cast<int*>(value);
+    int* output = new int(*input * 2);
+    delete input;  // we own the input
+    return output;
+}
 
-orkester_async_destroy(sys);
-```
+static void destroy_int(void* p) { delete static_cast<int*>(p); }
 
-### Python (via CFFI)
+int main() {
+    auto* sys = orkester_async_create_default(4);
 
-```python
-from orkester_ffi import ffi, lib
+    // Produce 42, then double it → 84
+    auto f = orkester_async_run_with_value(
+        sys, ORKESTER_BACKGROUND, produce_value, nullptr, destroy_int);
+    f = orkester_future_then(
+        f, ORKESTER_BACKGROUND, double_value, nullptr, destroy_int);
 
-sys = lib.orkester_async_create_default(4)
+    void* result = nullptr;
+    orkester_future_block(f, &result, nullptr, nullptr);
+    printf("result = %d\n", *static_cast<int*>(result));  // 84
+    delete static_cast<int*>(result);  // caller owns waited value
 
-p = ffi.new("orkester_promise_t*")
-f = ffi.new("orkester_future_t*")
-lib.orkester_promise_create(sys, p, f)
-lib.orkester_promise_resolve(p[0])
-lib.orkester_future_wait(f[0], ffi.NULL, ffi.NULL)
-
-lib.orkester_async_destroy(sys)
-```
-
-### C# (via P/Invoke)
-
-```csharp
-[DllImport("orkester_ffi")]
-static extern IntPtr orkester_async_create_default(nuint numThreads);
-
-[DllImport("orkester_ffi")]
-static extern void orkester_async_destroy(IntPtr sys);
-
-var sys = orkester_async_create_default(4);
-// ... use orkester ...
-orkester_async_destroy(sys);
-```
-
-### Swift
-
-```swift
-let sys = orkester_async_create_default(4)!
-// ... use orkester ...
-orkester_async_destroy(sys)
+    orkester_async_destroy(sys);
+}
 ```
 
 ## License

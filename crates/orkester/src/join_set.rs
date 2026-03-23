@@ -82,14 +82,14 @@ impl AsyncSystem {
     /// Spawn a detached task in the given scheduling context.
     ///
     /// The task runs to completion (or panic) with no way to observe its
-    /// result. Use [`Context::Immediate`] to run inline on the current
+    /// result. Use [`Context::IMMEDIATE`] to run inline on the current
     /// thread.
-    pub fn spawn<F>(&self, context: Context, f: F)
+    pub fn spawn_detached<F>(&self, context: Context, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
-        match self.inner.scheduler_for(context) {
-            Some(scheduler) => scheduler.schedule(Box::new(f)),
+        match self.inner.executor_for(context) {
+            Some(executor) => executor.execute(Box::new(f)),
             None => f(), // Immediate — run inline
         }
     }

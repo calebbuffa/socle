@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use orkester::{AsyncSystem, ThreadPoolTaskProcessor};
+use orkester::AsyncSystem;
 use selekt::{
     ContentKey, ContentLoader, HierarchyPatch, HierarchyPatchError, HierarchyReference,
     HierarchyResolver, LoadPriority, LoadedContent, LodDescriptor, LodEvaluator, NodeId, NodeKind,
@@ -143,7 +143,7 @@ impl HierarchyResolver for TestHierarchyResolver {
         async_system: &AsyncSystem,
         _reference: HierarchyReference,
     ) -> orkester::Future<Result<Option<HierarchyPatch>, Self::Error>> {
-        async_system.create_resolved_future(Ok(None))
+        async_system.resolved(Ok(None))
     }
 }
 
@@ -180,7 +180,7 @@ impl ContentLoader<TestContent> for TestContentLoader {
             payload: Payload::Renderable(TestContent { node_id }),
             byte_size: 1024,
         };
-        let future = async_system.create_resolved_future(Ok(content));
+        let future = async_system.resolved(Ok(content));
         (request_id, future)
     }
 
@@ -234,8 +234,7 @@ pub fn create_test_engine(
     WeightedFairScheduler,
     TestPolicy,
 > {
-    let task_processor = Arc::new(ThreadPoolTaskProcessor::new(2));
-    let async_system = AsyncSystem::new(task_processor);
+    let async_system = AsyncSystem::with_threads(2);
 
     SelectionEngine::new(
         async_system,

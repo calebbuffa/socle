@@ -1,15 +1,26 @@
-//! Runtime-agnostic async scheduling primitives.
+//! Context-aware task scheduling for Rust.
 //!
 //! `orkester` provides:
-//! - [`AsyncSystem`] — root async runtime
+//! - [`AsyncSystem`] — root async runtime with context-aware scheduling
 //! - [`Future`] / [`SharedFuture`] / [`Promise`] — async value types
-//! - [`TaskProcessor`] — background thread dispatch
+//! - [`Context`] — lightweight scheduling handle (u32-indexed)
+//! - [`Executor`] — trait for custom execution backends
+//!
+//! # Feature Flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `custom-runtime` *(default)* | Built-in thread pool executor |
+//! | `tokio-runtime` | [`TokioExecutor`] backend via `tokio::runtime::Handle` |
+//! | `wasm` | [`WasmExecutor`] + `spawn_local` for WebAssembly targets |
 
+mod block_on;
 mod cancellation;
 pub mod channel;
-pub mod combinators;
+mod combinators;
 mod context;
 mod error;
+mod executor;
 mod future;
 mod join_set;
 mod main_thread;
@@ -22,16 +33,19 @@ mod thread_pool;
 
 pub use cancellation::CancellationToken;
 pub use channel::{Receiver, SendError, Sender, TrySendError};
-pub use combinators::{delay, race, retry, timeout, RetryConfig};
+pub use combinators::{RetryConfig, delay, race, retry, timeout};
 pub use context::Context;
 pub use error::{AsyncError, ErrorCode};
-#[doc(hidden)]
-pub use future::ResolveOutput;
+pub use executor::Executor;
+#[cfg(feature = "tokio-runtime")]
+pub use executor::TokioExecutor;
+#[cfg(feature = "wasm")]
+pub use executor::WasmExecutor;
 pub use future::{Future, SharedFuture};
 pub use join_set::JoinSet;
 pub use main_thread::MainThreadScope;
 pub use promise::Promise;
 pub use semaphore::{Semaphore, SemaphorePermit};
-pub use system::{AsyncSystem, Waitable};
-pub use task_processor::{TaskProcessor, ThreadPoolTaskProcessor};
+pub use system::{AsyncSystem, AsyncSystemBuilder};
+
 pub use thread_pool::ThreadPool;

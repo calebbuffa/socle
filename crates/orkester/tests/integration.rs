@@ -3,16 +3,15 @@
 //! These live in a separate test file to avoid bloating the source modules
 //! while exercising the public API thoroughly.
 
-use orkester::ThreadPoolTaskProcessor;
 use orkester::channel;
-use orkester::combinators::{delay, race, retry, timeout};
 use orkester::{AsyncSystem, CancellationToken, Context, ErrorCode, Semaphore};
+use orkester::{delay, race, retry, timeout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 fn system() -> AsyncSystem {
-    AsyncSystem::new(Arc::new(ThreadPoolTaskProcessor::new(4)))
+    AsyncSystem::with_threads(4)
 }
 
 // Cancellation
@@ -21,12 +20,12 @@ fn system() -> AsyncSystem {
 fn cancel_before_completion_rejects() {
     let sys = system();
     let token = CancellationToken::new();
-    let (promise, future) = sys.create_promise::<i32>();
+    let (promise, future) = sys.promise::<i32>();
 
     let guarded = future.with_cancellation(&token);
     token.cancel();
 
-    let err = guarded.wait().unwrap_err();
+    let err = guarded.block().unwrap_err();
     assert_eq!(err.code(), ErrorCode::Cancelled);
 
     // The original promise is still dangling — drop it.
@@ -37,13 +36,13 @@ fn cancel_before_completion_rejects() {
 fn cancel_after_resolution_delivers_value() {
     let sys = system();
     let token = CancellationToken::new();
-    let (promise, future) = sys.create_promise::<i32>();
+    let (promise, future) = sys.promise::<i32>();
 
     promise.resolve(42);
     let guarded = future.with_cancellation(&token);
     token.cancel(); // too late — value already set
 
-    assert_eq!(guarded.wait().unwrap(), 42);
+    assert_eq!(guarded.block().unwrap(), 42);
 }
 
 #[test]
@@ -51,15 +50,15 @@ fn cancel_token_is_reusable_across_futures() {
     let sys = system();
     let token = CancellationToken::new();
 
-    let (p1, f1) = sys.create_promise::<()>();
-    let (p2, f2) = sys.create_promise::<()>();
+    let (p1, f1) = sys.promise::<()>();
+    let (p2, f2) = sys.promise::<()>();
     let g1 = f1.with_cancellation(&token);
     let g2 = f2.with_cancellation(&token);
 
     token.cancel();
 
-    assert_eq!(g1.wait().unwrap_err().code(), ErrorCode::Cancelled);
-    assert_eq!(g2.wait().unwrap_err().code(), ErrorCode::Cancelled);
+    assert_eq!(g1.block().unwrap_err().code(), ErrorCode::Cancelled);
+    assert_eq!(g2.block().unwrap_err().code(), ErrorCode::Cancelled);
 
     drop(p1);
     drop(p2);
@@ -73,9 +72,9 @@ fn cancel_already_cancelled_token_fires_immediately() {
 
     assert!(token.is_cancelled());
 
-    let (_p, f) = sys.create_promise::<()>();
+    let (_p, f) = sys.promise::<()>();
     let g = f.with_cancellation(&token);
-    assert_eq!(g.wait().unwrap_err().code(), ErrorCode::Cancelled);
+    assert_eq!(g.block().unwrap_err().code(), ErrorCode::Cancelled);
 }
 
 // Delay
@@ -85,7 +84,7 @@ fn delay_completes_after_duration() {
     let sys = system();
     let start = Instant::now();
     let future = delay(&sys, Duration::from_millis(50));
-    future.wait().unwrap();
+    future.block().unwrap();
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(40),
@@ -98,7 +97,7 @@ fn delay_completes_after_duration() {
 fn delay_zero_completes_immediately() {
     let sys = system();
     let future = delay(&sys, Duration::ZERO);
-    future.wait().unwrap();
+    future.block().unwrap();
 }
 
 // Timeout
@@ -106,29 +105,29 @@ fn delay_zero_completes_immediately() {
 #[test]
 fn timeout_expires_rejects_with_timed_out() {
     let sys = system();
-    let (_p, f) = sys.create_promise::<()>(); // never resolves
+    let (_p, f) = sys.promise::<()>(); // never resolves
     let guarded = timeout(&sys, f, Duration::from_millis(50));
 
-    let err = guarded.wait().unwrap_err();
+    let err = guarded.block().unwrap_err();
     assert_eq!(err.code(), ErrorCode::TimedOut);
 }
 
 #[test]
 fn timeout_passes_when_upstream_is_fast() {
     let sys = system();
-    let f = sys.create_resolved_future(99i32);
+    let f = sys.resolved(99i32);
     let guarded = timeout(&sys, f, Duration::from_secs(10));
-    assert_eq!(guarded.wait().unwrap(), 99);
+    assert_eq!(guarded.block().unwrap(), 99);
 }
 
 #[test]
 fn timeout_propagates_upstream_error() {
     let sys = system();
-    let (p, f) = sys.create_promise::<()>();
+    let (p, f) = sys.promise::<()>();
     p.reject(orkester::AsyncError::msg("boom"));
 
     let guarded = timeout(&sys, f, Duration::from_secs(10));
-    let err = guarded.wait().unwrap_err();
+    let err = guarded.block().unwrap_err();
     assert!(err.to_string().contains("boom"));
 }
 
@@ -137,13 +136,13 @@ fn timeout_propagates_upstream_error() {
 #[test]
 fn race_returns_first_to_resolve() {
     let sys = system();
-    let (p1, f1) = sys.create_promise::<i32>();
-    let (p2, f2) = sys.create_promise::<i32>();
+    let (p1, f1) = sys.promise::<i32>();
+    let (p2, f2) = sys.promise::<i32>();
 
     p1.resolve(1);
     // p2 never resolves — but it's fine because race takes the first
 
-    let result = race(&sys, vec![f1, f2]).wait().unwrap();
+    let result = race(&sys, vec![f1, f2]).block().unwrap();
     assert_eq!(result, 1);
     drop(p2);
 }
@@ -151,7 +150,7 @@ fn race_returns_first_to_resolve() {
 #[test]
 fn race_empty_rejects() {
     let sys = system();
-    let result = race::<()>(&sys, vec![]).wait();
+    let result = race::<()>(&sys, vec![]).block();
     assert!(result.is_err());
 }
 
@@ -162,7 +161,7 @@ fn race_with_delays_picks_fastest() {
     let slow = delay(&sys, Duration::from_millis(200));
 
     let start = Instant::now();
-    race(&sys, vec![fast, slow]).wait().unwrap();
+    race(&sys, vec![fast, slow]).block().unwrap();
     let elapsed = start.elapsed();
     assert!(
         elapsed < Duration::from_millis(150),
@@ -182,9 +181,9 @@ fn retry_succeeds_on_first_attempt() {
 
     let result = retry(&sys, 3, Default::default(), move || {
         c.fetch_add(1, Ordering::SeqCst);
-        sys2.create_resolved_future(Ok(42i32))
+        sys2.resolved(Ok(42i32))
     })
-    .wait()
+    .block()
     .unwrap();
 
     assert_eq!(result, 42);
@@ -201,11 +200,11 @@ fn retry_fails_after_max_attempts() {
 
     let result: Result<i32, _> = retry(&sys, 3, Default::default(), move || {
         c.fetch_add(1, Ordering::SeqCst);
-        let (p, f) = sys2.create_promise();
+        let (p, f) = sys2.promise();
         p.resolve(Err::<i32, _>(orkester::AsyncError::msg("nope")));
         f
     })
-    .wait();
+    .block();
 
     assert!(result.is_err());
     assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -219,7 +218,7 @@ fn join_set_collects_all_results() {
     let mut js = sys.join_set::<i32>();
 
     for i in 0..5 {
-        let f = sys.run(orkester::Context::Worker, move || i * 10);
+        let f = sys.run(orkester::Context::BACKGROUND, move || i * 10);
         js.push(f);
     }
 
@@ -233,9 +232,9 @@ fn join_set_join_next_returns_in_order() {
     let sys = system();
     let mut js = sys.join_set::<&str>();
 
-    js.push(sys.create_resolved_future("a"));
-    js.push(sys.create_resolved_future("b"));
-    js.push(sys.create_resolved_future("c"));
+    js.push(sys.resolved("a"));
+    js.push(sys.resolved("b"));
+    js.push(sys.resolved("c"));
 
     assert_eq!(js.join_next().unwrap().unwrap(), "a");
     assert_eq!(js.join_next().unwrap().unwrap(), "b");
@@ -256,7 +255,7 @@ fn join_set_handles_rejected_futures() {
     let sys = system();
     let mut js = sys.join_set::<()>();
 
-    let (p, f) = sys.create_promise::<()>();
+    let (p, f) = sys.promise::<()>();
     p.reject(orkester::AsyncError::msg("fail"));
     js.push(f);
 
@@ -273,7 +272,7 @@ fn spawn_runs_on_worker() {
     let done = Arc::new(AtomicUsize::new(0));
     let d = done.clone();
 
-    sys.spawn(Context::Worker, move || {
+    sys.spawn_detached(Context::BACKGROUND, move || {
         d.store(1, Ordering::SeqCst);
     });
 
@@ -288,7 +287,7 @@ fn spawn_immediate_runs_inline() {
     let done = Arc::new(AtomicUsize::new(0));
     let d = done.clone();
 
-    sys.spawn(Context::Immediate, move || {
+    sys.spawn_detached(Context::IMMEDIATE, move || {
         d.store(1, Ordering::SeqCst);
     });
 
@@ -304,7 +303,7 @@ fn cancel_races_with_timeout() {
     let token = CancellationToken::new();
 
     // Create a future that won't complete on its own.
-    let (_p, f) = sys.create_promise::<()>();
+    let (_p, f) = sys.promise::<()>();
     let guarded = f.with_cancellation(&token);
     let timed = timeout(&sys, guarded, Duration::from_millis(200));
 
@@ -315,7 +314,7 @@ fn cancel_races_with_timeout() {
         token2.cancel();
     });
 
-    let err = timed.wait().unwrap_err();
+    let err = timed.block().unwrap_err();
     assert_eq!(err.code(), ErrorCode::Cancelled);
 }
 
