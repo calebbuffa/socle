@@ -21,26 +21,23 @@ typedef enum orkester_context_t {
  * Result code for channel send operations.
  */
 typedef enum orkester_send_result_t {
-  /**
-   * Value was sent successfully.
-   */
   ORKESTER_SEND_OK = 0,
-  /**
-   * Channel is full (try_send / send_timeout).
-   */
   ORKESTER_SEND_FULL = 1,
-  /**
-   * Channel is closed (receiver dropped).
-   */
   ORKESTER_SEND_CLOSED = 2,
 } orkester_send_result_t;
 
+typedef void *orkester_cancel_token_t;
+
+typedef void *orkester_sender_t;
+
+typedef void *orkester_receiver_t;
+
 /**
- * Opaque async runtime handle. Wraps `orkester::AsyncSystem`.
+ * Opaque async runtime handle. Wraps `orkester::Scheduler`.
  */
-typedef struct orkester_async_t {
+typedef struct orkester_t {
   uint8_t _opaque;
-} orkester_async_t;
+} orkester_t;
 
 /**
  * Callback for fire-and-forget operations — `void(*)(void*)`.
@@ -49,141 +46,64 @@ typedef void (*orkester_callback_fn_t)(void*);
 
 /**
  * Dispatch function type for scheduling work on a background thread.
- *
- * The host calls `work(work_data)` on a background thread.
  */
 typedef void (*orkester_dispatch_fn_t)(void *ctx, orkester_callback_fn_t work, void *work_data);
 
 /**
- * Opaque handle to a `CancellationToken`.
+ * Opaque handle to a `Task<Payload>`.
  */
-typedef void *orkester_cancel_token_t;
+typedef void *orkester_task_t;
+
+typedef void *orkester_join_set_t;
 
 /**
- * Opaque handle to a channel `Sender<*mut c_void>`.
+ * Opaque handle to a `MainThreadScope`.
  */
-typedef void *orkester_sender_t;
+typedef void *orkester_main_scope_t;
 
 /**
- * Opaque handle to a channel `Receiver<*mut c_void>`.
+ * Opaque handle to a `Resolver<Payload>`.
  */
-typedef void *orkester_receiver_t;
+typedef void *orkester_resolver_t;
 
 /**
- * Opaque handle to a `Future<Payload>`.
+ * Returned by `orkester_resolver_create`.
  */
-typedef void *orkester_future_t;
+typedef struct orkester_resolver_pair_t {
+  orkester_resolver_t resolver;
+  orkester_task_t task;
+} orkester_resolver_pair_t;
+
+typedef orkester_task_t (*orkester_retry_fn_t)(void *ctx);
+
+typedef void *orkester_semaphore_permit_t;
+
+typedef void *orkester_semaphore_t;
 
 /**
- * Error-recovery callback that receives an opaque error pointer and
- * returns a recovery value. The callback does NOT take ownership of
- * `error` — copy it if needed beyond the callback lifetime.
+ * Error-catch callback that receives an opaque error pointer
+ * and returns an `orkester_task_t`.
+ * The callback does NOT take ownership of `error`.
  */
-typedef void *(*orkester_catch_fn_t)(void *ctx, void *error);
+typedef orkester_task_t (*orkester_catch_fn_t)(void *ctx, void *error);
 
 /**
- * Value transform callback for continuations.
- * Receives `(ctx, input_value)`, returns the output value pointer.
- * The callback takes ownership of `input_value` and must either
- * reuse it or destroy it.
- */
-typedef void *(*orkester_map_fn_t)(void *ctx, void *value);
-
-/**
- * Opaque handle to a `SharedFuture<Payload>` (cloneable).
- */
-typedef void *orkester_shared_future_t;
-
-/**
- * Async-transform callback for continuations that return futures.
- * Receives `(ctx, input_value)`, returns a new `orkester_future_t`.
+ * Async-transform callback for continuations.
+ * Receives `(ctx, input_value)`, returns an `orkester_task_t`.
  * The callback takes ownership of `input_value`.
  * Returning null is treated as resolving with an empty payload.
  */
-typedef orkester_future_t (*orkester_then_fn_t)(void *ctx, void *value);
+typedef orkester_task_t (*orkester_then_fn_t)(void *ctx, void *value);
 
 /**
  * Opaque handle to a `ThreadPool`.
  */
 typedef void *orkester_thread_pool_t;
 
-/**
- * Opaque handle to a `JoinSet<Payload>`.
- */
-typedef void *orkester_join_set_t;
-
-/**
- * Opaque handle to a `MainThreadScope`.
- */
-typedef void *orkester_main_thread_scope_t;
-
-/**
- * Opaque handle to a `Promise<Payload>` (completion trigger).
- */
-typedef void *orkester_promise_t;
-
-/**
- * Callback that produces a new future for each retry attempt.
- * Must return an `orkester_future_t`. Returning null is treated as failure.
- */
-typedef orkester_future_t (*orkester_retry_fn_t)(void *ctx);
-
-/**
- * Opaque handle to a `SemaphorePermit`.
- */
-typedef void *orkester_semaphore_permit_t;
-
-/**
- * Opaque handle to a `Semaphore`.
- */
-typedef void *orkester_semaphore_t;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
 
-/**
- * Clone an `orkester_async_t` (cheap Arc clone).
- */
-struct orkester_async_t *orkester_async_clone(const struct orkester_async_t *ptr);
-
-/**
- * Create an `orkester_async_t` from a dispatch function.
- *
- * - `dispatch`: called when orkester needs work scheduled on a background
- *   thread. The implementation must call `work(work_data)` from a background
- *   thread.
- * - `ctx`: user data pointer passed as the first argument to `dispatch`.
- * - `destroy`: optional cleanup function called when the system is dropped.
- *   May be null.
- */
-struct orkester_async_t *orkester_async_create(orkester_dispatch_fn_t dispatch,
-                                               void *ctx,
-                                               void (*destroy)(void*));
-
-/**
- * Create an `orkester_async_t` with a built-in thread pool.
- */
-struct orkester_async_t *orkester_async_create_default(size_t num_threads);
-
-/**
- * Destroy an `orkester_async_t`.
- */
-void orkester_async_destroy(struct orkester_async_t *ptr);
-
-/**
- * Dispatch all queued main-thread tasks. Returns how many were dispatched.
- */
-size_t orkester_async_dispatch(const struct orkester_async_t *system);
-
-/**
- * Dispatch a single main-thread task. Returns true if one was dispatched.
- */
-bool orkester_async_dispatch_one(const struct orkester_async_t *system);
-
-/**
- * Signal cancellation.
- */
 void orkester_cancel_token_cancel(orkester_cancel_token_t token);
 
 orkester_cancel_token_t orkester_cancel_token_clone(orkester_cancel_token_t token);
@@ -194,434 +114,183 @@ void orkester_cancel_token_drop(orkester_cancel_token_t token);
 
 bool orkester_cancel_token_is_cancelled(orkester_cancel_token_t token);
 
-/**
- * Create a bounded mpsc channel with the given capacity.
- * Writes sender and receiver handles to the output pointers.
- */
 void orkester_channel_create(size_t capacity,
                              orkester_sender_t *out_sender,
                              orkester_receiver_t *out_receiver);
 
-/**
- * Create a one-shot channel (capacity 1).
- */
 void orkester_channel_create_oneshot(orkester_sender_t *out_sender,
                                      orkester_receiver_t *out_receiver);
 
 /**
- * Create a future that completes after `millis` milliseconds.
- * Resolves with an empty payload.
+ * Clone a `Scheduler` (cheap Arc clone).
  */
-orkester_future_t orkester_delay(const struct orkester_async_t *system, uint64_t millis);
+struct orkester_t *orkester_clone(const struct orkester_t *ptr);
 
 /**
- * Wait for all futures to complete. Consumes all input handles.
- * Returns a single future that resolves when every input has resolved.
- * If any input future rejects, the output future rejects with the first error.
- * The combined future carries an empty payload (individual payloads are dropped).
+ * Create a `Scheduler` from a dispatch function.
  */
-orkester_future_t orkester_future_all(const struct orkester_async_t *system,
-                                      orkester_future_t *futures,
-                                      size_t count);
+struct orkester_t *orkester_create(orkester_dispatch_fn_t dispatch,
+                                   void *ctx,
+                                   void (*destroy)(void*));
 
 /**
- * Wait for all futures to complete, preserving per-element payloads.
- * Consumes all input future handles.
- *
- * Returns a single future whose payload is a `PayloadArray`. Use
- * `orkester_payload_array_len` and `orkester_payload_array_get` to
- * extract individual values from the result.
- *
- * If any input future rejects, the output future rejects with the first
- * error. Successfully resolved payloads are dropped in that case.
+ * Create a `Scheduler` with a built-in thread pool.
  */
-orkester_future_t orkester_future_all_with_values(const struct orkester_async_t *system,
-                                                  orkester_future_t *futures,
-                                                  size_t count);
+struct orkester_t *orkester_create_default(size_t num_threads);
 
 /**
- * Block until a future completes. Consumes the handle.
- * On success, writes the payload value to `out_value` (if non-null).
- * The caller takes ownership of the returned value and must destroy it.
+ * Create a task that completes after `millis` milliseconds.
  */
-bool orkester_future_block(orkester_future_t future,
-                           void **out_value,
-                           const char **out_error_ptr,
-                           size_t *out_error_len);
+orkester_task_t orkester_delay(const struct orkester_t *system, uint64_t millis);
 
 /**
- * Block in main thread, dispatching main-thread tasks while waiting. Consumes the handle.
- * On success, writes the payload value to `out_value` (if non-null).
+ * Destroy a `Scheduler`.
  */
-bool orkester_future_block_with_main(orkester_future_t future,
-                                     void **out_value,
-                                     const char **out_error_ptr,
-                                     size_t *out_error_len);
+void orkester_destroy(struct orkester_t *ptr);
 
 /**
- * Attach an error-recovery handler that receives an opaque error pointer
- * and returns a recovery value. If the future resolves, the callback is
- * skipped and the value passes through unchanged.
- *
- * The `callback` receives `(ctx, error_ptr)` where `error_ptr` is the
- * pointer previously passed to `orkester_promise_reject_with`, or null
- * if the error was not opaque. The callback returns a `void*` recovery
- * value.
- *
- * Consumes the input future handle.
+ * Dispatch all queued main-thread tasks. Returns how many were dispatched.
  */
-orkester_future_t orkester_future_catch(orkester_future_t future,
-                                        enum orkester_context_t context,
-                                        orkester_catch_fn_t callback,
-                                        void *ctx,
-                                        void (*result_destroy)(void*));
+size_t orkester_dispatch(const struct orkester_t *system);
 
 /**
- * Create an already-resolved future with an empty payload.
+ * Dispatch a single main-thread task. Returns true if one was dispatched.
  */
-orkester_future_t orkester_future_create_resolved(const struct orkester_async_t *system);
+bool orkester_dispatch_one(const struct orkester_t *system);
 
 /**
- * Create an already-resolved future carrying a value.
+ * Wait for all tasks to complete (void — payloads dropped).
+ * Consumes all input handles. Returns a single task.
  */
-orkester_future_t orkester_future_create_resolved_with(const struct orkester_async_t *system,
-                                                       void *value,
-                                                       void (*destroy_fn)(void*));
-
-void orkester_future_drop(orkester_future_t future);
-
-bool orkester_future_is_ready(orkester_future_t future);
+orkester_task_t orkester_join_all(const struct orkester_t *system,
+                                  orkester_task_t *tasks,
+                                  size_t count);
 
 /**
- * Attach a synchronous value-transform continuation in the given scheduling
- * context. The `transform` callback receives `(ctx, input_value)` and returns
- * a new value pointer. The callback takes ownership of `input_value`.
- * `result_destroy` is called to clean up the returned value when dropped.
- * Consumes the input future handle.
+ * Wait for all tasks to complete, preserving per-element payloads.
+ * Consumes all input handles. Returns a task whose payload is a `ValueArray`.
  */
-orkester_future_t orkester_future_map(orkester_future_t future,
-                                      enum orkester_context_t context,
-                                      orkester_map_fn_t transform,
-                                      void *ctx,
-                                      void (*result_destroy)(void*));
+orkester_task_t orkester_join_all_values(const struct orkester_t *system,
+                                         orkester_task_t *tasks,
+                                         size_t count);
 
-/**
- * Convert a future to a shared future. Consumes the future handle.
- *
- * `clone_fn` is called to clone the payload when the shared future is
- * blocked or continued. Pass null if sharing is only used for fan-out
- * without accessing the value.
- */
-orkester_shared_future_t orkester_future_share(orkester_future_t future, void *(*clone_fn)(void*));
+orkester_join_set_t orkester_join_set_create(const struct orkester_t *system);
 
-/**
- * Attach an async-transform continuation. The callback receives the input
- * value and returns a new `orkester_future_t` (or null for an empty-payload
- * resolved future). The returned inner future is **flattened** — the
- * output future resolves when the inner future resolves.
- *
- * This is the FFI equivalent of Rust's `future.then(ctx, |v| -> Future<U>)`
- * with automatic unwrapping.
- *
- * Consumes the input future handle.
- */
-orkester_future_t orkester_future_then(orkester_future_t future,
-                                       enum orkester_context_t context,
-                                       orkester_then_fn_t transform,
-                                       void *ctx);
-
-/**
- * Attach an async-transform continuation in a thread pool.
- * Consumes the input future handle.
- */
-orkester_future_t orkester_future_then_in_pool(orkester_future_t future,
-                                               orkester_thread_pool_t pool,
-                                               orkester_then_fn_t transform,
-                                               void *ctx);
-
-/**
- * Attach a cancellation token to a future. Consumes the future handle.
- * If the token is signalled before the future completes, the returned
- * future rejects with error code CANCELLED.
- */
-orkester_future_t orkester_future_with_cancellation(orkester_future_t future,
-                                                    orkester_cancel_token_t token);
-
-/**
- * Create a new JoinSet.
- */
-orkester_join_set_t orkester_join_set_create(const struct orkester_async_t *system);
-
-/**
- * Drop a JoinSet without waiting. Consumes the handle.
- */
 void orkester_join_set_drop(orkester_join_set_t js);
 
-/**
- * Wait for all futures in the JoinSet. Consumes the handle.
- * Returns the number of futures that resolved successfully.
- * `out_total` receives the total count. Failures are counted as
- * `*out_total - return_value`.
- */
 size_t orkester_join_set_join_all(orkester_join_set_t js, size_t *out_total);
 
-/**
- * Wait for the next future to complete. Returns true if a result was
- * obtained, false if the JoinSet is empty.
- * `out_ok` is set to true if the future resolved, false if it rejected.
- */
 bool orkester_join_set_join_next(orkester_join_set_t js, bool *out_ok);
 
 size_t orkester_join_set_len(orkester_join_set_t js);
 
-/**
- * Push a future into the JoinSet. Consumes the future handle.
- */
-void orkester_join_set_push(orkester_join_set_t js, orkester_future_t future);
+void orkester_join_set_push(orkester_join_set_t js, orkester_task_t task);
 
 /**
- * Enter main-thread scope: the calling thread is treated as the main thread
- * until `orkester_main_thread_scope_drop` is called on the returned handle.
+ * Enter main-thread scope.
  */
-orkester_main_thread_scope_t orkester_main_thread_scope_create(const struct orkester_async_t *system);
+orkester_main_scope_t orkester_main_scope_create(const struct orkester_t *system);
 
 /**
  * Leave main-thread scope. Consumes the handle.
  */
-void orkester_main_thread_scope_drop(orkester_main_thread_scope_t scope);
+void orkester_main_scope_drop(orkester_main_scope_t scope);
 
 /**
- * Destroy a payload array and all remaining (un-extracted) values.
- * Call this after you've extracted the values you need.
+ * Race multiple tasks. Consumes all input handles.
  */
-void orkester_payload_array_drop(void *array_payload);
-
-/**
- * Extract the value pointer at `index` from a payload array.
- * Transfers ownership of the value to the caller. Each index should
- * only be extracted once. Returns null if the index is out of bounds
- * or the value was already extracted.
- *
- * `array_payload` is the `out_value` obtained from blocking the future
- * returned by `orkester_future_all_with_values`.
- */
-void *orkester_payload_array_get(void *array_payload, size_t index);
-
-/**
- * Get the number of elements in a payload array.
- * `array_payload` is the `out_value` pointer obtained from blocking a
- * future returned by `orkester_future_all_with_values`.
- */
-size_t orkester_payload_array_len(const void *array_payload);
-
-/**
- * Create a promise/future pair.
- */
-void orkester_promise_create(const struct orkester_async_t *system,
-                             orkester_promise_t *out_promise,
-                             orkester_future_t *out_future);
-
-void orkester_promise_drop(orkester_promise_t promise);
-
-/**
- * Signal failure. Consumes the handle.
- */
-void orkester_promise_reject(orkester_promise_t promise, const char *message, size_t message_len);
-
-/**
- * Reject a promise with an opaque error object. Consumes the promise handle.
- *
- * The `error` pointer is stored inside a Rust `AsyncError`. When the error
- * is eventually observed (via `orkester_future_catch` or
- * `orkester_future_block`), the pointer is passed back to the
- * host. `destroy` is called when the error is dropped.
- *
- * This enables host languages to flow typed error objects (e.g. C++
- * `exception_ptr`) through the Rust scheduling pipeline without
- * serialization.
- */
-void orkester_promise_reject_with(orkester_promise_t promise, void *error, void (*destroy)(void*));
-
-/**
- * Signal completion (resolve the promise) with no payload. Consumes the handle.
- */
-void orkester_promise_resolve(orkester_promise_t promise);
-
-/**
- * Signal completion with a value payload. Consumes the promise handle.
- *
- * - `value`: the value pointer to carry. Null is valid.
- * - `destroy`: optional destructor called when the payload is dropped.
- */
-void orkester_promise_resolve_with(orkester_promise_t promise, void *value, void (*destroy)(void*));
-
-/**
- * Race multiple futures. Returns a future that resolves with the first
- * to complete. Consumes all input future handles.
- */
-orkester_future_t orkester_race(const struct orkester_async_t *system,
-                                orkester_future_t *futures,
-                                size_t count);
+orkester_task_t orkester_race(const struct orkester_t *system,
+                              orkester_task_t *tasks,
+                              size_t count);
 
 void orkester_receiver_drop(orkester_receiver_t receiver);
 
-/**
- * Check if a receiver's channel is closed and empty.
- */
-bool orkester_receiver_is_closed(orkester_receiver_t receiver);
-
-/**
- * Receive a value (blocking). Returns true if a value was received.
- * `out_value` receives the pointer. Returns false when all senders are
- * dropped and the buffer is empty.
- */
 bool orkester_receiver_recv(orkester_receiver_t receiver, void **out_value);
 
 /**
- * Receive with a timeout in milliseconds. Returns true if a value arrived
- * before the deadline.
+ * Create an already-resolved task with no payload.
  */
-bool orkester_receiver_recv_timeout(orkester_receiver_t receiver,
-                                    uint64_t timeout_ms,
-                                    void **out_value);
+orkester_task_t orkester_resolved(const struct orkester_t *system);
 
 /**
- * Non-blocking receive. Returns true if a value was available.
+ * Create an already-resolved task carrying a value.
  */
-bool orkester_receiver_try_recv(orkester_receiver_t receiver, void **out_value);
+orkester_task_t orkester_resolved_with_destroy(const struct orkester_t *system,
+                                               void *value,
+                                               void (*destroy_fn)(void*));
+
+/**
+ * Create a resolver/task pair.
+ */
+struct orkester_resolver_pair_t orkester_resolver_create(const struct orkester_t *system);
+
+/**
+ * Drop a resolver without resolving (auto-rejects the paired task).
+ */
+void orkester_resolver_drop(orkester_resolver_t resolver);
+
+/**
+ * Reject with a string message. Consumes the resolver handle.
+ */
+void orkester_resolver_reject(orkester_resolver_t resolver,
+                              const char *message,
+                              size_t message_len);
+
+/**
+ * Reject with an opaque error object. Consumes the resolver handle.
+ */
+void orkester_resolver_reject_opaque(orkester_resolver_t resolver,
+                                     void *error,
+                                     void (*destroy)(void*));
+
+/**
+ * Resolve with no payload (void). Consumes the resolver handle.
+ */
+void orkester_resolver_resolve_empty(orkester_resolver_t resolver);
+
+/**
+ * Resolve with a value payload. Consumes the resolver handle.
+ */
+void orkester_resolver_resolve_with(orkester_resolver_t resolver,
+                                    void *value,
+                                    void (*destroy)(void*));
 
 /**
  * Retry an operation up to `max_attempts` times with exponential back-off.
- *
- * On each attempt, `factory` is called to produce a new future. If that
- * future resolves, the retry future resolves. If it rejects and attempts
- * remain, the next attempt is scheduled after a back-off delay.
  */
-orkester_future_t orkester_retry(const struct orkester_async_t *system,
-                                 uint32_t max_attempts,
-                                 orkester_retry_fn_t factory,
-                                 void *ctx);
+orkester_task_t orkester_retry(const struct orkester_t *system,
+                               uint32_t max_attempts,
+                               orkester_retry_fn_t factory,
+                               void *ctx);
 
-/**
- * Acquire a semaphore permit (blocking). Returns a permit handle.
- */
 orkester_semaphore_permit_t orkester_semaphore_acquire(orkester_semaphore_t sem);
 
 size_t orkester_semaphore_available(orkester_semaphore_t sem);
 
-/**
- * Create a counting semaphore with `permits` available slots.
- */
-orkester_semaphore_t orkester_semaphore_create(const struct orkester_async_t *system,
-                                               size_t permits);
+orkester_semaphore_t orkester_semaphore_create(const struct orkester_t *system, size_t permits);
 
 void orkester_semaphore_drop(orkester_semaphore_t sem);
 
-/**
- * Drop a semaphore permit (releases the slot back to the semaphore).
- */
 void orkester_semaphore_permit_drop(orkester_semaphore_permit_t permit);
 
-/**
- * Try to acquire a semaphore permit without blocking.
- * Returns null if no permit is available.
- */
 orkester_semaphore_permit_t orkester_semaphore_try_acquire(orkester_semaphore_t sem);
 
 orkester_sender_t orkester_sender_clone(orkester_sender_t sender);
 
 void orkester_sender_drop(orkester_sender_t sender);
 
-bool orkester_sender_is_closed(orkester_sender_t sender);
+enum orkester_send_result_t orkester_sender_send(orkester_sender_t sender,
+                                                 void *value,
+                                                 void **out_value);
 
-/**
- * Send a value through the channel (blocking if full).
- * Returns true on success, false if the receiver has been dropped.
- * On failure, `out_value` receives the unsent value back.
- */
-bool orkester_sender_send(orkester_sender_t sender, void *value, void **out_value);
-
-/**
- * Send with a timeout in milliseconds.
- * On failure, `out_value` receives the value back.
- */
-enum orkester_send_result_t orkester_sender_send_timeout(orkester_sender_t sender,
-                                                         void *value,
-                                                         uint64_t timeout_ms,
-                                                         void **out_value);
-
-/**
- * Try to send without blocking.
- * On failure, `out_value` receives the unsent value back.
- */
 enum orkester_send_result_t orkester_sender_try_send(orkester_sender_t sender,
                                                      void *value,
                                                      void **out_value);
 
 /**
- * Block until a shared future completes. Does NOT consume the handle.
- * On success, writes a clone of the payload value to `out_value` (if non-null).
+ * Spawn a detached task. Fire-and-forget.
  */
-bool orkester_shared_future_block(orkester_shared_future_t shared,
-                                  void **out_value,
-                                  const char **out_error_ptr,
-                                  size_t *out_error_len);
-
-/**
- * Block until a shared future completes, dispatching main-thread tasks
- * while waiting. Does NOT consume the handle.
- * On success, writes a clone of the payload value to `out_value` (if non-null).
- */
-bool orkester_shared_future_block_with_main(orkester_shared_future_t shared,
-                                            void **out_value,
-                                            const char **out_error_ptr,
-                                            size_t *out_error_len);
-
-/**
- * Attach an error-recovery handler on a shared future that receives an
- * opaque error pointer and returns a recovery value.
- * Does NOT consume the shared future handle.
- */
-orkester_future_t orkester_shared_future_catch(orkester_shared_future_t shared,
-                                               enum orkester_context_t context,
-                                               orkester_catch_fn_t callback,
-                                               void *ctx,
-                                               void (*result_destroy)(void*));
-
-orkester_shared_future_t orkester_shared_future_clone(orkester_shared_future_t shared);
-
-void orkester_shared_future_drop(orkester_shared_future_t shared);
-
-/**
- * Convert a shared future into a unique future. Consumes the shared handle.
- * Other clones remain valid.
- */
-orkester_future_t orkester_shared_future_into_unique(orkester_shared_future_t shared);
-
-bool orkester_shared_future_is_ready(orkester_shared_future_t shared);
-
-/**
- * Attach an async-transform continuation on a shared future.
- * Does NOT consume the shared future handle.
- */
-orkester_future_t orkester_shared_future_then(orkester_shared_future_t shared,
-                                              enum orkester_context_t context,
-                                              orkester_then_fn_t transform,
-                                              void *ctx);
-
-/**
- * Attach a cancellation token to a shared future. Does NOT consume the shared handle.
- * If the token is signalled before the future completes, the returned
- * future rejects with error code CANCELLED.
- */
-orkester_future_t orkester_shared_future_with_cancellation(orkester_shared_future_t shared,
-                                                           orkester_cancel_token_t token);
-
-/**
- * Spawn a detached task in the given context. Fire-and-forget — there is
- * no future to observe the result.
- */
-void orkester_spawn(const struct orkester_async_t *system,
+void orkester_spawn(const struct orkester_t *system,
                     enum orkester_context_t context,
                     orkester_callback_fn_t callback,
                     void *ctx);
@@ -630,6 +299,79 @@ void orkester_spawn(const struct orkester_async_t *system,
  * Free a string previously returned by orkester FFI error functions.
  */
 void orkester_string_drop(const char *ptr, size_t len);
+
+/**
+ * Attach a cancellation token to a task. Consumes the task handle.
+ */
+orkester_task_t orkester_task_cancel(orkester_task_t task, orkester_cancel_token_t token);
+
+/**
+ * Attach an error-catch handler. The callback receives an opaque error
+ * pointer and returns an `orkester_task_t`. Consumes the input task handle.
+ */
+orkester_task_t orkester_task_catch(orkester_task_t task,
+                                    enum orkester_context_t context,
+                                    orkester_catch_fn_t callback,
+                                    void *ctx);
+
+/**
+ * Attach an async-transform continuation. The callback receives the input
+ * value and returns an `orkester_task_t`. Consumes the input task handle.
+ */
+orkester_task_t orkester_task_chain(orkester_task_t task,
+                                    enum orkester_context_t context,
+                                    orkester_then_fn_t transform,
+                                    void *ctx);
+
+/**
+ * Attach an async-transform continuation in a thread pool.
+ * Consumes the input task handle.
+ */
+orkester_task_t orkester_task_chain_in_pool(orkester_task_t task,
+                                            orkester_thread_pool_t pool,
+                                            orkester_then_fn_t transform,
+                                            void *ctx);
+
+/**
+ * Clone a shared task handle.
+ */
+orkester_task_t orkester_task_clone(orkester_task_t task);
+
+/**
+ * Drop a task handle.
+ */
+void orkester_task_drop(orkester_task_t task);
+
+/**
+ * Check if a task is ready.
+ */
+bool orkester_task_is_ready(orkester_task_t task);
+
+/**
+ * Convert a task to a shared task. Consumes the task handle.
+ * `clone_fn` is used to clone the payload for shared access.
+ * Pass null if sharing is only used for fan-out without accessing the value.
+ */
+orkester_task_t orkester_task_share(orkester_task_t task, void *(*clone_fn)(void*));
+
+/**
+ * Block until a task completes. Consumes the handle.
+ * On success: `out_value` receives the payload value, returns true.
+ * On failure: `out_value` receives opaque error ptr (if any),
+ *             `out_error_ptr`/`out_error_len` receive string error, returns false.
+ */
+bool orkester_task_wait(orkester_task_t task,
+                        void **out_value,
+                        const char **out_error_ptr,
+                        size_t *out_error_len);
+
+/**
+ * Block dispatching main-thread tasks while waiting. Consumes the handle.
+ */
+bool orkester_task_wait_main(orkester_task_t task,
+                             void **out_value,
+                             const char **out_error_ptr,
+                             size_t *out_error_len);
 
 /**
  * Clone a thread pool handle (cheap Arc clone).
@@ -644,13 +386,27 @@ orkester_thread_pool_t orkester_thread_pool_create(size_t num_threads);
 void orkester_thread_pool_drop(orkester_thread_pool_t pool);
 
 /**
- * Wrap a future with a timeout. If the future doesn't complete within
- * `millis` milliseconds, the returned future rejects with TIMED_OUT.
- * Consumes the input future handle.
+ * Wrap a task with a timeout. Consumes the input task handle.
  */
-orkester_future_t orkester_timeout(const struct orkester_async_t *system,
-                                   orkester_future_t future,
-                                   uint64_t millis);
+orkester_task_t orkester_timeout(const struct orkester_t *system,
+                                 orkester_task_t task,
+                                 uint64_t millis);
+
+/**
+ * Destroy a value array and all remaining un-extracted values.
+ */
+void orkester_value_array_drop(void *array_payload);
+
+/**
+ * Extract the value pointer at `index` from a value array.
+ * Transfers ownership to the caller. Each index should only be extracted once.
+ */
+void *orkester_value_array_get(void *array_payload, size_t index);
+
+/**
+ * Get the number of elements in a value array.
+ */
+size_t orkester_value_array_len(const void *array_payload);
 
 #ifdef __cplusplus
 }  // extern "C"

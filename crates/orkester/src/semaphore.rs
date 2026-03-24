@@ -3,9 +3,9 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::future::Future;
-use crate::promise::Promise;
-use crate::system::AsyncSystem;
+use crate::resolver::Resolver;
+use crate::scheduler::Scheduler;
+use crate::task::Task;
 
 /// A counting semaphore that limits concurrent access to a resource.
 ///
@@ -26,14 +26,14 @@ pub struct Semaphore {
 }
 
 struct SemaphoreInner {
-    system: AsyncSystem,
+    system: Scheduler,
     state: Mutex<SemaphoreState>,
 }
 
 struct SemaphoreState {
     permits: usize,
     max_permits: usize,
-    waiters: VecDeque<Promise<()>>,
+    waiters: VecDeque<Resolver<()>>,
 }
 
 impl Semaphore {
@@ -42,7 +42,7 @@ impl Semaphore {
     /// # Panics
     ///
     /// Panics if `permits` is 0.
-    pub fn new(system: &AsyncSystem, permits: usize) -> Self {
+    pub fn new(system: &Scheduler, permits: usize) -> Self {
         assert!(permits > 0, "semaphore requires at least 1 permit");
         Self {
             inner: Arc::new(SemaphoreInner {
@@ -71,24 +71,24 @@ impl Semaphore {
             }
         }
 
-        // Slow path: queue a promise and wait.
-        let (promise, future) = self.inner.system.promise::<()>();
+        // Slow path: queue a resolver and wait.
+        let (resolver, task) = self.inner.system.resolver::<()>();
         {
             let mut state = self.inner.state.lock().expect("semaphore lock");
             // Re-check after acquiring lock (permit may have been released).
             if state.permits > 0 {
                 state.permits -= 1;
-                // Don't leave the promise dangling.
-                promise.resolve(());
+                // Don't leave the resolver dangling.
+                resolver.resolve(());
                 return SemaphorePermit {
                     inner: Arc::clone(&self.inner),
                 };
             }
-            state.waiters.push_back(promise);
+            state.waiters.push_back(resolver);
         }
 
-        // Block until our promise is resolved.
-        let _ = future.block();
+        // Block until our resolver is resolved.
+        let _ = task.block();
         SemaphorePermit {
             inner: Arc::clone(&self.inner),
         }
@@ -119,50 +119,38 @@ impl Semaphore {
         self.inner.state.lock().expect("semaphore lock").max_permits
     }
 
-    /// Acquire a permit asynchronously, returning a future that resolves
+    /// Acquire a permit asynchronously, returning a task that resolves
     /// to a [`SemaphorePermit`] when a slot becomes available.
-    pub fn acquire_async(&self) -> Future<SemaphorePermit> {
+    pub fn acquire_async(&self) -> Task<SemaphorePermit> {
         let inner = Arc::clone(&self.inner);
-        let (outer_promise, outer_future) = self.inner.system.promise::<SemaphorePermit>();
 
         {
             let mut state = inner.state.lock().expect("semaphore lock");
             if state.permits > 0 {
                 state.permits -= 1;
-                outer_promise.resolve(SemaphorePermit {
+                return self.inner.system.resolved(SemaphorePermit {
                     inner: Arc::clone(&inner),
                 });
-                return outer_future;
             }
         }
 
-        // Queue: create an inner promise that gets resolved when a permit
-        // is released. When it fires, resolve the outer promise with a permit.
-        let (inner_promise, inner_future) = self.inner.system.promise::<()>();
+        // Queue: create a resolver that gets resolved when a permit
+        // is released. When it fires, resolve with a permit.
+        let (inner_resolver, inner_task) = self.inner.system.resolver::<()>();
         {
             let mut state = inner.state.lock().expect("semaphore lock");
             if state.permits > 0 {
                 state.permits -= 1;
-                inner_promise.resolve(());
-                outer_promise.resolve(SemaphorePermit {
+                inner_resolver.resolve(());
+                return self.inner.system.resolved(SemaphorePermit {
                     inner: Arc::clone(&inner),
                 });
-                return outer_future;
             }
-            state.waiters.push_back(inner_promise);
+            state.waiters.push_back(inner_resolver);
         }
 
         let inner2 = Arc::clone(&inner);
-        let next = inner_future.then(crate::context::Context::IMMEDIATE, move |()| {
-            SemaphorePermit { inner: inner2 }
-        });
-
-        // We need to wire `next` into `outer_promise`. Simplest: just return
-        // `next` directly and drop the outer promise (which auto-rejects,
-        // but nobody is listening since we return `next`).
-        drop(outer_promise);
-        drop(outer_future);
-        next
+        inner_task.map(move |()| SemaphorePermit { inner: inner2 })
     }
 }
 

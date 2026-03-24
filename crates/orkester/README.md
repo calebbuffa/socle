@@ -14,24 +14,35 @@ on top, adding context-aware dispatch, thread affinity, and a C FFI.
 
 **Core types:**
 
-- **`AsyncSystem`** — root runtime object; owns executors and the main-thread queue
-- **`Promise<T>` / `Future<T>`** — single-producer / single-consumer async pair
-- **`SharedFuture<T>`** — cloneable multi-consumer future (requires `T: Clone`)
+- **`Scheduler`** — root runtime object; owns executors and the main-thread queue
+- **`Resolver<T>` / `Task<T>`** — single-producer / single-consumer async pair
+- **`SharedTask<T>`** — cloneable multi-consumer task (requires `T: Clone`)
 - **`Context`** — lightweight handle identifying a scheduling target (u32-indexed)
 - **`Executor`** — trait for custom execution backends
 
+**Primitives:**
+
+- **`CancellationToken`** — cooperative cancellation across tasks
+- **`Scope`** — structured cancellation (parent cancel → children cancel)
+- **`Semaphore`** — async-aware counting semaphore
+- **`JoinSet<T>`** — tracked collection of spawned work
+- **`Sender<T>` / `Receiver<T>`** — bounded MPSC channels
+
+**Combinators:**
+
+- **`delay`** / **`timeout`** / **`race`** / **`retry`** — free functions and methods for common patterns
 
 ## Feature Flags
 
 ```toml
 [dependencies]
-orkester = "0.2"                            # default: custom-runtime
+orkester = "0.3"                            # default: custom-runtime
 
 # With tokio backend
-orkester = { version = "0.2", features = ["tokio-runtime"] }
+orkester = { version = "0.3", features = ["tokio-runtime"] }
 
 # For WASM targets
-orkester = { version = "0.2", features = ["wasm"] }
+orkester = { version = "0.3", features = ["wasm"] }
 ```
 
 | Feature | Description |
@@ -42,32 +53,33 @@ orkester = { version = "0.2", features = ["wasm"] }
 
 ## Design Principles
 
-- No `AsyncSystem` outliving requirement for futures
+- Lock-free `TaskCell<T>` completion primitive (atomic state machine + waker)
 - No watcher-task-per-continuation overhead
 - Main-thread work queue with deterministic pumping
-- `std::future::Future` integration for both `Future<T>` and `SharedFuture<T>`
+- `std::future::Future` integration for both `Task<T>` and `SharedTask<T>`
 - Extensible scheduling via user-defined contexts
 - Dual API: callback chains AND async/await
+- Timer wheel for efficient `delay`/`timeout` — no thread parking
 - No `unsafe` in the core implementation
 
 ## Quick Start
 
 ```rust
-use orkester::{AsyncSystem, Context};
+use orkester::{Scheduler, Context};
 
-// Create a system with a default thread pool
-let system = AsyncSystem::default();
+// Create a scheduler with a default thread pool
+let system = Scheduler::with_threads(4);
 
-// Promise/future pair
-let (promise, future) = system.promise::<i32>();
-promise.resolve(42);
-assert_eq!(future.block().unwrap(), 42);
+// Resolver/task pair
+let (resolver, task) = system.resolver::<i32>();
+resolver.resolve(42);
+assert_eq!(task.block().unwrap(), 42);
 
 // Run work on a background thread
 let result = system.run(Context::BACKGROUND, || 5);
 assert_eq!(result.block().unwrap(), 5);
 
-// Continuation chains — closures can return values or Future<T>
+// Continuation chains — closures can return values or Task<T>
 let chained = system
     .resolved(3)
     .then(Context::BACKGROUND, |v| v + 1)
@@ -83,9 +95,9 @@ assert_eq!(chained.block().unwrap(), 8);
 orkester supports both callback-chain and async/await styles, freely intermixed:
 
 ```rust
-use orkester::{AsyncSystem, Context};
+use orkester::{Scheduler, Context};
 
-let system = AsyncSystem::default();
+let system = Scheduler::with_threads(4);
 
 // Callback chains (C++ interop style, zero-async)
 let result = system.run(Context::BACKGROUND, || compute())
@@ -127,31 +139,31 @@ let result = system.run(Context::BACKGROUND, || compute())
 Custom contexts can be registered at runtime:
 
 ```rust
-let gpu = system.register_context("gpu", GpuThreadExecutor::new());
+let gpu = system.register_context(GpuThreadExecutor::new());
 system.run(gpu, || upload_texture(data));
 ```
 
 For dedicated thread pools, use `run_in_pool` / `then_in_pool`.
 
 Main-thread work is either executed inline (inside `main_scope()`) or queued
-for explicit pumping via `flush_main()`.
+for explicit pumping via `flush_main`.
 
 ## Runtime Backends
 
 ### Custom Runtime (default)
 
-Create a system with a built-in thread pool:
+Create a scheduler with a built-in thread pool:
 
 ```rust
-use orkester::AsyncSystem;
+use orkester::Scheduler;
 
-let system = AsyncSystem::with_threads(4);
+let system = Scheduler::with_threads(4);
 ```
 
 Or use the builder for more control:
 
 ```rust
-let system = AsyncSystem::builder()
+let system = Scheduler::builder()
     .executor(MyCustomExecutor::new())
     .build();
 ```
@@ -161,9 +173,9 @@ let system = AsyncSystem::builder()
 Use tokio's runtime for async task spawning:
 
 ```rust
-use orkester::{AsyncSystem, TokioExecutor};
+use orkester::{Scheduler, TokioExecutor};
 
-let system = AsyncSystem::builder()
+let system = Scheduler::builder()
     .executor(TokioExecutor::current())
     .build();
 ```
@@ -173,9 +185,9 @@ let system = AsyncSystem::builder()
 For WebAssembly targets with `wasm-bindgen-futures`:
 
 ```rust
-use orkester::{AsyncSystem, WasmExecutor};
+use orkester::{Scheduler, WasmExecutor};
 
-let system = AsyncSystem::builder()
+let system = Scheduler::builder()
     .executor(WasmExecutor)
     .build();
 
@@ -185,95 +197,179 @@ let result = system.spawn_local(async { compute() });
 
 ## API Reference
 
-### `AsyncSystem`
+### `Scheduler`
 
 ```rust
 // Construction
-AsyncSystem::new(executor: impl Executor) -> AsyncSystem
-AsyncSystem::with_threads(n: usize) -> AsyncSystem
-AsyncSystem::builder() -> AsyncSystemBuilder
-AsyncSystem::default() -> AsyncSystem  // built-in thread pool
+Scheduler::new(executor: impl Executor) -> Scheduler
+Scheduler::with_threads(n: usize) -> Scheduler
+Scheduler::builder() -> SchedulerBuilder
 
 // Context management
-AsyncSystem::register_context(&self, name: &str, executor: impl Executor) -> Context
-AsyncSystem::thread_pool(&self, num_threads: usize) -> ThreadPool
+Scheduler::register_context(&self, executor: impl Executor) -> Context
+Scheduler::thread_pool(&self, num_threads: usize) -> ThreadPool
 
-// Promise/future creation
-AsyncSystem::promise<T>(&self) -> (Promise<T>, Future<T>)
-AsyncSystem::future<T, F>(&self, f: F) -> Future<T>
-AsyncSystem::resolved<T>(&self, value: T) -> Future<T>
+// Resolver/task creation
+Scheduler::resolver<T>(&self) -> (Resolver<T>, Task<T>)
+Scheduler::task<T, F>(&self, f: F) -> Task<T>
+Scheduler::resolved<T>(&self, value: T) -> Task<T>
 
 // Schedule work (sync closures)
-AsyncSystem::run<T, F>(&self, context: Context, f: F) -> Future<T>
-AsyncSystem::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Future<T>
-AsyncSystem::spawn_detached(&self, context: Context, f: F)  // fire-and-forget
+Scheduler::run<T, F>(&self, context: Context, f: F) -> Task<T>
+Scheduler::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Task<T>
 
 // Schedule work (async)
-AsyncSystem::run_async<T, F, Fut>(&self, context: Context, f: F) -> Future<T>
-AsyncSystem::spawn<T, Fut>(&self, future: Fut) -> Future<T>  // on BACKGROUND
-AsyncSystem::spawn_local<T, Fut>(&self, future: Fut) -> Future<T>  // WASM only
+Scheduler::run_async<T, F, Fut>(&self, context: Context, f: F) -> Task<T>
+Scheduler::spawn<T, Fut>(&self, future: Fut) -> Task<T>  // on BACKGROUND
+Scheduler::spawn_local<T, Fut>(&self, future: Fut) -> Task<T>  // WASM only
+Scheduler::spawn_detached<F>(&self, context: Context, f: F)
 
 // Main-thread dispatch
-AsyncSystem::flush_main(&self) -> usize
-AsyncSystem::flush_main_one(&self) -> bool
-AsyncSystem::main_pending(&self) -> bool
-AsyncSystem::main_scope(&self) -> MainThreadScope
+Scheduler::flush_main(&self) -> usize
+Scheduler::flush_main_one(&self) -> bool
+Scheduler::main_pending(&self) -> bool
+Scheduler::main_scope(&self) -> MainThreadScope
 
-// Combinators
-AsyncSystem::join_all<T, I>(&self, futures: I) -> Future<Vec<T>>
+// Structured concurrency
+Scheduler::scope(&self) -> Scope
+Scheduler::join_set<T>(&self) -> JoinSet<T>
+Scheduler::join_all<T, I>(&self, tasks: I) -> Task<Vec<T>>
+
+// Timer
+Scheduler::delay(&self, duration: Duration) -> Task<()>
 ```
 
-`AsyncSystem` is `Clone` (cheap `Arc` clone) and `PartialEq`/`Eq` by identity.
+`Scheduler` is `Clone` (cheap `Arc` clone).
 
-### `AsyncSystemBuilder`
+### `SchedulerBuilder`
 
 ```rust
-AsyncSystemBuilder::executor(self, executor: impl Executor) -> Self
-AsyncSystemBuilder::context(self, name: &str, executor: impl Executor) -> Self
-AsyncSystemBuilder::build(self) -> AsyncSystem
+SchedulerBuilder::executor(self, executor: impl Executor) -> Self
+SchedulerBuilder::context(self, executor: impl Executor) -> Self
+SchedulerBuilder::build(self) -> Scheduler
 ```
 
-### `Promise<T>`
+### `Resolver<T>`
 
 ```rust
-Promise::resolve(self, value: T)
-Promise::reject(self, error: impl Into<AsyncError>)
+Resolver::resolve(self, value: T)
+Resolver::reject(self, error: impl Into<AsyncError>)
 ```
 
-Dropping an unresolved `Promise<T>` auto-rejects with `"Promise dropped without resolving"`.
+Dropping an unresolved `Resolver<T>` auto-rejects with `ErrorCode::Dropped`.
 
-### `Future<T>`
+### `Task<T>`
 
 ```rust
-Future::is_ready(&self) -> bool
-Future::block(self) -> Result<T, AsyncError>
-Future::block_with_main(self) -> Result<T, AsyncError>
+Task::is_ready(&self) -> bool
+Task::system(&self) -> Scheduler
+Task::block(self) -> Result<T, AsyncError>
+Task::block_with_main(self) -> Result<T, AsyncError>
 
-// Continuations — closures may return T or Future<T> (auto-flattened)
-Future::then<U, F>(self, context: Context, f: F) -> Future<U>
-Future::then_in_pool<U, F>(self, pool: &ThreadPool, f: F) -> Future<U>
-Future::then_async<U, F, Fut>(self, context: Context, f: F) -> Future<U>
-Future::map<U, F>(self, f: F) -> Future<U>          // = then(IMMEDIATE, f)
-Future::and_then<V, E, F>(self, f: F) -> Future<Result<V, E>>
+// Continuations — closures may return U or Task<U> (auto-flattened)
+Task::then<U, F>(self, context: Context, f: F) -> Task<U>
+Task::then_in_pool<U, F>(self, pool: &ThreadPool, f: F) -> Task<U>
+Task::then_async<U, F, Fut>(self, context: Context, f: F) -> Task<U>
+Task::map<U, F>(self, f: F) -> Task<U>          // = then(IMMEDIATE, f)
 
 // Error recovery
-Future::catch<F>(self, context: Context, f: F) -> Future<T>
-Future::or_else<F>(self, f: F) -> Future<T>          // = catch(IMMEDIATE, f)
+Task::catch<F>(self, context: Context, f: F) -> Task<T>
+Task::or_else<F>(self, f: F) -> Task<T>          // = catch(IMMEDIATE, f)
+
+// Timeout
+Task::with_timeout(self, duration: Duration) -> Task<T>
 
 // Cancellation
-Future::with_cancellation(self, token: &CancellationToken) -> Future<T>
+Task::with_cancellation(self, token: &CancellationToken) -> Task<T>
 
 // Convert to multi-consumer (requires T: Clone)
-Future::share(self) -> SharedFuture<T>
+Task::share(self) -> SharedTask<T>
 ```
 
-`Future<T>` implements `std::future::Future<Output = Result<T, AsyncError>>`.
+`Task<T>` implements `std::future::Future<Output = Result<T, AsyncError>>`.
 
-### `SharedFuture<T>`
+### `SharedTask<T>`
 
-Same continuation API as `Future<T>` (including `then_async`), but borrows `&self`
+Same continuation API as `Task<T>` (including `then_async`), but borrows `&self`
 instead of consuming. Can be cloned and waited on multiple times — each consumer
 receives a cloned result.
+
+### `CancellationToken`
+
+```rust
+CancellationToken::new() -> CancellationToken      // Clone
+CancellationToken::cancel(&self)
+CancellationToken::is_cancelled(&self) -> bool
+```
+
+Attach to a task with `task.with_cancellation(&token)`. When cancelled,
+the task rejects with `ErrorCode::Cancelled`.
+
+### `Scope`
+
+Structured cancellation scope — all tasks spawned within a scope are automatically
+cancelled when the scope is dropped.
+
+```rust
+Scope::token(&self) -> &CancellationToken
+Scope::run<T, F>(&self, context: Context, f: F) -> Task<T>
+Scope::run_async<T, F, Fut>(&self, context: Context, f: F) -> Task<T>
+Scope::spawn<T, Fut>(&self, fut: Fut) -> Task<T>
+Scope::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Task<T>
+Scope::cancel(&self)
+```
+
+### `Semaphore`
+
+```rust
+Semaphore::new(system: &Scheduler, permits: usize) -> Semaphore
+Semaphore::acquire(&self) -> SemaphorePermit        // blocking
+Semaphore::try_acquire(&self) -> Option<SemaphorePermit>
+Semaphore::available_permits(&self) -> usize
+Semaphore::max_permits(&self) -> usize
+Semaphore::acquire_async(&self) -> Task<SemaphorePermit>
+```
+
+`SemaphorePermit` releases on drop.
+
+### `JoinSet<T>`
+
+```rust
+JoinSet::push(&mut self, task: Task<T>)
+JoinSet::len(&self) -> usize
+JoinSet::is_empty(&self) -> bool
+JoinSet::join_all(self) -> Vec<Result<T, AsyncError>>
+JoinSet::join_next(&mut self) -> Option<Result<T, AsyncError>>
+```
+
+### Channels (`Sender<T>` / `Receiver<T>`)
+
+```rust
+channel::mpsc<T>(capacity: usize) -> (Sender<T>, Receiver<T>)
+channel::oneshot<T>() -> (Sender<T>, Receiver<T>)
+
+Sender::send(&self, value: T) -> Result<(), SendError<T>>
+Sender::try_send(&self, value: T) -> Result<(), TrySendError<T>>
+Receiver::recv(&self) -> Option<T>
+```
+
+### Combinators (free functions)
+
+```rust
+timeout<T>(system: &Scheduler, task: Task<T>, duration: Duration) -> Task<T>
+race<T>(system: &Scheduler, tasks: Vec<Task<T>>) -> Task<T>
+retry<T, F>(system: &Scheduler, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
+```
+
+`RetryConfig` controls exponential backoff:
+
+```rust
+RetryConfig {
+    initial_backoff: Duration,  // default: 50ms
+    max_backoff: Duration,      // default: 5s
+    multiplier: u32,            // default: 2
+}
+```
 
 ### `Executor`
 
@@ -292,7 +388,7 @@ by an async runtime (e.g. tokio) for native async spawning.
 ### Error Types
 
 ```rust
-// Runtime error (cancellation, timeout, dropped promise)
+// Runtime error (cancellation, timeout, dropped resolver)
 AsyncError::new<E: Error + Send + Sync + 'static>(error: E) -> AsyncError
 AsyncError::msg(message: impl Into<String>) -> AsyncError
 AsyncError::with_code(code: ErrorCode, message: impl Into<String>) -> AsyncError
@@ -325,12 +421,12 @@ assert!(immediate.is_ready());
 
 ```rust
 let recovered = system
-    .future(|promise| promise.reject("boom"))
+    .task(|resolver| resolver.reject("boom"))
     .catch(Context::MAIN, |_err| 99);
 assert_eq!(recovered.block_with_main().unwrap(), 99);
 ```
 
-### SharedFuture Fan-Out
+### SharedTask Fan-Out
 
 ```rust
 let shared = system.resolved(10).share();
@@ -340,7 +436,7 @@ assert_eq!(a.block().unwrap(), 11);
 assert_eq!(b.block().unwrap(), 30);
 ```
 
-### Joining Futures
+### Joining Tasks
 
 ```rust
 let joined = system.join_all(vec![
@@ -351,10 +447,52 @@ let joined = system.join_all(vec![
 assert_eq!(joined.block().unwrap(), vec![1, 2, 3]);
 ```
 
+### Timeout and Retry
+
+```rust
+use orkester::{timeout, retry, RetryConfig};
+use std::time::Duration;
+
+// Timeout: reject if not done in 500ms
+let slow = system.run(Context::BACKGROUND, || {
+    std::thread::sleep(Duration::from_secs(5));
+    42
+});
+let result = timeout(&system, slow, Duration::from_millis(500));
+assert!(result.block().is_err()); // ErrorCode::TimedOut
+
+// Retry with exponential backoff
+let result = retry(&system, 3, RetryConfig::default(), || {
+    system.resolved(Ok(42))
+});
+assert_eq!(result.block().unwrap(), 42);
+```
+
+### Cancellation
+
+```rust
+use orkester::CancellationToken;
+
+let token = CancellationToken::new();
+let task = system.run(Context::BACKGROUND, || 42)
+    .with_cancellation(&token);
+token.cancel();
+assert!(task.block().is_err()); // ErrorCode::Cancelled
+```
+
+### Structured Scope
+
+```rust
+let scope = system.scope();
+let a = scope.run(Context::BACKGROUND, || compute_a());
+let b = scope.run(Context::BACKGROUND, || compute_b());
+// Dropping scope cancels any unfinished tasks
+```
+
 ### Custom Context
 
 ```rust
-use orkester::{AsyncSystem, Context, Executor};
+use orkester::{Scheduler, Context, Executor};
 
 struct MyExecutor;
 impl Executor for MyExecutor {
@@ -363,8 +501,8 @@ impl Executor for MyExecutor {
     }
 }
 
-let system = AsyncSystem::default();
-let my_ctx = system.register_context("custom", MyExecutor);
+let system = Scheduler::with_threads(4);
+let my_ctx = system.register_context(MyExecutor);
 let result = system.run(my_ctx, || 42);
 assert_eq!(result.block().unwrap(), 42);
 ```
@@ -372,8 +510,8 @@ assert_eq!(result.block().unwrap(), 42);
 ## Notes
 
 - Use `block_with_main` when completion depends on queued main-thread continuations
-- `Future<T>` is single-consumer; `SharedFuture<T>` is multi-consumer
-- `Promise<T>` should always be resolved or rejected explicitly for predictable behavior
+- `Task<T>` is single-consumer; `SharedTask<T>` is multi-consumer
+- `Resolver<T>` should always be resolved or rejected explicitly for predictable behavior
 - Under `custom-runtime`, async methods (`run_async`, `then_async`, `spawn`) drive
   futures via the executor's `spawn_future`. For full async I/O support,
   use `tokio-runtime`.

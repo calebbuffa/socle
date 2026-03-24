@@ -1,99 +1,113 @@
-//! Async combinators: `delay`, `timeout`, `race`, `retry`.
+//! Async combinators: `timeout`, `race`, `retry`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::error::{AsyncError, ErrorCode};
-use crate::future::Future;
-use crate::system::AsyncSystem;
+use crate::scheduler::Scheduler;
+use crate::task::{Task, TaskInner};
+use crate::task_cell::TaskCell;
 
-/// Completes after `duration` elapses.
-///
-/// The delay is scheduled via the system's worker scheduler. A worker
-/// thread sleeps for the given duration and then resolves the promise.
-/// This is appropriate for coarse timeouts; sub-millisecond precision is
-/// not guaranteed.
-pub fn delay(system: &AsyncSystem, duration: Duration) -> Future<()> {
-    let (promise, future) = system.promise::<()>();
-    system.spawn_detached(crate::context::Context::BACKGROUND, move || {
-        std::thread::sleep(duration);
-        promise.resolve(());
-    });
-    future
-}
-
-/// Wraps a future with a timeout. If the upstream future does not complete
-/// within `duration`, the returned future rejects with [`ErrorCode::TimedOut`].
+/// Wraps a task with a timeout. If the upstream task does not complete
+/// within `duration`, the returned task rejects with [`ErrorCode::TimedOut`].
 pub fn timeout<T: Send + 'static>(
-    system: &AsyncSystem,
-    future: Future<T>,
+    system: &Scheduler,
+    task: Task<T>,
     duration: Duration,
-) -> Future<T> {
-    let timer = delay(system, duration);
-    let (resolve_promise, output) = system.promise::<T>();
-    let shared_promise = Arc::new(Mutex::new(Some(resolve_promise)));
+) -> Task<T> {
+    let timer = system.delay(duration);
+    let (resolve_resolver, output) = system.resolver::<T>();
+    let shared_resolver = Arc::new(Mutex::new(Some(resolve_resolver)));
 
     // Path 1: upstream completes in time
-    let sp1 = shared_promise.clone();
-    let mut upstream = future;
-    let source = upstream.state.take().expect("future consumed");
-    let source_ref = Arc::clone(&source);
-    source.register_continuation(Box::new(move || {
-        let promise = sp1.lock().expect("timeout lock").take();
-        if let Some(promise) = promise {
-            match source_ref.take_result() {
-                Some(Ok(v)) => promise.resolve(v),
-                Some(Err(e)) => promise.reject(e),
-                None => promise.reject(AsyncError::msg("Future already consumed")),
+    let sp1 = shared_resolver.clone();
+    match task.inner {
+        TaskInner::Ready(result) => {
+            let resolver = sp1.lock().expect("timeout lock").take();
+            if let Some(resolver) = resolver {
+                match result {
+                    Some(Ok(v)) => resolver.resolve(v),
+                    Some(Err(e)) => resolver.reject(e),
+                    None => resolver.reject(AsyncError::msg("Task already consumed")),
+                }
             }
         }
-    }));
+        TaskInner::Pending(cell) => {
+            let cell_ref = Arc::clone(&cell);
+            TaskCell::on_complete(cell, move |result| {
+                let _ = cell_ref;
+                let resolver = sp1.lock().expect("timeout lock").take();
+                if let Some(resolver) = resolver {
+                    match result {
+                        Ok(v) => resolver.resolve(v),
+                        Err(e) => resolver.reject(e),
+                    }
+                }
+            });
+        }
+    }
 
     // Path 2: timer fires first → reject with TimedOut
-    let sp2 = shared_promise;
-    let mut timer_inner = timer;
-    let timer_state = timer_inner.state.take().expect("timer consumed");
-    timer_state.register_continuation(Box::new(move || {
-        let promise = sp2.lock().expect("timeout lock").take();
-        if let Some(promise) = promise {
-            promise.reject(AsyncError::with_code(ErrorCode::TimedOut, "timed out"));
+    let sp2 = shared_resolver;
+    match timer.inner {
+        TaskInner::Ready(_) => {
+            let resolver = sp2.lock().expect("timeout lock").take();
+            if let Some(resolver) = resolver {
+                resolver.reject(AsyncError::with_code(ErrorCode::TimedOut, "timed out"));
+            }
         }
-    }));
+        TaskInner::Pending(timer_cell) => {
+            TaskCell::on_complete(timer_cell, move |_| {
+                let resolver = sp2.lock().expect("timeout lock").take();
+                if let Some(resolver) = resolver {
+                    resolver.reject(AsyncError::with_code(ErrorCode::TimedOut, "timed out"));
+                }
+            });
+        }
+    }
 
     output
 }
 
-/// Completes when the **first** input future completes.
-/// All other futures are dropped (their results are discarded).
+/// Completes when the **first** input task completes.
+/// All other tasks are dropped (their results are discarded).
 ///
-/// If the input vector is empty, the returned future is immediately rejected.
-pub fn race<T: Send + 'static>(system: &AsyncSystem, futures: Vec<Future<T>>) -> Future<T> {
-    if futures.is_empty() {
-        let (promise, future) = system.promise::<T>();
-        promise.reject(AsyncError::msg("race called with no futures"));
-        return future;
+/// If the input vector is empty, the returned task is immediately rejected.
+pub fn race<T: Send + 'static>(system: &Scheduler, tasks: Vec<Task<T>>) -> Task<T> {
+    if tasks.is_empty() {
+        let (resolver, task) = system.resolver::<T>();
+        resolver.reject(AsyncError::msg("race called with no tasks"));
+        return task;
     }
 
-    let (resolve_promise, output) = system.promise::<T>();
-    let shared_promise = Arc::new(Mutex::new(Some(resolve_promise)));
+    let (resolve_resolver, output) = system.resolver::<T>();
+    let shared_resolver = Arc::new(Mutex::new(Some(resolve_resolver)));
 
-    for mut f in futures {
-        let sp = shared_promise.clone();
-        let source = match f.state.take() {
-            Some(s) => s,
-            None => continue,
-        };
-        let source_ref = Arc::clone(&source);
-        source.register_continuation(Box::new(move || {
-            let promise = sp.lock().expect("race lock").take();
-            if let Some(promise) = promise {
-                match source_ref.take_result() {
-                    Some(Ok(v)) => promise.resolve(v),
-                    Some(Err(e)) => promise.reject(e),
-                    None => {} // already consumed by another racer
+    for task in tasks {
+        let sp = shared_resolver.clone();
+        match task.inner {
+            TaskInner::Ready(result) => {
+                let resolver = sp.lock().expect("race lock").take();
+                if let Some(resolver) = resolver {
+                    match result {
+                        Some(Ok(v)) => resolver.resolve(v),
+                        Some(Err(e)) => resolver.reject(e),
+                        None => {} // already consumed
+                    }
                 }
             }
-        }));
+            TaskInner::Pending(cell) => {
+                TaskCell::on_complete(cell, move |result| {
+                    let resolver = sp.lock().expect("race lock").take();
+                    if let Some(resolver) = resolver {
+                        match result {
+                            Ok(v) => resolver.resolve(v),
+                            Err(e) => resolver.reject(e),
+                        }
+                    }
+                });
+            }
+        }
     }
 
     output
@@ -123,17 +137,17 @@ impl Default for RetryConfig {
 /// Retry a fallible async operation with exponential backoff.
 ///
 /// Calls `f()` up to `max_attempts` times. If an attempt returns `Ok(v)`,
-/// the returned future resolves with `v`. If all attempts fail, the last
+/// the returned task resolves with `v`. If all attempts fail, the last
 /// error is propagated.
 ///
 /// Use [`RetryConfig::default()`] for standard backoff (50 ms initial, 5 s cap, 2x multiplier).
-pub fn retry<T, F>(system: &AsyncSystem, max_attempts: u32, config: RetryConfig, f: F) -> Future<T>
+pub fn retry<T, F>(system: &Scheduler, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
 where
     T: Send + 'static,
-    F: Fn() -> Future<Result<T, AsyncError>> + Send + 'static,
+    F: Fn() -> Task<Result<T, AsyncError>> + Send + 'static,
 {
     let system = system.clone();
-    let (promise, future) = system.promise::<T>();
+    let (resolver, output) = system.resolver::<T>();
 
     system
         .inner
@@ -146,7 +160,7 @@ where
             for _ in 0..max_attempts {
                 match f().block() {
                     Ok(Ok(v)) => {
-                        promise.resolve(v);
+                        resolver.resolve(v);
                         return;
                     }
                     Ok(Err(e)) => {
@@ -160,8 +174,8 @@ where
                 backoff = (backoff * config.multiplier).min(config.max_backoff);
             }
 
-            promise.reject(last_err);
+            resolver.reject(last_err);
         }));
 
-    future
+    output
 }

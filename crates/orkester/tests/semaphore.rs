@@ -1,9 +1,9 @@
-use orkester::{AsyncSystem, Semaphore};
+use orkester::{Scheduler, Semaphore};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn test_system() -> AsyncSystem {
-    AsyncSystem::with_threads(4)
+fn test_system() -> Scheduler {
+    Scheduler::with_threads(4)
 }
 
 #[test]

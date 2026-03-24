@@ -1,8 +1,8 @@
 //! Context-aware task scheduling for Rust.
 //!
 //! `orkester` provides:
-//! - [`AsyncSystem`] — root async runtime with context-aware scheduling
-//! - [`Future`] / [`SharedFuture`] / [`Promise`] — async value types
+//! - [`Scheduler`] — root async runtime with context-aware scheduling
+//! - [`Task`] / [`SharedTask`] / [`Resolver`] — async value types
 //! - [`Context`] — lightweight scheduling handle (u32-indexed)
 //! - [`Executor`] — trait for custom execution backends
 //!
@@ -21,19 +21,21 @@ mod combinators;
 mod context;
 mod error;
 mod executor;
-mod future;
 mod join_set;
-mod main_thread;
-mod promise;
+mod main_loop;
+mod resolver;
+mod scheduler;
+mod scope;
 mod semaphore;
-mod state;
-mod system;
+pub(crate) mod task;
+mod task_cell;
 mod task_processor;
 mod thread_pool;
+mod timer;
 
 pub use cancellation::CancellationToken;
 pub use channel::{Receiver, SendError, Sender, TrySendError};
-pub use combinators::{RetryConfig, delay, race, retry, timeout};
+pub use combinators::{RetryConfig, race, retry, timeout};
 pub use context::Context;
 pub use error::{AsyncError, ErrorCode};
 pub use executor::Executor;
@@ -41,11 +43,11 @@ pub use executor::Executor;
 pub use executor::TokioExecutor;
 #[cfg(feature = "wasm")]
 pub use executor::WasmExecutor;
-pub use future::{Future, SharedFuture};
 pub use join_set::JoinSet;
-pub use main_thread::MainThreadScope;
-pub use promise::Promise;
+pub use main_loop::MainThreadScope;
+pub use resolver::Resolver;
+pub use scheduler::{Scheduler, SchedulerBuilder};
+pub use scope::Scope;
 pub use semaphore::{Semaphore, SemaphorePermit};
-pub use system::{AsyncSystem, AsyncSystemBuilder};
-
+pub use task::{SharedTask, Task};
 pub use thread_pool::ThreadPool;

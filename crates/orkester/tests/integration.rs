@@ -4,14 +4,14 @@
 //! while exercising the public API thoroughly.
 
 use orkester::channel;
-use orkester::{AsyncSystem, CancellationToken, Context, ErrorCode, Semaphore};
-use orkester::{delay, race, retry, timeout};
+use orkester::{Scheduler, CancellationToken, Context, ErrorCode, Semaphore};
+use orkester::{race, retry, timeout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-fn system() -> AsyncSystem {
-    AsyncSystem::with_threads(4)
+fn system() -> Scheduler {
+    Scheduler::with_threads(4)
 }
 
 // Cancellation
@@ -20,38 +20,38 @@ fn system() -> AsyncSystem {
 fn cancel_before_completion_rejects() {
     let sys = system();
     let token = CancellationToken::new();
-    let (promise, future) = sys.promise::<i32>();
+    let (resolver, task) = sys.resolver::<i32>();
 
-    let guarded = future.with_cancellation(&token);
+    let guarded = task.with_cancellation(&token);
     token.cancel();
 
     let err = guarded.block().unwrap_err();
     assert_eq!(err.code(), ErrorCode::Cancelled);
 
-    // The original promise is still dangling — drop it.
-    drop(promise);
+    // The original resolver is still dangling — drop it.
+    drop(resolver);
 }
 
 #[test]
 fn cancel_after_resolution_delivers_value() {
     let sys = system();
     let token = CancellationToken::new();
-    let (promise, future) = sys.promise::<i32>();
+    let (resolver, task) = sys.resolver::<i32>();
 
-    promise.resolve(42);
-    let guarded = future.with_cancellation(&token);
+    resolver.resolve(42);
+    let guarded = task.with_cancellation(&token);
     token.cancel(); // too late — value already set
 
     assert_eq!(guarded.block().unwrap(), 42);
 }
 
 #[test]
-fn cancel_token_is_reusable_across_futures() {
+fn cancel_token_is_reusable_across_tasks() {
     let sys = system();
     let token = CancellationToken::new();
 
-    let (p1, f1) = sys.promise::<()>();
-    let (p2, f2) = sys.promise::<()>();
+    let (p1, f1) = sys.resolver::<()>();
+    let (p2, f2) = sys.resolver::<()>();
     let g1 = f1.with_cancellation(&token);
     let g2 = f2.with_cancellation(&token);
 
@@ -72,7 +72,7 @@ fn cancel_already_cancelled_token_fires_immediately() {
 
     assert!(token.is_cancelled());
 
-    let (_p, f) = sys.promise::<()>();
+    let (_p, f) = sys.resolver::<()>();
     let g = f.with_cancellation(&token);
     assert_eq!(g.block().unwrap_err().code(), ErrorCode::Cancelled);
 }
@@ -83,8 +83,8 @@ fn cancel_already_cancelled_token_fires_immediately() {
 fn delay_completes_after_duration() {
     let sys = system();
     let start = Instant::now();
-    let future = delay(&sys, Duration::from_millis(50));
-    future.block().unwrap();
+    let task = sys.delay(Duration::from_millis(50));
+    task.block().unwrap();
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(40),
@@ -96,8 +96,8 @@ fn delay_completes_after_duration() {
 #[test]
 fn delay_zero_completes_immediately() {
     let sys = system();
-    let future = delay(&sys, Duration::ZERO);
-    future.block().unwrap();
+    let task = sys.delay(Duration::ZERO);
+    task.block().unwrap();
 }
 
 // Timeout
@@ -105,7 +105,7 @@ fn delay_zero_completes_immediately() {
 #[test]
 fn timeout_expires_rejects_with_timed_out() {
     let sys = system();
-    let (_p, f) = sys.promise::<()>(); // never resolves
+    let (_p, f) = sys.resolver::<()>(); // never resolves
     let guarded = timeout(&sys, f, Duration::from_millis(50));
 
     let err = guarded.block().unwrap_err();
@@ -123,7 +123,7 @@ fn timeout_passes_when_upstream_is_fast() {
 #[test]
 fn timeout_propagates_upstream_error() {
     let sys = system();
-    let (p, f) = sys.promise::<()>();
+    let (p, f) = sys.resolver::<()>();
     p.reject(orkester::AsyncError::msg("boom"));
 
     let guarded = timeout(&sys, f, Duration::from_secs(10));
@@ -136,8 +136,8 @@ fn timeout_propagates_upstream_error() {
 #[test]
 fn race_returns_first_to_resolve() {
     let sys = system();
-    let (p1, f1) = sys.promise::<i32>();
-    let (p2, f2) = sys.promise::<i32>();
+    let (p1, f1) = sys.resolver::<i32>();
+    let (p2, f2) = sys.resolver::<i32>();
 
     p1.resolve(1);
     // p2 never resolves — but it's fine because race takes the first
@@ -157,8 +157,8 @@ fn race_empty_rejects() {
 #[test]
 fn race_with_delays_picks_fastest() {
     let sys = system();
-    let fast = delay(&sys, Duration::from_millis(10));
-    let slow = delay(&sys, Duration::from_millis(200));
+    let fast = sys.delay(Duration::from_millis(10));
+    let slow = sys.delay(Duration::from_millis(200));
 
     let start = Instant::now();
     race(&sys, vec![fast, slow]).block().unwrap();
@@ -200,7 +200,7 @@ fn retry_fails_after_max_attempts() {
 
     let result: Result<i32, _> = retry(&sys, 3, Default::default(), move || {
         c.fetch_add(1, Ordering::SeqCst);
-        let (p, f) = sys2.promise();
+        let (p, f) = sys2.resolver();
         p.resolve(Err::<i32, _>(orkester::AsyncError::msg("nope")));
         f
     })
@@ -251,11 +251,11 @@ fn join_set_empty_returns_empty_vec() {
 }
 
 #[test]
-fn join_set_handles_rejected_futures() {
+fn join_set_handles_rejected_tasks() {
     let sys = system();
     let mut js = sys.join_set::<()>();
 
-    let (p, f) = sys.promise::<()>();
+    let (p, f) = sys.resolver::<()>();
     p.reject(orkester::AsyncError::msg("fail"));
     js.push(f);
 
@@ -302,8 +302,8 @@ fn cancel_races_with_timeout() {
     let sys = system();
     let token = CancellationToken::new();
 
-    // Create a future that won't complete on its own.
-    let (_p, f) = sys.promise::<()>();
+    // Create a task that won't complete on its own.
+    let (_p, f) = sys.resolver::<()>();
     let guarded = f.with_cancellation(&token);
     let timed = timeout(&sys, guarded, Duration::from_millis(200));
 

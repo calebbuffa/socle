@@ -57,7 +57,7 @@ fn run_cross_context_roundtrip_stress(system: &Scheduler, iterations: usize, mut
     }
 }
 
-fn run_shared_fanout_stress(system: &Scheduler, iterations: usize, waiters: usize) {
+fn run_shared_task_fanout_stress(system: &Scheduler, iterations: usize, waiters: usize) {
     for iteration in 0..iterations {
         let (resolver, task) = system.resolver::<usize>();
         let shared = task.share();
@@ -84,7 +84,7 @@ fn run_shared_fanout_stress(system: &Scheduler, iterations: usize, waiters: usiz
 }
 
 #[test]
-fn create_promise_pair_resolves() {
+fn create_resolver_pair_resolves() {
     let system = Scheduler::with_threads(1);
     let (resolver, task) = system.resolver();
     resolver.resolve(42_i32);
@@ -108,7 +108,7 @@ fn block_with_main_pumps_queue() {
 }
 
 #[test]
-fn shared_future_then_chain() {
+fn shared_task_then_chain() {
     let system = Scheduler::with_threads(1);
     let shared = system.resolved(10_i32).share();
     let doubled = shared.then(orkester::Context::BACKGROUND, |value| value * 2);
@@ -118,7 +118,7 @@ fn shared_future_then_chain() {
 }
 
 #[test]
-fn all_future_values() {
+fn all_task_values() {
     let system = Scheduler::with_threads(2);
     let futures = vec![
         system.resolved(1_i32),
@@ -131,7 +131,7 @@ fn all_future_values() {
 }
 
 #[test]
-fn run_in_worker_thread_flattens_future_result() {
+fn run_in_worker_thread_flattens_task_result() {
     let system = Scheduler::with_threads(2);
     let system_clone = system.clone();
 
@@ -142,7 +142,7 @@ fn run_in_worker_thread_flattens_future_result() {
 }
 
 #[test]
-fn then_in_worker_thread_flattens_future_result() {
+fn then_in_worker_thread_flattens_task_result() {
     let system = Scheduler::with_threads(2);
     let system_clone = system.clone();
 
@@ -156,7 +156,7 @@ fn then_in_worker_thread_flattens_future_result() {
 }
 
 #[test]
-fn run_in_main_thread_flattens_future_result() {
+fn run_in_main_thread_flattens_task_result() {
     let system = Scheduler::with_threads(1);
     let _scope = system.main_scope();
     let system_clone = system.clone();
@@ -169,7 +169,7 @@ fn run_in_main_thread_flattens_future_result() {
 }
 
 #[test]
-fn then_in_worker_thread_flattens_rejected_future_result() {
+fn then_in_worker_thread_flattens_rejected_task_result() {
     let system = Scheduler::with_threads(2);
     let system_clone = system.clone();
 
@@ -184,7 +184,7 @@ fn then_in_worker_thread_flattens_rejected_future_result() {
 }
 
 #[test]
-fn map_runs_inline_for_resolved_future() {
+fn map_runs_inline_for_resolved_task() {
     let system = Scheduler::with_threads(1);
     let caller_thread = std::thread::current().id();
 
@@ -196,7 +196,7 @@ fn map_runs_inline_for_resolved_future() {
 }
 
 #[test]
-fn all_accepts_shared_futures_via_map() {
+fn all_accepts_shared_tasks_via_map() {
     let system = Scheduler::with_threads(1);
     let shared = system.resolved(4_i32).share();
 
@@ -219,7 +219,7 @@ fn all_rejects_when_any_input_rejects() {
 }
 
 #[test]
-fn shared_future_wait_is_consistent_for_concurrent_waiters() {
+fn shared_task_wait_is_consistent_for_concurrent_waiters() {
     const WAITERS: usize = 24;
     let system = Scheduler::with_threads(4);
     let (resolver, task) = system.resolver::<usize>();
@@ -246,7 +246,7 @@ fn shared_future_wait_is_consistent_for_concurrent_waiters() {
 }
 
 #[test]
-fn future_poll_deduplicates_same_waker_registration() {
+fn task_poll_deduplicates_same_waker_registration() {
     let system = Scheduler::with_threads(1);
     let (resolver, mut task) = system.resolver::<i32>();
     let wake_count = Arc::new(AtomicUsize::new(0));
@@ -273,7 +273,7 @@ fn future_poll_deduplicates_same_waker_registration() {
 }
 
 #[test]
-fn shared_future_continuations_before_and_after_resolution_run_once() {
+fn shared_task_continuations_before_and_after_resolution_run_once() {
     const BEFORE: usize = 32;
     const AFTER: usize = 32;
     let system = Scheduler::with_threads(4);
@@ -428,7 +428,7 @@ fn randomized_repeated_flatten_and_recovery_stress() {
 }
 
 #[test]
-fn promise_drop_rejects_paired_future() {
+fn resolver_drop_rejects_paired_task() {
     let system = Scheduler::with_threads(1);
     let (resolver, task) = system.resolver::<i32>();
     drop(resolver);
@@ -447,23 +447,23 @@ fn all_empty_resolves_to_empty_vec() {
 #[test]
 fn all_preserves_input_order_when_resolved_out_of_order() {
     let system = Scheduler::with_threads(2);
-    let (promise0, future0) = system.resolver::<i32>();
-    let (promise1, future1) = system.resolver::<i32>();
-    let (promise2, future2) = system.resolver::<i32>();
+    let (resolver0, task0) = system.resolver::<i32>();
+    let (resolver1, task1) = system.resolver::<i32>();
+    let (resolver2, task2) = system.resolver::<i32>();
 
-    let joined = system.join_all(vec![future0, future1, future2]);
+    let joined = system.join_all(vec![task0, task1, task2]);
 
     let handle2 = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(2));
-        promise2.resolve(30);
+        resolver2.resolve(30);
     });
     let handle0 = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(4));
-        promise0.resolve(10);
+        resolver0.resolve(10);
     });
     let handle1 = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(8));
-        promise1.resolve(20);
+        resolver1.resolve(20);
     });
 
     assert_eq!(joined.block().unwrap(), vec![10, 20, 30]);
@@ -542,7 +542,7 @@ fn then_in_thread_pool_runs_on_target_pool_context() {
 }
 
 #[test]
-fn shared_future_poll_wakes_distinct_wakers_once_each() {
+fn shared_task_poll_wakes_distinct_wakers_once_each() {
     let system = Scheduler::with_threads(1);
     let (resolver, task) = system.resolver::<i32>();
     let mut shared_a = task.share();
@@ -581,7 +581,7 @@ fn shared_future_poll_wakes_distinct_wakers_once_each() {
 }
 
 #[test]
-fn future_poll_ready_then_wait_reports_consumed() {
+fn task_poll_ready_then_wait_reports_consumed() {
     let system = Scheduler::with_threads(1);
     let mut task = system.resolved(9_i32);
     let wake_count = Arc::new(AtomicUsize::new(0));
@@ -622,9 +622,9 @@ fn dispatch_one_main_thread_task_reports_queue_progress() {
 }
 
 #[test]
-fn repeated_shared_future_fanout_stress() {
+fn repeated_shared_task_fanout_stress() {
     let system = Scheduler::with_threads(4);
-    run_shared_fanout_stress(&system, 32, 8);
+    run_shared_task_fanout_stress(&system, 32, 8);
 }
 
 #[test]
@@ -656,7 +656,7 @@ fn soak_randomized_cross_context_then_catch_roundtrip_alt_seed_b() {
 
 #[test]
 #[ignore]
-fn soak_shared_future_fanout_high_contention() {
+fn soak_shared_task_fanout_high_contention() {
     let system = Scheduler::with_threads(6);
-    run_shared_fanout_stress(&system, 96, 16);
+    run_shared_task_fanout_stress(&system, 96, 16);
 }

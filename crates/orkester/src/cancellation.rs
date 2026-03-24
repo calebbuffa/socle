@@ -2,18 +2,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AsyncError, ErrorCode};
-use crate::future::{Future, SharedFuture, create_pair};
+use crate::task::{Task, TaskInner, SharedTask, create_pair};
+use crate::task_cell::TaskCell;
 
 type Callback = Box<dyn FnOnce() + Send + 'static>;
 
 /// Cooperative cancellation token. Cheap to clone (shared `Arc`).
 ///
 /// Use [`CancellationToken::new`] to create a fresh token, pass clones to
-/// any number of futures via [`Future::with_cancellation`], then call
+/// any number of tasks via [`Task::with_cancellation`], then call
 /// [`CancellationToken::cancel`] to signal them all.
 ///
 /// Cancellation is cooperative — it does not abort running work.  Instead,
-/// any future that has not yet completed will be rejected with an
+/// any task that has not yet completed will be rejected with an
 /// [`AsyncError`] whose message is `"cancelled"`.
 #[derive(Clone)]
 pub struct CancellationToken {
@@ -90,55 +91,58 @@ impl Default for CancellationToken {
     }
 }
 
-impl<T: Send + 'static> Future<T> {
+impl<T: Send + 'static> Task<T> {
     /// Attach a cancellation token. If the token is signalled before the
-    /// upstream future completes, the returned future rejects with a
+    /// upstream task completes, the returned task rejects with a
     /// `"cancelled"` error.
-    pub fn with_cancellation(mut self, token: &CancellationToken) -> Future<T> {
-        let source = match self.state.take() {
-            Some(s) => s,
-            None => {
-                let (p, f) = create_pair(self.system.clone());
-                p.reject(AsyncError::msg("Future already consumed"));
-                return f;
-            }
-        };
-
+    pub fn with_cancellation(self, token: &CancellationToken) -> Task<T> {
         if token.is_cancelled() {
-            let (p, f) = create_pair(self.system.clone());
-            p.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
-            return f;
+            let (resolver, task) = create_pair(self.system.clone());
+            resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            return task;
         }
 
-        let (promise, output) = create_pair::<T>(self.system.clone());
-        let shared_promise = Arc::new(Mutex::new(Some(promise)));
+        let (resolver, output) = create_pair::<T>(self.system.clone());
+        let shared_resolver = Arc::new(Mutex::new(Some(resolver)));
 
         // Path 1: upstream completes first → forward result.
-        let sp1 = shared_promise.clone();
-        let source_ref = Arc::clone(&source);
-        source.register_continuation(Box::new(move || {
-            let promise = {
-                let mut guard = sp1.lock().expect("cancel promise lock");
-                guard.take()
-            };
-            if let Some(promise) = promise {
-                match source_ref.take_result() {
-                    Some(Ok(v)) => promise.resolve(v),
-                    Some(Err(e)) => promise.reject(e),
-                    None => promise.reject(AsyncError::msg("Future already consumed")),
+        let sp1 = shared_resolver.clone();
+        match self.inner {
+            TaskInner::Ready(result) => {
+                let resolver = sp1.lock().expect("cancel resolver lock").take();
+                if let Some(resolver) = resolver {
+                    match result {
+                        Some(Ok(v)) => resolver.resolve(v),
+                        Some(Err(e)) => resolver.reject(e),
+                        None => resolver.reject(AsyncError::msg("Task already consumed")),
+                    }
                 }
             }
-        }));
+            TaskInner::Pending(cell) => {
+                TaskCell::on_complete(cell, move |result| {
+                    let resolver = {
+                        let mut guard = sp1.lock().expect("cancel resolver lock");
+                        guard.take()
+                    };
+                    if let Some(resolver) = resolver {
+                        match result {
+                            Ok(v) => resolver.resolve(v),
+                            Err(e) => resolver.reject(e),
+                        }
+                    }
+                });
+            }
+        }
 
         // Path 2: token cancelled first → reject.
-        let sp2 = shared_promise;
+        let sp2 = shared_resolver;
         token.on_cancel(Box::new(move || {
-            let promise = {
-                let mut guard = sp2.lock().expect("cancel promise lock");
+            let resolver = {
+                let mut guard = sp2.lock().expect("cancel resolver lock");
                 guard.take()
             };
-            if let Some(promise) = promise {
-                promise.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            if let Some(resolver) = resolver {
+                resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
             }
         }));
 
@@ -146,47 +150,45 @@ impl<T: Send + 'static> Future<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> SharedFuture<T> {
+impl<T: Clone + Send + 'static> SharedTask<T> {
     /// Attach a cancellation token. If the token is signalled before the
-    /// upstream future completes, the returned future rejects with a
-    /// `"cancelled"` error. Does NOT consume the shared future.
-    pub fn with_cancellation(&self, token: &CancellationToken) -> Future<T> {
+    /// upstream task completes, the returned task rejects with a
+    /// `"cancelled"` error. Does NOT consume the shared task.
+    pub fn with_cancellation(&self, token: &CancellationToken) -> Task<T> {
         if token.is_cancelled() {
-            let (p, f) = create_pair(self.system.clone());
-            p.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
-            return f;
+            let (resolver, task) = create_pair(self.system.clone());
+            resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            return task;
         }
 
-        let source = Arc::clone(&self.state);
-        let (promise, output) = create_pair::<T>(self.system.clone());
-        let shared_promise = Arc::new(Mutex::new(Some(promise)));
+        let source = Arc::clone(&self.cell);
+        let (resolver, output) = create_pair::<T>(self.system.clone());
+        let shared_resolver = Arc::new(Mutex::new(Some(resolver)));
 
         // Path 1: upstream completes first → forward result.
-        let sp1 = shared_promise.clone();
-        let source_ref = Arc::clone(&source);
-        source.register_continuation(Box::new(move || {
-            let promise = {
-                let mut guard = sp1.lock().expect("cancel promise lock");
+        let sp1 = shared_resolver.clone();
+        TaskCell::on_complete_cloned(source, move |result| {
+            let resolver = {
+                let mut guard = sp1.lock().expect("cancel resolver lock");
                 guard.take()
             };
-            if let Some(promise) = promise {
-                match source_ref.clone_result() {
-                    Some(Ok(v)) => promise.resolve(v),
-                    Some(Err(e)) => promise.reject(e),
-                    None => promise.reject(AsyncError::msg("Future already consumed")),
+            if let Some(resolver) = resolver {
+                match result {
+                    Ok(v) => resolver.resolve(v),
+                    Err(e) => resolver.reject(e),
                 }
             }
-        }));
+        });
 
         // Path 2: token cancelled first → reject.
-        let sp2 = shared_promise;
+        let sp2 = shared_resolver;
         token.on_cancel(Box::new(move || {
-            let promise = {
-                let mut guard = sp2.lock().expect("cancel promise lock");
+            let resolver = {
+                let mut guard = sp2.lock().expect("cancel resolver lock");
                 guard.take()
             };
-            if let Some(promise) = promise {
-                promise.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
+            if let Some(resolver) = resolver {
+                resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
             }
         }));
 
