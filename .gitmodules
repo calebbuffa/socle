@@ -1,0 +1,12 @@
+[submodule "extern/glTF"]
+	path = extern/glTF
+	url = https://github.com/CesiumGS/glTF.git
+	branch = cesium-native
+[submodule "extern/3d-tiles"]
+	path = extern/3d-tiles
+	url = https://github.com/CesiumGS/3d-tiles.git
+	branch = main
+[submodule "extern/i3s-spec"]
+	path = extern/i3s-spec
+	url = https://github.com/Esri/i3s-spec.git
+	branch = master

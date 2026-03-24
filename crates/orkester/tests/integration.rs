@@ -4,7 +4,7 @@
 //! while exercising the public API thoroughly.
 
 use orkester::channel;
-use orkester::{Scheduler, CancellationToken, Context, ErrorCode, Semaphore};
+use orkester::{CancellationToken, Context, ErrorCode, Scheduler, Semaphore};
 use orkester::{race, retry, timeout};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

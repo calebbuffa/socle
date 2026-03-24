@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/i3s", "crates/moderu", "crates/orkester", "crates/orkester-ffi", "crates/schema-gen", "crates/tiles3d"]
 resolver = "2"
 
 [workspace.package]

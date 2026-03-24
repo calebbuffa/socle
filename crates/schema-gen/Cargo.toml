@@ -1,0 +1,18 @@
+[package]
+name = "schema-gen"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Code generator: JSON Schema → Rust structs with serde. Drives cesium-gltf and cesium-3dtiles."
+repository.workspace = true
+
+[[bin]]
+name = "schema-gen"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+heck = "0.5"
+clap = { version = "4", features = ["derive"] }

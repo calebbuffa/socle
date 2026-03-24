@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AsyncError, ErrorCode};
-use crate::task::{Task, TaskInner, SharedTask, create_pair};
+use crate::task::{SharedTask, Task, TaskInner, create_pair};
 use crate::task_cell::TaskCell;
 
 type Callback = Box<dyn FnOnce() + Send + 'static>;

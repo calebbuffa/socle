@@ -365,8 +365,7 @@ pub unsafe extern "C" fn orkester_resolver_resolve_with(
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 ) {
     if !resolver.is_null() {
-        let resolver =
-            unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
+        let resolver = unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
         resolver.resolve(Payload::new(value, destroy));
     }
 }
@@ -375,8 +374,7 @@ pub unsafe extern "C" fn orkester_resolver_resolve_with(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_resolver_resolve_empty(resolver: orkester_resolver_t) {
     if !resolver.is_null() {
-        let resolver =
-            unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
+        let resolver = unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
         resolver.resolve(Payload::empty());
     }
 }
@@ -391,8 +389,7 @@ pub unsafe extern "C" fn orkester_resolver_reject_opaque(
     if resolver.is_null() {
         return;
     }
-    let resolver =
-        unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
+    let resolver = unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
     resolver.reject(orkester::AsyncError::new(OpaqueError {
         ptr: error,
         destroy,
@@ -409,8 +406,7 @@ pub unsafe extern "C" fn orkester_resolver_reject(
     if resolver.is_null() {
         return;
     }
-    let resolver =
-        unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
+    let resolver = unsafe { Box::from_raw(resolver as *mut orkester::Resolver<Payload>) };
     let msg = if message.is_null() {
         "FFI resolver rejected".to_string()
     } else {
@@ -1047,10 +1043,7 @@ pub unsafe extern "C" fn orkester_join_set_create(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn orkester_join_set_push(
-    js: orkester_join_set_t,
-    task: orkester_task_t,
-) {
+pub unsafe extern "C" fn orkester_join_set_push(js: orkester_join_set_t, task: orkester_task_t) {
     let js = unsafe { &mut *(js as *mut JoinSet<Payload>) };
     let task = unsafe { *Box::from_raw(task as *mut Task<Payload>) };
     js.push(task);

@@ -1,0 +1,53 @@
+{
+  "classes": {
+    "Tileset": {
+      "overrideName": "Tileset"
+    },
+    "Root Property": {
+      "skip": true
+    },
+    "Extension": {
+      "skip": true
+    },
+    "Extras": {
+      "skip": true
+    },
+    "Definitions": {
+      "skip": true
+    },
+    "Metadata Entity": {
+      "skip": true
+    },
+    "3DTILES_bounding_volume_S2 extension": {
+      "overrideName": "Extension3dTilesBoundingVolumeS2"
+    },
+    "3DTILES_ellipsoid extension": {
+      "overrideName": "Extension3dTilesEllipsoid"
+    },
+    "Enum": {
+      "overrideName": "EnumDefinition"
+    },
+    "Enum value": {
+      "overrideName": "EnumValue"
+    },
+    "Group Metadata": {
+      "overrideName": "Group"
+    },
+    "Implicit tiling": {
+      "overrideName": "ImplicitTiling"
+    },
+    "Template URI": {
+      "overrideName": "TemplateUri"
+    },
+    "Property Statistics": {
+      "overrideName": "PropertyStatistics"
+    },
+    "Class Statistics": {
+      "overrideName": "ClassStatistics"
+    }
+  },
+  "extensions": [
+    { "extensionName": "3DTILES_bounding_volume_S2" },
+    { "extensionName": "3DTILES_ellipsoid" }
+  ]
+}

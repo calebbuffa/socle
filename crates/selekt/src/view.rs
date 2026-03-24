@@ -1,6 +1,25 @@
 use crate::node::NodeId;
 use zukei::Vec3;
 
+/// Projection model for a view.
+#[derive(Clone, Debug)]
+pub enum Projection {
+    /// Symmetric perspective projection.
+    Perspective {
+        /// Horizontal field-of-view angle in radians.
+        fov_x: f64,
+        /// Vertical field-of-view angle in radians.
+        fov_y: f64,
+    },
+    /// Orthographic projection.
+    Orthographic {
+        /// Half-width of the view volume in world units.
+        half_width: f64,
+        /// Half-height of the view volume in world units.
+        half_height: f64,
+    },
+}
+
 /// Per-view camera state passed into each `update_view_group` call.
 /// All positions and directions are in the engine's working coordinate system.
 #[derive(Clone, Debug)]
@@ -13,13 +32,70 @@ pub struct ViewState {
     pub direction: Vec3,
     /// Camera up vector (unit-length, world-space).
     pub up: Vec3,
-    /// Horizontal field-of-view angle in radians.
-    pub fov_x: f64,
-    /// Vertical field-of-view angle in radians.
-    pub fov_y: f64,
+    /// Projection model (perspective or orthographic).
+    pub projection: Projection,
     /// Multiplier applied to the raw LOD metric before passing to `LodEvaluator`.
     /// Use values > 1.0 to over-load (sharper detail); < 1.0 to under-load.
     pub lod_metric_multiplier: f32,
+}
+
+impl ViewState {
+    /// Create a perspective view state.
+    pub fn perspective(
+        position: Vec3,
+        direction: Vec3,
+        up: Vec3,
+        viewport_px: [u32; 2],
+        fov_x: f64,
+        fov_y: f64,
+    ) -> Self {
+        Self {
+            viewport_px,
+            position,
+            direction,
+            up,
+            projection: Projection::Perspective { fov_x, fov_y },
+            lod_metric_multiplier: 1.0,
+        }
+    }
+
+    /// Create an orthographic view state.
+    pub fn orthographic(
+        position: Vec3,
+        direction: Vec3,
+        up: Vec3,
+        viewport_px: [u32; 2],
+        half_width: f64,
+        half_height: f64,
+    ) -> Self {
+        Self {
+            viewport_px,
+            position,
+            direction,
+            up,
+            projection: Projection::Orthographic {
+                half_width,
+                half_height,
+            },
+            lod_metric_multiplier: 1.0,
+        }
+    }
+
+    /// Horizontal field-of-view in radians, or `None` for orthographic views.
+    pub fn fov_x(&self) -> Option<f64> {
+        match &self.projection {
+            Projection::Perspective { fov_x, .. } => Some(*fov_x),
+            Projection::Orthographic { .. } => None,
+        }
+    }
+
+    /// Vertical field-of-view in radians, or `None` for orthographic views.
+    pub fn fov_y(&self) -> Option<f64> {
+        match &self.projection {
+            Projection::Perspective { fov_y, .. } => Some(*fov_y),
+            Projection::Orthographic { .. } => None,
+        }
+    }
 }
 
 /// Identifies a view group managed by the engine.

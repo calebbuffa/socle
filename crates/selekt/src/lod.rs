@@ -13,12 +13,18 @@ pub enum RefinementMode {
 }
 
 /// Format-agnostic LOD metric descriptor.
-/// The `family` string identifies the metric type (e.g., `"geometric_error"`, `"max_screen_size"`).
-/// `values` contains one or more metric values in family-defined units.
-/// Adapters map format-specific metrics to this form; `LodEvaluator` interprets them.
+///
+/// The `family` string identifies the metric type (e.g., `"geometric_error"`,
+/// `"max_screen_size"`). `values` contains one or more metric values in
+/// family-defined units.
+///
+/// Adapters map format-specific metrics to this form; `LodEvaluator`
+/// interprets them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LodDescriptor {
-    pub family: String,
+    /// Metric family name. Use a `&'static str` to avoid per-node allocation;
+    /// there are only a few families in practice.
+    pub family: &'static str,
     pub values: Vec<f64>,
 }
 

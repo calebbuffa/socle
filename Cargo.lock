@@ -71,7 +71,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eadd868a2ce9ca38de7eeafdcec9c7065ef89b42b32f0839278d55f35c54d1ff"
 dependencies = [
  "clap",
- "heck",
+ "heck 0.4.1",
  "indexmap",
  "log",
  "proc-macro2",
@@ -96,6 +96,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b193af5b67834b676abd72466a96c1024e6a6ad978a1f484bd90b85c94041351"
 dependencies = [
  "clap_builder",
+ "clap_derive",
 ]
 
 [[package]]
@@ -108,6 +109,18 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_derive"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1110bd8a634a1ab8cb04345d8d878267d57c3cf1b38d91b71af6686408bbca6a"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -181,12 +194,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glam"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
-
-[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -197,6 +204,20 @@ name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
+
+[[package]]
+name = "heck"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "i3s"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "indexmap"
@@ -255,6 +276,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "moderu"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -279,13 +308,6 @@ name = "orkester-ffi"
 version = "0.3.0"
 dependencies = [
  "cbindgen",
- "orkester",
-]
-
-[[package]]
-name = "orkester-io"
-version = "0.1.0"
-dependencies = [
  "orkester",
 ]
 
@@ -339,22 +361,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
-name = "selekt"
-version = "0.1.0"
+name = "schema-gen"
+version = "0.3.0"
 dependencies = [
- "orkester",
- "orkester-io",
- "zukei",
-]
-
-[[package]]
-name = "selekt-ffi"
-version = "0.1.0"
-dependencies = [
- "cbindgen",
- "orkester",
- "selekt",
- "zukei",
+ "clap",
+ "heck 0.5.0",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -443,6 +457,14 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "tiles3d"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -620,10 +642,3 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[package]]
-name = "zukei"
-version = "0.1.0"
-dependencies = [
- "glam",
-]
