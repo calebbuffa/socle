@@ -103,7 +103,7 @@ fn main() {
         schema_dirs.insert(0, parent.to_path_buf());
     }
 
-    let mut cache = SchemaCache::new(schema_dirs, args.extension_dir.clone());
+    let mut cache = SchemaCache::new(schema_dirs.clone(), args.extension_dir.clone());
 
     // Load root schema.
     let root_schema_str = std::fs::read_to_string(&args.schema)
@@ -116,6 +116,26 @@ fn main() {
     // BFS schema processing — same approach as the Node.js generator.
     let mut queue: VecDeque<(schema::JsonSchema, Option<PathBuf>)> = VecDeque::new();
     queue.push_back((root_schema, Some(args.schema.clone())));
+
+    // Queue additional root schemas declared in the config.
+    for rel_path in &config.additional_schemas {
+        let mut found = false;
+        for dir in &schema_dirs {
+            let full_path = dir.join(rel_path);
+            if full_path.exists() {
+                if let Ok(s) = std::fs::read_to_string(&full_path) {
+                    if let Ok(schema) = serde_json::from_str::<schema::JsonSchema>(&s) {
+                        queue.push_back((schema, Some(full_path)));
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !found {
+            eprintln!("Warning: additionalSchema not found: {rel_path}");
+        }
+    }
 
     // Queue extension schemas — either from explicit paths or auto-discovered.
     for ext in &config.extensions {
@@ -184,7 +204,7 @@ fn main() {
     generated.sort_by(|a, b| a.name.cmp(&b.name));
 
     // Render to a single module file.
-    let source = render_module(&args.module_doc, &generated, &[]);
+    let source = render_module(&args.module_doc, &generated, &[], &config.custom_types);
 
     // Write output.
     std::fs::create_dir_all(&args.output)

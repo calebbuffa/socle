@@ -1,6 +1,6 @@
 //! Hessian normal-form plane.
 
-use glam_dep::DVec3;
+use glam::DVec3;
 
 /// A plane in 3D space represented in Hessian normal form.
 ///

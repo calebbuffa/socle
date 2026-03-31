@@ -28,7 +28,7 @@ cargo build -p orkester-ffi
 ## Handle Types
 
 ```c
-typedef struct orkester_t orkester_t;            // Scheduler
+typedef struct orkester_t orkester_t;            // Runtime
 typedef void* orkester_task_t;                    // Task<Payload>
 typedef void* orkester_resolver_t;               // Resolver<Payload>
 typedef void* orkester_main_scope_t;             // MainThreadScope
@@ -71,7 +71,7 @@ enum orkester_context_t {
 };
 ```
 
-## Creating a Scheduler
+## Creating a Runtime
 
 ```c
 // Bring your own dispatch

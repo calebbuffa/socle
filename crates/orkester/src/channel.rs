@@ -1,11 +1,6 @@
 //! Bounded multi-producer, single-consumer async channel.
 //!
-//! ```rust,no_run
-//! # use orkester::channel;
-//! let (tx, rx) = channel::mpsc::<i32>(8);
-//! tx.send(42);
-//! let value = rx.recv(); // blocks
-//! ```
+//! Create channels via the free functions [`orkester::mpsc`] and [`orkester::oneshot`].
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

@@ -1,0 +1,14 @@
+[package]
+name = "tiles3d-content"
+description = "3D Tiles content processing (B3DM, I3DM, GLB, PNTS ↔ GltfModel)"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kiban = { path = "../kiban" }
+tiles3d = { path = "../tiles3d" }
+moderu = { path = "../moderu" }
+moderu-io = { path = "../moderu-io" }
+serde_json = "1"

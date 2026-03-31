@@ -7,14 +7,33 @@
 
 use orkester::channel::{self, Receiver, Sender};
 use orkester::{
-    CancellationToken, Context, Executor, JoinSet, MainThreadScope, Scheduler, Semaphore, Task,
-    ThreadPool,
+    CancellationToken, Context, Executor, JoinSet, Runtime, Semaphore, Task,
+    ThreadPool, WorkQueue,
 };
 use std::ffi::{c_char, c_void};
 
-// ─── Opaque handle types ────────────────────────────────────────────────────
+// ─── Internal runtime bundle ─────────────────────────────────────────────────
 
-/// Opaque async runtime handle. Wraps `orkester::Scheduler`.
+/// Internal bundle: `Runtime` + its associated `WorkQueue`.
+struct OrkesterRuntime {
+    runtime: Runtime,
+    work_queue: WorkQueue,
+}
+
+impl OrkesterRuntime {
+    fn new(runtime: Runtime) -> Self {
+        Self { runtime, work_queue: WorkQueue::new() }
+    }
+}
+
+impl std::ops::Deref for OrkesterRuntime {
+    type Target = Runtime;
+    fn deref(&self) -> &Runtime { &self.runtime }
+}
+
+// ─── Opaque handle types ─────────────────────────────────────────────────────
+
+/// Opaque async runtime handle. Wraps `orkester::Runtime` + its `WorkQueue`.
 #[repr(C)]
 pub struct orkester_t {
     _opaque: u8,
@@ -26,7 +45,7 @@ pub type orkester_task_t = *mut c_void;
 /// Opaque handle to a `Resolver<Payload>`.
 pub type orkester_resolver_t = *mut c_void;
 
-/// Opaque handle to a `MainThreadScope`.
+/// Opaque handle to a `WorkQueue` (main-thread dispatch queue).
 pub type orkester_main_scope_t = *mut c_void;
 
 /// Opaque handle to a `ThreadPool`.
@@ -63,7 +82,7 @@ impl orkester_context_t {
     fn to_context(self) -> Context {
         match self {
             orkester_context_t::ORKESTER_CONTEXT_BACKGROUND => Context::BACKGROUND,
-            orkester_context_t::ORKESTER_CONTEXT_MAIN => Context::MAIN,
+            orkester_context_t::ORKESTER_CONTEXT_MAIN => Context::BACKGROUND,
             orkester_context_t::ORKESTER_CONTEXT_IMMEDIATE => Context::IMMEDIATE,
         }
     }
@@ -302,9 +321,9 @@ unsafe fn write_ffi_error_with_opaque(
     unsafe { write_ffi_error(error, out_error_ptr, out_error_len) };
 }
 
-// ─── Scheduler (orkester_t) ─────────────────────────────────────────────────
+// ─── Runtime (orkester_t) ─────────────────────────────────────────────────
 
-/// Create a `Scheduler` from a dispatch function.
+/// Create a `Runtime` from a dispatch function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_create(
     dispatch: orkester_dispatch_fn_t,
@@ -316,30 +335,33 @@ pub unsafe extern "C" fn orkester_create(
         ctx: SendCtx(ctx),
         destroy,
     };
-    let system = Scheduler::new(executor);
-    Box::into_raw(Box::new(system)) as *mut orkester_t
+    let system = Runtime::new(executor);
+    Box::into_raw(Box::new(OrkesterRuntime::new(system))) as *mut orkester_t
 }
 
-/// Create a `Scheduler` with a built-in thread pool.
+/// Create a `Runtime` with a built-in thread pool.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_create_default(num_threads: usize) -> *mut orkester_t {
-    let system = Scheduler::with_threads(num_threads);
-    Box::into_raw(Box::new(system)) as *mut orkester_t
+    let system = Runtime::with_threads(num_threads);
+    Box::into_raw(Box::new(OrkesterRuntime::new(system))) as *mut orkester_t
 }
 
-/// Destroy a `Scheduler`.
+/// Destroy a `Runtime`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_destroy(ptr: *mut orkester_t) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr as *mut Scheduler)) };
+        unsafe { drop(Box::from_raw(ptr as *mut OrkesterRuntime)) };
     }
 }
 
-/// Clone a `Scheduler` (cheap Arc clone).
+/// Clone a `Runtime` (cheap Arc clone).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_clone(ptr: *const orkester_t) -> *mut orkester_t {
-    let system = unsafe { &*(ptr as *const Scheduler) };
-    Box::into_raw(Box::new(system.clone())) as *mut orkester_t
+    let system = unsafe { &*(ptr as *const OrkesterRuntime) };
+    Box::into_raw(Box::new(OrkesterRuntime {
+        runtime: system.runtime.clone(),
+        work_queue: system.work_queue.clone(),
+    })) as *mut orkester_t
 }
 
 // ─── Resolver ───────────────────────────────────────────────────────────────
@@ -349,7 +371,7 @@ pub unsafe extern "C" fn orkester_clone(ptr: *const orkester_t) -> *mut orkester
 pub unsafe extern "C" fn orkester_resolver_create(
     system: *const orkester_t,
 ) -> orkester_resolver_pair_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let (resolver, task) = system.resolver::<Payload>();
     orkester_resolver_pair_t {
         resolver: Box::into_raw(Box::new(resolver)) as orkester_resolver_t,
@@ -600,7 +622,7 @@ pub unsafe extern "C" fn orkester_task_share(
 /// Clone a shared task handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_task_clone(task: orkester_task_t) -> orkester_task_t {
-    let shared = unsafe { &*(task as *const orkester::SharedTask<Payload>) };
+    let shared = unsafe { &*(task as *const orkester::Handle<Payload>) };
     // Create a new unique task from the shared task via then(IMMEDIATE)
     let unique = shared.map(|p| p);
     Box::into_raw(Box::new(unique)) as orkester_task_t
@@ -619,7 +641,7 @@ pub unsafe extern "C" fn orkester_task_drop(task: orkester_task_t) {
 /// Create an already-resolved task with no payload.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_resolved(system: *const orkester_t) -> orkester_task_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let task = system.resolved(Payload::empty());
     Box::into_raw(Box::new(task)) as orkester_task_t
 }
@@ -631,7 +653,7 @@ pub unsafe extern "C" fn orkester_resolved_with_destroy(
     value: *mut c_void,
     destroy_fn: Option<unsafe extern "C" fn(*mut c_void)>,
 ) -> orkester_task_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let task = system.resolved(Payload::new(value, destroy_fn));
     Box::into_raw(Box::new(task)) as orkester_task_t
 }
@@ -646,7 +668,7 @@ pub unsafe extern "C" fn orkester_join_all(
     tasks: *mut orkester_task_t,
     count: usize,
 ) -> orkester_task_t {
-    let system_ref = unsafe { &*(system as *const Scheduler) };
+    let system_ref = unsafe { &*(system as *const OrkesterRuntime) };
 
     if count == 0 {
         let resolved = system_ref.resolved(Payload::empty());
@@ -672,7 +694,7 @@ pub unsafe extern "C" fn orkester_join_all_values(
     tasks: *mut orkester_task_t,
     count: usize,
 ) -> orkester_task_t {
-    let system_ref = unsafe { &*(system as *const Scheduler) };
+    let system_ref = unsafe { &*(system as *const OrkesterRuntime) };
 
     if count == 0 {
         let arr = ValueArray {
@@ -747,35 +769,37 @@ pub unsafe extern "C" fn orkester_value_array_drop(array_payload: *mut c_void) {
 
 /// Dispatch all queued main-thread tasks. Returns how many were dispatched.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn orkester_dispatch(system: *const orkester_t) -> usize {
-    let system = unsafe { &*(system as *const Scheduler) };
-    system.flush_main()
+pub unsafe extern "C" fn orkester_dispatch(system: *mut orkester_t) -> usize {
+    let system = unsafe { &mut *(system as *mut OrkesterRuntime) };
+    system.work_queue.pump()
 }
 
 /// Dispatch a single main-thread task. Returns true if one was dispatched.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn orkester_dispatch_one(system: *const orkester_t) -> bool {
-    let system = unsafe { &*(system as *const Scheduler) };
-    system.flush_main_one()
+pub unsafe extern "C" fn orkester_dispatch_one(system: *mut orkester_t) -> bool {
+    let system = unsafe { &mut *(system as *mut OrkesterRuntime) };
+    system.work_queue.pump_timed(std::time::Duration::ZERO) > 0
 }
 
 // ─── Main Thread Scope ─────────────────────────────────────────────────────
 
-/// Enter main-thread scope.
+/// Returns a `WorkQueue` context handle that routes tasks into the runtime's
+/// main-thread dispatch queue.  The caller is responsible for polling via
+/// `orkester_dispatch` / `orkester_dispatch_one`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_main_scope_create(
     system: *const orkester_t,
 ) -> orkester_main_scope_t {
-    let system = unsafe { &*(system as *const Scheduler) };
-    let scope = system.main_scope();
-    Box::into_raw(Box::new(scope)) as orkester_main_scope_t
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
+    let ctx = Box::new(system.work_queue.context());
+    Box::into_raw(ctx) as orkester_main_scope_t
 }
 
-/// Leave main-thread scope. Consumes the handle.
+/// Drop a main-thread context handle returned by `orkester_main_scope_create`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_main_scope_drop(scope: orkester_main_scope_t) {
     if !scope.is_null() {
-        unsafe { drop(Box::from_raw(scope as *mut MainThreadScope)) };
+        unsafe { drop(Box::from_raw(scope as *mut Context)) };
     }
 }
 
@@ -876,7 +900,7 @@ pub unsafe extern "C" fn orkester_task_cancel(
 /// Create a task that completes after `millis` milliseconds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_delay(system: *const orkester_t, millis: u64) -> orkester_task_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let task = system
         .delay(std::time::Duration::from_millis(millis))
         .map(|()| Payload::empty());
@@ -890,7 +914,7 @@ pub unsafe extern "C" fn orkester_timeout(
     task: orkester_task_t,
     millis: u64,
 ) -> orkester_task_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let task = unsafe { *Box::from_raw(task as *mut Task<Payload>) };
     let result = orkester::timeout(system, task, std::time::Duration::from_millis(millis));
     Box::into_raw(Box::new(result)) as orkester_task_t
@@ -903,7 +927,7 @@ pub unsafe extern "C" fn orkester_race(
     tasks: *mut orkester_task_t,
     count: usize,
 ) -> orkester_task_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let mut task_vec: Vec<Task<Payload>> = Vec::with_capacity(count);
     for i in 0..count {
         let handle = unsafe { *tasks.add(i) };
@@ -925,7 +949,7 @@ pub unsafe extern "C" fn orkester_spawn(
     callback: orkester_callback_fn_t,
     ctx: *mut c_void,
 ) {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let cb = SendCallback {
         func: callback,
         context: SendCtx(ctx),
@@ -945,7 +969,7 @@ pub unsafe extern "C" fn orkester_semaphore_create(
     system: *const orkester_t,
     permits: usize,
 ) -> orkester_semaphore_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let sem = Semaphore::new(system, permits.max(1));
     Box::into_raw(Box::new(sem)) as orkester_semaphore_t
 }
@@ -1009,7 +1033,7 @@ pub unsafe extern "C" fn orkester_retry(
     factory: orkester_retry_fn_t,
     ctx: *mut c_void,
 ) -> orkester_task_t {
-    let system_ref = unsafe { &*(system as *const Scheduler) };
+    let system_ref = unsafe { &*(system as *const OrkesterRuntime) };
     let cb = SendRetry {
         func: factory,
         context: SendCtx(ctx),
@@ -1037,7 +1061,7 @@ pub type orkester_join_set_t = *mut c_void;
 pub unsafe extern "C" fn orkester_join_set_create(
     system: *const orkester_t,
 ) -> orkester_join_set_t {
-    let system = unsafe { &*(system as *const Scheduler) };
+    let system = unsafe { &*(system as *const OrkesterRuntime) };
     let js: JoinSet<Payload> = system.join_set();
     Box::into_raw(Box::new(js)) as orkester_join_set_t
 }
@@ -1061,7 +1085,7 @@ pub unsafe extern "C" fn orkester_join_set_join_all(
     out_total: *mut usize,
 ) -> usize {
     let js = unsafe { *Box::from_raw(js as *mut JoinSet<Payload>) };
-    let results = js.join_all();
+    let results = js.block_all();
     let total = results.len();
     let ok_count = results.iter().filter(|r| r.is_ok()).count();
     if !out_total.is_null() {
@@ -1076,7 +1100,7 @@ pub unsafe extern "C" fn orkester_join_set_join_next(
     out_ok: *mut bool,
 ) -> bool {
     let js = unsafe { &mut *(js as *mut JoinSet<Payload>) };
-    match js.join_next() {
+    match js.block_next() {
         Some(result) => {
             if !out_ok.is_null() {
                 unsafe { *out_ok = result.is_ok() };

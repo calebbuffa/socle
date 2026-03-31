@@ -9,11 +9,7 @@ repository.workspace = true
 [lib]
 crate-type = ["rlib"]
 
-[features]
-default = []
-glam = ["zukei/glam"]
-
 [dependencies]
+glam = { version = "0.32", features = ["std"] }
 orkester = { path = "../orkester" }
-orkester-io = { path = "../orkester-io" }
-zukei = { path = "../zukei", default-features = false }
+zukei = { path = "../zukei" }

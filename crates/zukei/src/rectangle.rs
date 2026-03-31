@@ -1,6 +1,6 @@
 //! 2D rectangle type.
 
-use glam_dep::DVec2;
+use glam::DVec2;
 
 /// A 2D rectangle defined by minimum and maximum coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]

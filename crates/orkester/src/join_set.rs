@@ -1,28 +1,19 @@
 //! Detached tasks and join sets.
 
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
-use crate::context::Context;
 use crate::error::AsyncError;
-use crate::scheduler::Scheduler;
 use crate::task::{Task, TaskInner};
 use crate::task_cell::TaskCell;
 
 /// A collection of tasks that can be joined together.
-///
-/// Push tasks into the set, then call [`join_all`](JoinSet::join_all) to
-/// wait for all of them to complete and collect results, or
-/// [`join_next`](JoinSet::join_next) to pop results one at a time.
 pub struct JoinSet<T: Send + 'static> {
-    #[allow(dead_code)]
-    system: Scheduler,
     entries: Vec<Arc<TaskCell<T>>>,
 }
 
 impl<T: Send + 'static> JoinSet<T> {
-    pub(crate) fn new(system: Scheduler) -> Self {
+    pub fn new() -> Self {
         Self {
-            system,
             entries: Vec::new(),
         }
     }
@@ -56,50 +47,53 @@ impl<T: Send + 'static> JoinSet<T> {
     }
 
     /// Block until all tasks complete. Returns results in insertion order.
-    pub fn join_all(self) -> Vec<Result<T, AsyncError>> {
+    pub fn block_all(self) -> Vec<Result<T, AsyncError>> {
         self.entries
             .into_iter()
             .map(|cell| {
                 cell.wait_until_ready();
                 cell.take_result()
-                    .unwrap_or_else(|| Err(AsyncError::msg("JoinSet entry consumed")))
+                    .unwrap_or_else(|| Err(AsyncError::msg("JoinSet: missing result")))
             })
             .collect()
     }
 
-    /// Block until the next task completes (in insertion order).
-    /// Returns `None` when the set is exhausted.
+    /// Block until the next task completes, and return its result.
+    /// Returns `None` when the set is empty.
     pub fn join_next(&mut self) -> Option<Result<T, AsyncError>> {
         if self.entries.is_empty() {
             return None;
         }
-        let cell = self.entries.remove(0);
-        cell.wait_until_ready();
-        Some(
-            cell.take_result()
-                .unwrap_or_else(|| Err(AsyncError::msg("JoinSet entry consumed"))),
-        )
+
+        // Shared condvar that any completing cell will notify.
+        let pair = Arc::new((Mutex::new(()), Condvar::new()));
+
+        for cell in &self.entries {
+            let pair = Arc::clone(&pair);
+            TaskCell::on_ready(cell, move || {
+                pair.1.notify_all();
+            });
+        }
+
+        loop {
+            for i in 0..self.entries.len() {
+                if self.entries[i].is_ready() {
+                    let cell = self.entries.swap_remove(i);
+                    return Some(
+                        cell.take_result()
+                            .unwrap_or_else(|| Err(AsyncError::msg("JoinSet: missing result"))),
+                    );
+                }
+            }
+            let (lock, condvar) = &*pair;
+            let guard = lock.lock().expect("join_next condvar lock");
+            drop(condvar.wait(guard).expect("join_next condvar wait"));
+        }
     }
 }
 
-impl Scheduler {
-    /// Create a new empty [`JoinSet`].
-    pub fn join_set<T: Send + 'static>(&self) -> JoinSet<T> {
-        JoinSet::new(self.clone())
-    }
-
-    /// Spawn a detached task in the given scheduling context.
-    ///
-    /// The task runs to completion (or panic) with no way to observe its
-    /// result. Use [`Context::IMMEDIATE`] to run inline on the current
-    /// thread.
-    pub fn spawn_detached<F>(&self, context: Context, f: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        match self.inner.executor_for(context) {
-            Some(executor) => executor.execute(Box::new(f)),
-            None => f(), // Immediate — run inline
-        }
+impl<T: Send + 'static> Default for JoinSet<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -2,7 +2,7 @@
 
 `socle` is french for "base" or "foundation". This repository contains shared infrastructure for Cesium's Rust-based native libraries, including:
 
-- `orkester`: An async runtime and task scheduler.
+- `orkester`: An async runtime and task Runtime.
 - `selekt`: A tile selection engine for 3D geospatial data.
 
 ## Goal

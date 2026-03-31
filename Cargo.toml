@@ -1,5 +1,25 @@
 [workspace]
-members = ["crates/i3s", "crates/moderu", "crates/orkester", "crates/orkester-ffi", "crates/schema-gen", "crates/tiles3d"]
+members = [
+    # "crates/i3s",
+    # "crates/i3s-content",
+    # "crates/i3s-selekt",
+    "crates/kiban",
+    "crates/kasane",
+    "crates/moderu",
+    "crates/moderu-codec",
+    "crates/moderu-io",
+    "crates/orkester",
+    # "crates/orkester-ffi",
+    "crates/orkester-io",
+    "crates/schema-gen",
+    "crates/selekt",
+    "crates/terra",
+    "crates/tiles3d",
+    "crates/tiles3d-content",
+    "crates/tiles3d-selekt",
+    "crates/zukei",
+    "crates/egaku",
+]
 resolver = "2"
 
 [workspace.package]

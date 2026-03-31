@@ -1,10 +1,30 @@
 //! Context-aware task scheduling for Rust.
 //!
 //! `orkester` provides:
-//! - [`Scheduler`] — root async runtime with context-aware scheduling
-//! - [`Task`] / [`SharedTask`] / [`Resolver`] — async value types
-//! - [`Context`] — lightweight scheduling handle (u32-indexed)
+//! - [`Context`] — scheduling token: where should this task run?
+//! - [`ThreadPool`] — self-draining background thread pool
+//! - [`WorkQueue`] — user-pumped dispatch queue (e.g. for a UI/main thread)
+//! - [`Task`] / [`Handle`] / [`Resolver`] — async value types
 //! - [`Executor`] — trait for custom execution backends
+//!
+//! # Quick start
+//!
+//! ```rust,ignore
+//! // Background thread pool
+//! let bg = orkester::ThreadPool::new(4);
+//! let bg_ctx = bg.context();
+//!
+//! // Optional: user-pumped queue for a main/UI thread
+//! let mut wq = orkester::WorkQueue::new();
+//! let main_ctx = wq.context();
+//!
+//! let task = bg_ctx.run(|| expensive_computation())
+//!     .then(&main_ctx, |v| update_ui(v));
+//!
+//! while !task.is_ready() {
+//!     wq.pump();
+//! }
+//! ```
 //!
 //! # Feature Flags
 //!
@@ -16,26 +36,24 @@
 
 mod block_on;
 mod cancellation;
-pub mod channel;
+mod channel;
 mod combinators;
 mod context;
 mod error;
 mod executor;
 mod join_set;
-mod main_loop;
-mod resolver;
-mod scheduler;
 mod scope;
 mod semaphore;
+mod shared_cell;
 pub(crate) mod task;
 mod task_cell;
-mod task_processor;
 mod thread_pool;
 mod timer;
+mod work_queue;
 
 pub use cancellation::CancellationToken;
 pub use channel::{Receiver, SendError, Sender, TrySendError};
-pub use combinators::{RetryConfig, race, retry, timeout};
+pub use combinators::{RetryConfig, join_all, join_all_settle, race, retry, timeout};
 pub use context::Context;
 pub use error::{AsyncError, ErrorCode};
 pub use executor::Executor;
@@ -44,10 +62,69 @@ pub use executor::TokioExecutor;
 #[cfg(feature = "wasm")]
 pub use executor::WasmExecutor;
 pub use join_set::JoinSet;
-pub use main_loop::MainThreadScope;
-pub use resolver::Resolver;
-pub use scheduler::{Scheduler, SchedulerBuilder};
 pub use scope::Scope;
 pub use semaphore::{Semaphore, SemaphorePermit};
-pub use task::{SharedTask, Task};
+pub use task::{Handle, Task, Resolver};
 pub use thread_pool::ThreadPool;
+pub use work_queue::WorkQueue;
+
+// ─── Free functions ──────────────────────────────────────────────────────────
+
+/// Create a `(Resolver<T>, Task<T>)` pair.
+///
+/// The resolver is the write side — call [`Resolver::resolve`] or
+/// [`Resolver::reject`] to complete the task. The task is the read side.
+pub fn pair<T: Send + 'static>() -> (Resolver<T>, Task<T>) {
+    task::create_pair()
+}
+
+/// Create a bounded multi-producer, single-consumer channel.
+pub fn mpsc<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+    channel::mpsc(capacity)
+}
+
+/// Create a one-shot channel (capacity 1, single send).
+pub fn oneshot<T>() -> (Sender<T>, Receiver<T>) {
+    channel::oneshot()
+}
+
+/// Create a task that is already resolved with `value`.
+pub fn resolved<T: Send + 'static>(value: T) -> Task<T> {
+    Task::ready(value)
+}
+
+/// Spawn a detached, fire-and-forget task in the given context.
+///
+/// The task runs to completion with no way to observe its result.
+pub fn spawn_detached(context: &Context, f: impl FnOnce() + Send + 'static) {
+    match context.executor_opt() {
+        Some(executor) => executor.execute(Box::new(f)),
+        None => f(),
+    }
+}
+
+/// Create a task that completes after `duration`.
+///
+/// Uses a shared global timer thread — no worker threads are parked per call.
+pub fn delay(duration: std::time::Duration) -> Task<()> {
+    if duration.is_zero() {
+        return Task::ready(());
+    }
+    let (res, task) = task::create_pair::<()>();
+    let deadline = std::time::Instant::now() + duration;
+
+    struct ResolveOnWake(std::sync::Mutex<Option<Resolver<()>>>);
+    impl std::task::Wake for ResolveOnWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            if let Some(r) = self.0.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                r.resolve(());
+            }
+        }
+    }
+
+    let waker = std::task::Waker::from(std::sync::Arc::new(ResolveOnWake(
+        std::sync::Mutex::new(Some(res)),
+    )));
+    timer::TimerWheel::global().register(deadline, waker);
+    task
+}

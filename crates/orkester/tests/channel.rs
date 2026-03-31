@@ -1,4 +1,4 @@
-use orkester::channel::{mpsc, oneshot};
+use orkester::{mpsc, oneshot};
 use std::thread;
 use std::time::{Duration, Instant};
 

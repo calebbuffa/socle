@@ -3,22 +3,6 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use crate::load::{LoadCandidate, PriorityGroup};
 
-/// Pluggable scheduling contract.
-///
-/// The engine pushes candidates after traversal and drains them during the load
-/// pass, bounded by `LoadPassBudget::max_new_requests`.
-pub trait LoadScheduler: Send + Sync + 'static {
-    fn push(&mut self, candidate: LoadCandidate);
-    fn pop(&mut self) -> Option<LoadCandidate>;
-    fn tick(&mut self, frame_index: u64);
-    fn clear(&mut self);
-    fn len(&self) -> usize;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Candidate(LoadCandidate);
 
@@ -61,7 +45,7 @@ struct GroupQueue {
     heap: BinaryHeap<Candidate>,
 }
 
-/// Weighted fair scheduler with one logical queue per view group.
+/// Weighted fair Runtime with one logical queue per view group.
 ///
 /// Ordering rules:
 /// - Highest `PriorityGroup` wins globally.
@@ -104,14 +88,14 @@ impl Default for WeightedFairScheduler {
     }
 }
 
-impl LoadScheduler for WeightedFairScheduler {
-    fn push(&mut self, candidate: LoadCandidate) {
+impl WeightedFairScheduler {
+    pub(crate) fn push(&mut self, candidate: LoadCandidate) {
         let entry = self.groups.entry(candidate.view_group).or_default();
         entry.weight = candidate.priority.view_group_weight.max(1);
         entry.heap.push(Candidate(candidate));
     }
 
-    fn pop(&mut self) -> Option<LoadCandidate> {
+    pub(crate) fn pop(&mut self) -> Option<LoadCandidate> {
         let highest_group = self
             .groups
             .values()
@@ -169,26 +153,25 @@ impl LoadScheduler for WeightedFairScheduler {
         Some(candidate)
     }
 
-    fn tick(&mut self, frame_index: u64) {
+    pub(crate) fn tick(&mut self, frame_index: u64) {
         self.frame_index = frame_index;
         self.normalize_virtual_time();
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         for group in self.groups.values_mut() {
             group.heap.clear();
         }
-    }
-
-    fn len(&self) -> usize {
-        self.groups.values().map(|group| group.heap.len()).sum()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadScheduler, WeightedFairScheduler};
-    use crate::load::{ContentKey, LoadCandidate, LoadPriority, PriorityGroup};
+    use super::WeightedFairScheduler;
+    use crate::{
+        NodeId,
+        load::{LoadCandidate, LoadPriority, PriorityGroup},
+    };
 
     fn candidate(
         node_id: u64,
@@ -199,8 +182,7 @@ mod tests {
     ) -> LoadCandidate {
         LoadCandidate {
             view_group,
-            node_id,
-            key: ContentKey(format!("node-{node_id}")),
+            node_id: NodeId::from_index(node_id as usize),
             priority: LoadPriority {
                 group,
                 score,
@@ -211,28 +193,28 @@ mod tests {
 
     #[test]
     fn urgent_candidates_beat_normal_candidates() {
-        let mut scheduler = WeightedFairScheduler::new();
-        scheduler.push(candidate(1, 10, 1, PriorityGroup::Normal, 0));
-        scheduler.push(candidate(2, 20, 1, PriorityGroup::Urgent, 100));
+        let mut runtime = WeightedFairScheduler::new();
+        runtime.push(candidate(1, 10, 1, PriorityGroup::Normal, 0));
+        runtime.push(candidate(2, 20, 1, PriorityGroup::Urgent, 100));
 
-        let popped = scheduler.pop().expect("expected candidate");
-        assert_eq!(popped.node_id, 2);
+        let popped = runtime.pop().expect("expected candidate");
+        assert_eq!(popped.node_id, NodeId::from_index(2));
         assert_eq!(popped.priority.group, PriorityGroup::Urgent);
     }
 
     #[test]
     fn weighted_groups_share_service_without_starvation() {
-        let mut scheduler = WeightedFairScheduler::new();
+        let mut runtime = WeightedFairScheduler::new();
 
         for node_id in 1..=6 {
-            scheduler.push(candidate(node_id, 100, 2, PriorityGroup::Normal, 0));
+            runtime.push(candidate(node_id, 100, 2, PriorityGroup::Normal, 0));
         }
         for node_id in 101..=106 {
-            scheduler.push(candidate(node_id, 200, 1, PriorityGroup::Normal, 0));
+            runtime.push(candidate(node_id, 200, 1, PriorityGroup::Normal, 0));
         }
 
         let popped_groups: Vec<u64> = (0..6)
-            .map(|_| scheduler.pop().expect("expected candidate").view_group)
+            .map(|_| runtime.pop().expect("expected candidate").view_group)
             .collect();
 
         let heavy_count = popped_groups.iter().filter(|&&id| id == 100).count();

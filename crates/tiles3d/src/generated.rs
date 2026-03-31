@@ -8,16 +8,34 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// For `SCALAR` this is a number. For `STRING` this is a string. For `ENUM` this is a string that shall be a valid enum `name`, not an integer value. For `BOOLEAN` this is a boolean. For `VECN` this is an array of `N` numbers. For `MATN` this is an array of `N²` numbers. For fixed-length array this is an array of `count` elements of the given `type`. For variable-length arrays this is an array of any length of the given `type`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AnyValue {
-    /// Extension-specific data.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<String, serde_json::Value>,
+/// Subdivision scheme for implicit tiling: QUADTREE (4 children) or OCTREE (8 children).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubdivisionScheme {
+    #[serde(rename = "QUADTREE")]
+    Quadtree,
+    #[serde(rename = "OCTREE")]
+    Octree,
+}
 
-    /// Application-specific data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
+impl Default for SubdivisionScheme {
+    fn default() -> Self {
+        Self::Quadtree
+    }
+}
+
+/// Tile refinement strategy: ADD accumulates child content, REPLACE substitutes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Refine {
+    #[serde(rename = "ADD")]
+    Add,
+    #[serde(rename = "REPLACE")]
+    Replace,
+}
+
+impl Default for Refine {
+    fn default() -> Self {
+        Self::Add
+    }
 }
 
 /// Metadata about the entire tileset.
@@ -33,6 +51,38 @@ pub struct Asset {
 
     /// The 3D Tiles version. The version defines the JSON schema for the tileset JSON and the base set of tile formats.
     pub version: String,
+
+    /// Copyright notice. Not in the JSON Schema but present in real-world tilesets (e.g. Cesium ion).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// An object describing the availability of a set of elements.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Availability {
+    /// A number indicating how many 1 bits exist in the availability bitstream.
+    #[serde(
+        rename = "availableCount",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub available_count: Option<u32>,
+
+    /// Index of a buffer view that indicates whether each element is available. The bitstream conforms to the boolean array encoding described in the 3D Metadata specification. If an element is available, its bit is 1, and if it is unavailable, its bit is 0.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bitstream: Option<usize>,
+
+    /// Integer indicating whether all of the elements are available (1) or all are unavailable (0).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub constant: Option<u8>,
 
     /// Extension-specific data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -57,6 +107,61 @@ pub struct BoundingVolume {
     /// An array of four numbers that define a bounding sphere. The first three elements define the x, y, and z values for the center of the sphere. The last element (with index 3) defines the radius in meters. The radius shall not be negative.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub sphere: Vec<f64>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// A buffer is a binary blob. It is either the binary chunk of the subtree file, or an external buffer referenced by a URI.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Buffer {
+    /// The length of the buffer in bytes.
+    #[serde(rename = "byteLength")]
+    pub byte_length: usize,
+
+    /// The name of the buffer.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+
+    /// The URI (or IRI) of the file that contains the binary buffer data. Relative paths are relative to the file containing the buffer JSON. `uri` is required when using the JSON subtree format and not required when using the binary subtree format - when omitted the buffer refers to the binary chunk of the subtree file. Data URIs are not allowed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub uri: Option<String>,
+
+    /// Runtime binary payload. Not part of the 3D Tiles JSON schema; skipped during (de)serialization.
+    #[serde(skip)]
+    pub data: Vec<u8>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// A contiguous subset of a buffer
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BufferView {
+    /// The index of the buffer.
+    pub buffer: usize,
+
+    /// The total byte length of the buffer view.
+    #[serde(rename = "byteLength")]
+    pub byte_length: usize,
+
+    /// The offset into the buffer in bytes.
+    #[serde(rename = "byteOffset")]
+    pub byte_offset: usize,
+
+    /// The name of the `bufferView`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
 
     /// Extension-specific data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -108,11 +213,11 @@ pub struct ClassProperty {
 
     /// The number of array elements. May only be defined when `array` is `true`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub count: Option<i64>,
+    pub count: Option<u32>,
 
     /// A default value to use when encountering a `noData` value or an omitted property. The value is given in its final form, taking the effect of `normalized`, `offset`, and `scale` properties into account. Shall not be defined if `required` is true.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub default: Option<AnyValue>,
+    pub default: Option<serde_json::Value>,
 
     /// The description of the property.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -124,11 +229,11 @@ pub struct ClassProperty {
 
     /// Maximum allowed value for the property. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the maximum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied. Not applicable to variable-length arrays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max: Option<NumericValue>,
+    pub max: Option<serde_json::Value>,
 
     /// Minimum allowed value for the property. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the minimum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied. Not applicable to variable-length arrays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub min: Option<NumericValue>,
+    pub min: Option<serde_json::Value>,
 
     /// The name of the property, e.g. for display purposes.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -136,7 +241,7 @@ pub struct ClassProperty {
 
     /// A `noData` value represents missing data — also known as a sentinel value — wherever it appears. `BOOLEAN` properties may not specify `noData` values. This is given as the plain property value, without the transforms from the `normalized`, `offset`, and `scale` properties. Shall not be defined if `required` is true.
     #[serde(rename = "noData", skip_serializing_if = "Option::is_none", default)]
-    pub no_data: Option<NoDataValue>,
+    pub no_data: Option<serde_json::Value>,
 
     /// Specifies whether integer values are normalized. Only applicable to `SCALAR`, `VECN`, and `MATN` types with integer component types. For unsigned integer component types, values are normalized between `[0.0, 1.0]`. For signed integer component types, values are normalized between `[-1.0, 1.0]`. For all other component types, this property shall be false.
     #[serde(default)]
@@ -144,7 +249,7 @@ pub struct ClassProperty {
 
     /// An offset to apply to property values. Only applicable to `SCALAR`, `VECN`, and `MATN` types when the component type is `FLOAT32` or `FLOAT64`, or when the property is `normalized`. Not applicable to variable-length arrays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub offset: Option<NumericValue>,
+    pub offset: Option<serde_json::Value>,
 
     /// If required, the property shall be present in every entity conforming to the class. If not required, individual entities may include `noData` values, or the entire property may be omitted. As a result, `noData` has no effect on a required property. Client implementations may use required properties to make performance optimizations.
     #[serde(default)]
@@ -152,7 +257,7 @@ pub struct ClassProperty {
 
     /// A scale to apply to property values. Only applicable to `SCALAR`, `VECN`, and `MATN` types when the component type is `FLOAT32` or `FLOAT64`, or when the property is `normalized`. Not applicable to variable-length arrays.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub scale: Option<NumericValue>,
+    pub scale: Option<serde_json::Value>,
 
     /// An identifier that describes how this property should be interpreted. The semantic cannot be used by other properties in the class.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -176,7 +281,7 @@ pub struct ClassProperty {
 pub struct ClassStatistics {
     /// The number of entities that conform to the class.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub count: Option<i64>,
+    pub count: Option<u64>,
 
     /// A dictionary, where each key corresponds to a property ID in the class' `properties` dictionary and each value is an object containing statistics about property values.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
@@ -204,7 +309,11 @@ pub struct Content {
 
     /// The group this content belongs to. The value is an index into the array of `groups` that is defined for the containing tileset.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub group: Option<i64>,
+    pub group: Option<usize>,
+
+    /// Metadata that is associated with this content.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub metadata: Option<MetadataEntity>,
 
     /// A uri that points to tile content. When the uri is relative, it is relative to the referring tileset JSON file.
     pub uri: String,
@@ -268,57 +377,6 @@ pub struct EnumValue {
     pub extras: Option<serde_json::Value>,
 }
 
-/// 3D Tiles extension for S2 bounding volumes.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Extension3dTilesBoundingVolumeS2 {
-    /// The maximum height of the tile, specified in meters above (or below) the WGS84 ellipsoid.
-    #[serde(rename = "maximumHeight")]
-    pub maximum_height: f64,
-
-    /// The minimum height of the tile, specified in meters above (or below) the WGS84 ellipsoid.
-    #[serde(rename = "minimumHeight")]
-    pub minimum_height: f64,
-
-    /// A hexadecimal representation of the S2CellId. Tokens shall be lower-case, shall not contain whitespace and shall have trailing zeros stripped.
-    pub token: String,
-
-    /// Extension-specific data.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<String, serde_json::Value>,
-
-    /// Application-specific data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
-}
-
-impl Extension3dTilesBoundingVolumeS2 {
-    pub const EXTENSION_NAME: &str = "3DTILES_bounding_volume_S2";
-}
-
-/// 3DTILES_ellipsoid extension data to define the referenced ellipsoid
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Extension3dTilesEllipsoid {
-    /// Name of the body the ellipsoid represents, or 'none'
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub body: Option<String>,
-
-    /// An array of three numbers that define the X, Y and Z radii values in meters for the ellipsoid
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub radii: Vec<f64>,
-
-    /// Extension-specific data.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<String, serde_json::Value>,
-
-    /// Application-specific data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
-}
-
-impl Extension3dTilesEllipsoid {
-    pub const EXTENSION_NAME: &str = "3DTILES_ellipsoid";
-}
-
 /// An object containing metadata about a group.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Group {
@@ -336,15 +394,15 @@ pub struct Group {
 pub struct ImplicitTiling {
     /// The numbers of the levels in the tree with available tiles.
     #[serde(rename = "availableLevels")]
-    pub available_levels: i64,
+    pub available_levels: u32,
 
     /// A string describing the subdivision scheme used within the tileset.
     #[serde(rename = "subdivisionScheme")]
-    pub subdivision_scheme: serde_json::Value,
+    pub subdivision_scheme: SubdivisionScheme,
 
     /// The number of distinct levels in each subtree. For example, a quadtree with `subtreeLevels = 2` will have subtrees with 5 nodes (one root and 4 children).
     #[serde(rename = "subtreeLevels")]
-    pub subtree_levels: i64,
+    pub subtree_levels: u32,
 
     /// An object describing the location of subtree files.
     pub subtrees: Subtrees,
@@ -358,21 +416,16 @@ pub struct ImplicitTiling {
     pub extras: Option<serde_json::Value>,
 }
 
-/// For `SCALAR` this is a number. For `STRING` this is a string. For `ENUM` this is a string that shall be a valid enum `name`, not an integer value. For `VECN` this is an array of `N` numbers. For `MATN` this is an array of `N²` numbers. For fixed-length arrays this is an array of `count` elements of the given `type`.
+/// An object containing a reference to a class from a metadata schema, and property values that conform to the properties of that class.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct NoDataValue {
-    /// Extension-specific data.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub extensions: HashMap<String, serde_json::Value>,
+pub struct MetadataEntity {
+    /// The class that property values conform to. The value shall be a class ID declared in the `classes` dictionary of the metadata schema.
+    pub class: String,
 
-    /// Application-specific data.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
-}
+    /// A dictionary, where each key corresponds to a property ID in the class' `properties` dictionary and each value contains the property values. The type of the value shall match the property definition: For `BOOLEAN` use `true` or `false`. For `STRING` use a JSON string. For numeric types use a JSON number. For `ENUM` use a valid enum `name`, not an integer value. For `ARRAY`, `VECN`, and `MATN` types use a JSON array containing values matching the `componentType`. Required properties shall be included in this dictionary.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub properties: Option<HashMap<String, serde_json::Value>>,
 
-/// For `SCALAR` this is a number. For `VECN` this is an array of `N` numbers. For `MATN` this is an array of `N²` numbers. For fixed-length arrays this is an array of `count` elements of the given `type`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct NumericValue {
     /// Extension-specific data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub extensions: HashMap<String, serde_json::Value>,
@@ -405,19 +458,19 @@ pub struct Properties {
 pub struct PropertyStatistics {
     /// The maximum property value occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the maximum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max: Option<NumericValue>,
+    pub max: Option<serde_json::Value>,
 
     /// The arithmetic mean of property values occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the mean of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub mean: Option<NumericValue>,
+    pub mean: Option<serde_json::Value>,
 
     /// The median of property values occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the median of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub median: Option<NumericValue>,
+    pub median: Option<serde_json::Value>,
 
     /// The minimum property value occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the minimum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub min: Option<NumericValue>,
+    pub min: Option<serde_json::Value>,
 
     /// A dictionary, where each key corresponds to an enum `name` and each value is the number of occurrences of that enum. Only applicable when `type` is `ENUM`. For fixed-length arrays, this is an array of component-wise occurrences.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]
@@ -429,15 +482,96 @@ pub struct PropertyStatistics {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    pub standard_deviation: Option<NumericValue>,
+    pub standard_deviation: Option<serde_json::Value>,
 
     /// The sum of property values occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the sum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub sum: Option<NumericValue>,
+    pub sum: Option<serde_json::Value>,
 
     /// The variance of property values occurring in the tileset. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the variance of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub variance: Option<NumericValue>,
+    pub variance: Option<serde_json::Value>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// Properties conforming to a class, organized as property values stored in binary columnar arrays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PropertyTable {
+    /// The class that property values conform to. The value shall be a class ID declared in the `classes` dictionary.
+    pub class: String,
+
+    /// The number of elements in each property array.
+    pub count: u32,
+
+    /// The name of the property table, e.g. for display purposes.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+
+    /// A dictionary, where each key corresponds to a property ID in the class' `properties` dictionary and each value is an object describing where property values are stored. Required properties shall be included in this dictionary.
+    #[serde(skip_serializing_if = "HashMap::is_empty", default)]
+    pub properties: HashMap<String, PropertyTableProperty>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
+/// An array of binary property values. This represents one column of a property table, and contains one value of a certain property for each metadata entity.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PropertyTableProperty {
+    /// The type of values in `arrayOffsets`.
+    #[serde(rename = "arrayOffsetType", default)]
+    pub array_offset_type: serde_json::Value,
+
+    /// The index of the buffer view containing offsets for variable-length arrays. The number of offsets is equal to the property table `count` plus one. The offsets represent the start positions of each array, with the last offset representing the position after the last array. The array length is computed using the difference between the subsequent offset and the current offset. If `type` is `STRING` the offsets index into the string offsets array (stored in `stringOffsets`), otherwise they index into the property array (stored in `values`). The data type of these offsets is determined by `arrayOffsetType`. The buffer view `byteOffset` shall be aligned to a multiple of the `arrayOffsetType` size.
+    #[serde(
+        rename = "arrayOffsets",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub array_offsets: Option<usize>,
+
+    /// Maximum value present in the property values. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the maximum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max: Option<serde_json::Value>,
+
+    /// Minimum value present in the property values. Only applicable to `SCALAR`, `VECN`, and `MATN` types. This is the minimum of all property values, after the transforms based on the `normalized`, `offset`, and `scale` properties have been applied.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub min: Option<serde_json::Value>,
+
+    /// An offset to apply to property values. Only applicable when the component type is `FLOAT32` or `FLOAT64`, or when the property is `normalized`. Overrides the class property's `offset` if both are defined.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub offset: Option<serde_json::Value>,
+
+    /// A scale to apply to property values. Only applicable when the component type is `FLOAT32` or `FLOAT64`, or when the property is `normalized`. Overrides the class property's `scale` if both are defined.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scale: Option<serde_json::Value>,
+
+    /// The type of values in `stringOffsets`.
+    #[serde(rename = "stringOffsetType", default)]
+    pub string_offset_type: serde_json::Value,
+
+    /// The index of the buffer view containing offsets for strings. The number of offsets is equal to the number of string elements plus one. The offsets represent the byte offsets of each string in the property array (stored in `values`), with the last offset representing the byte offset after the last string. The string byte length is computed using the difference between the subsequent offset and the current offset. The data type of these offsets is determined by `stringOffsetType`. The buffer view `byteOffset` shall be aligned to a multiple of the `stringOffsetType` size.
+    #[serde(
+        rename = "stringOffsets",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub string_offsets: Option<usize>,
+
+    /// The index of the buffer view containing property values. The data type of property values is determined by the property definition: When `type` is `BOOLEAN` values are packed into a bitstream. When `type` is `STRING` values are stored as byte sequences and decoded as UTF-8 strings. When `type` is `SCALAR`, `VECN`, or `MATN` the values are stored as the provided `componentType` and the buffer view `byteOffset` shall be aligned to a multiple of the `componentType` size. When `type` is `ENUM` values are stored as the enum's `valueType` and the buffer view `byteOffset` shall be aligned to a multiple of the `valueType` size. Each enum value in the array shall match one of the allowed values in the enum definition. `arrayOffsets` is required for variable-length arrays and `stringOffsets` is required for strings (for variable-length arrays of strings, both are required).
+    pub values: usize,
 
     /// Extension-specific data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -499,6 +633,74 @@ pub struct Statistics {
     pub extras: Option<serde_json::Value>,
 }
 
+/// An object describing the availability of tiles and content in a subtree, as well as availability of children subtrees. May also store metadata for available tiles and content.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Subtree {
+    /// An array of buffer views.
+    #[serde(rename = "bufferViews", skip_serializing_if = "Vec::is_empty", default)]
+    pub buffer_views: Vec<BufferView>,
+
+    /// An array of buffers.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub buffers: Vec<Buffer>,
+
+    /// The availability of children subtrees. The availability bitstream is a 1D boolean array where subtrees are ordered by their Morton index in the level of the tree immediately below the bottom row of the subtree. A child subtree's availability is determined by a single bit, 1 meaning a subtree exists at that spatial index, and 0 meaning it does not. The number of elements in the array is `N^subtreeLevels` where N is 4 for subdivision scheme `QUADTREE` and 8 for `OCTREE`. Availability may be stored in a buffer view or as a constant value that applies to all child subtrees. If availability is 0 for all child subtrees, then the tileset does not subdivide further.
+    #[serde(rename = "childSubtreeAvailability")]
+    pub child_subtree_availability: Availability,
+
+    /// An array of content availability objects. If the tile has a single content this array will have one element; if the tile has multiple contents - as supported by 3DTILES_multiple_contents and 3D Tiles 1.1 - this array will have multiple elements.
+    #[serde(
+        rename = "contentAvailability",
+        skip_serializing_if = "Vec::is_empty",
+        default
+    )]
+    pub content_availability: Vec<Availability>,
+
+    /// An array of indexes to property tables containing content metadata. If the tile has a single content this array will have one element; if the tile has multiple contents - as supported by 3DTILES_multiple_contents and 3D Tiles 1.1 - this array will have multiple elements. Content metadata only exists for available contents and is tightly packed by increasing tile index. To access individual content metadata, implementations may create a mapping from tile indices to content metadata indices.
+    #[serde(
+        rename = "contentMetadata",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub content_metadata: Option<Vec<usize>>,
+
+    /// An array of property tables.
+    #[serde(
+        rename = "propertyTables",
+        skip_serializing_if = "Vec::is_empty",
+        default
+    )]
+    pub property_tables: Vec<PropertyTable>,
+
+    /// Subtree metadata encoded in JSON.
+    #[serde(
+        rename = "subtreeMetadata",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub subtree_metadata: Option<MetadataEntity>,
+
+    /// The availability of tiles in the subtree. The availability bitstream is a 1D boolean array where tiles are ordered by their level in the subtree and Morton index within that level. A tile's availability is determined by a single bit, 1 meaning a tile exists at that spatial index, and 0 meaning it does not. The number of elements in the array is `(N^subtreeLevels - 1)/(N - 1)` where N is 4 for subdivision scheme `QUADTREE` and 8 for `OCTREE`. Availability may be stored in a buffer view or as a constant value that applies to all tiles. If a non-root tile's availability is 1 its parent tile's availability shall also be 1. `tileAvailability.constant: 0` is disallowed, as subtrees shall have at least one tile.
+    #[serde(rename = "tileAvailability")]
+    pub tile_availability: Availability,
+
+    /// Index of the property table containing tile metadata. Tile metadata only exists for available tiles and is tightly packed by increasing tile index. To access individual tile metadata, implementations may create a mapping from tile indices to tile metadata indices.
+    #[serde(
+        rename = "tileMetadata",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub tile_metadata: Option<usize>,
+
+    /// Extension-specific data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extensions: HashMap<String, serde_json::Value>,
+
+    /// Application-specific data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
 /// An object describing the location of subtree files.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Subtrees {
@@ -545,9 +747,13 @@ pub struct Tile {
     )]
     pub implicit_tiling: Option<ImplicitTiling>,
 
+    /// A metadata entity that is associated with this tile.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub metadata: Option<MetadataEntity>,
+
     /// Specifies if additive or replacement refinement is used when traversing the tileset for rendering. This property is required for the root tile of a tileset; it is optional for all other tiles. The default is to inherit from the parent tile.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub refine: Option<serde_json::Value>,
+    pub refine: Option<Refine>,
 
     /// A floating-point 4x4 affine transformation matrix, stored in column-major order, that transforms the tile's content--i.e., its features as well as content.boundingVolume, boundingVolume, and viewerRequestVolume--from the tile's local coordinate system to the parent tile's coordinate system, or, in the case of a root tile, from the tile's local coordinate system to the tileset's coordinate system. `transform` does not apply to any volume property when the volume is a region, defined in EPSG:4979 coordinates. `transform` scales the `geometricError` by the maximum scaling factor from the matrix.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -599,6 +805,10 @@ pub struct Tileset {
     /// An array of groups that tile content may belong to. Each element of this array is a metadata entity that describes the group. The tile content `group` property is an index into this array.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub groups: Vec<Group>,
+
+    /// A metadata entity that is associated with this tileset.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub metadata: Option<MetadataEntity>,
 
     /// A dictionary object of metadata about per-feature properties.
     #[serde(skip_serializing_if = "HashMap::is_empty", default)]

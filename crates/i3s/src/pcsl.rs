@@ -17,6 +17,8 @@ use crate::cmn::SpatialReference;
 pub enum PointCloudAttributeInfoOrdering {
     #[serde(rename = "attributeValues")]
     AttributeValues,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudAttributeInfoOrdering {
@@ -34,6 +36,8 @@ pub enum PointCloudAttributeInfoEncoding {
     LepccIntensity,
     #[serde(rename = "lepcc-rgb")]
     LepccRgb,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudAttributeInfoEncoding {
@@ -47,6 +51,8 @@ impl Default for PointCloudAttributeInfoEncoding {
 pub enum PointCloudDefaultGeometrySchemaGeometryType {
     #[serde(rename = "points")]
     Points,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudDefaultGeometrySchemaGeometryType {
@@ -59,6 +65,8 @@ impl Default for PointCloudDefaultGeometrySchemaGeometryType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudDefaultGeometrySchemaTopology {
     PerAttributeArray,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudDefaultGeometrySchemaTopology {
@@ -72,6 +80,8 @@ impl Default for PointCloudDefaultGeometrySchemaTopology {
 pub enum PointCloudDefaultGeometrySchemaEncoding {
     #[serde(rename = "lepcc-xyz")]
     LepccXyz,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudDefaultGeometrySchemaEncoding {
@@ -85,6 +95,8 @@ impl Default for PointCloudDefaultGeometrySchemaEncoding {
 pub enum PointCloudDefaultGeometrySchemaOrdering {
     #[serde(rename = "position")]
     Position,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudDefaultGeometrySchemaOrdering {
@@ -98,6 +110,8 @@ impl Default for PointCloudDefaultGeometrySchemaOrdering {
 pub enum PointCloudIndexBoundingVolumeType {
     #[serde(rename = "obb")]
     Obb,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudIndexBoundingVolumeType {
@@ -111,6 +125,8 @@ impl Default for PointCloudIndexBoundingVolumeType {
 pub enum PointCloudIndexLodSelectionMetricType {
     #[serde(rename = "density-threshold")]
     DensityThreshold,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudIndexLodSelectionMetricType {
@@ -123,6 +139,8 @@ impl Default for PointCloudIndexLodSelectionMetricType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PointCloudStoreProfile {
     PointCloud,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudStoreProfile {
@@ -142,6 +160,8 @@ pub enum PointCloudValueType {
     UInt32,
     Float32,
     Float64,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for PointCloudValueType {
@@ -500,4 +520,5 @@ pub struct PointCloudVertexAttributes {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct PointCloudSlpkHashtable {}
+pub struct PointCloudSlpkHashtable {
+}

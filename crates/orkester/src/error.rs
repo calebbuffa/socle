@@ -11,7 +11,7 @@ pub enum ErrorCode {
     Cancelled,
     /// The operation exceeded a time limit.
     TimedOut,
-    /// A [`Promise`](crate::Promise) was dropped without resolving.
+    /// A [`Resolver`](crate::Resolver) was dropped without resolving.
     Dropped,
 }
 

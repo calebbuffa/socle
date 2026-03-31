@@ -47,6 +47,8 @@ pub struct GeneratedStruct {
     pub extension_name: Option<String>,
     /// Fields (including inherited ones, fully flattened).
     pub fields: Vec<RustProperty>,
+    /// Extra fields injected via config (emitted with `#[serde(skip)]`).
+    pub extra_fields: Vec<crate::config::ExtraFieldConfig>,
 }
 
 /// Resolve the Rust type name for a schema, applying config overrides.
@@ -64,7 +66,7 @@ pub fn resolve_property(
     cache: &mut SchemaCache,
     config: &Config,
     parent_schema: &JsonSchema,
-    _parent_name: &str,
+    parent_name: &str,
     property_name: &str,
     property_json: &serde_json::Value,
     required: &[String],
@@ -84,7 +86,43 @@ pub fn resolve_property(
         .clone()
         .or_else(|| details.detailed_description.clone());
 
-    // Resolve the type.
+    // Check for property-level type override in config
+    // Use the schema title (not the Rust name) to look up config
+    let config_key = parent_schema.title.as_deref().unwrap_or(parent_name);
+    if let Some(class_config) = config.classes.get(config_key) {
+        if let Some(override_type) = class_config.property_overrides.get(property_name) {
+            let rust_type = if make_optional {
+                format!("Option<{}>", override_type)
+            } else {
+                override_type.clone()
+            };
+            let skip_if = if make_optional {
+                Some("Option::is_none".into())
+            } else {
+                None
+            };
+            let default_expr = if !make_optional {
+                details
+                    .default
+                    .as_ref()
+                    .map(|d| format_default(&rust_type, d))
+            } else {
+                None
+            };
+            return Some(RustProperty {
+                json_name: property_name.to_string(),
+                rust_name,
+                rust_type,
+                default_expr,
+                doc,
+                needs_rename,
+                skip_serializing_if: skip_if,
+                discovered_schemas: vec![],
+            });
+        }
+    }
+
+    // No override, resolve normally
     let (rust_type, default_expr, skip_if, discovered) =
         resolve_type(cache, config, &details, make_optional, parent_schema)?;
 
@@ -490,6 +528,9 @@ pub fn generate_struct(
             .and_then(|c| c.extension_name.clone())
             .or_else(|| config.find_extension_name(title).map(|s| s.to_string())),
         fields,
+        extra_fields: class_config
+            .map(|c| c.extra_fields.clone())
+            .unwrap_or_default(),
     })
 }
 
@@ -601,6 +642,24 @@ pub fn render_struct(s: &GeneratedStruct) -> String {
         let _ = writeln!(out, "    pub {}: {},", field.rust_name, field.rust_type);
     }
 
+    // Extra (non-schema) fields injected via config, e.g. runtime binary payloads.
+    // Extra fields injected via config — optionally participating in serde.
+    for ef in &s.extra_fields {
+        let _ = writeln!(out);
+        if let Some(ref doc) = ef.doc {
+            let _ = writeln!(out, "    /// {doc}");
+        }
+        if ef.skip_serde {
+            let _ = writeln!(out, "    #[serde(skip)]");
+        } else {
+            let _ = writeln!(
+                out,
+                "    #[serde(default, skip_serializing_if = \"Option::is_none\")]"
+            );
+        }
+        let _ = writeln!(out, "    pub {}: {},", ef.name, ef.rust_type);
+    }
+
     // Extensions + extras (all ExtensibleObject types get these).
     let _ = writeln!(out);
     let _ = writeln!(out, "    /// Extension-specific data.");
@@ -644,6 +703,7 @@ pub fn render_module(
     module_doc: &str,
     structs: &[GeneratedStruct],
     extra_imports: &[&str],
+    custom_types: &std::collections::HashMap<String, crate::config::CustomTypeConfig>,
 ) -> String {
     let mut out = String::new();
 
@@ -655,7 +715,15 @@ pub fn render_module(
     let _ = writeln!(out, "#![allow(clippy::all)]");
     let _ = writeln!(out);
     let _ = writeln!(out, "use std::collections::HashMap;");
-    let _ = writeln!(out, "use serde::{{Serialize, Deserialize}};");
+    // Only import Deserializer if a numeric enum custom type is present (needs a manual impl).
+    let needs_deserializer = custom_types
+        .values()
+        .any(|c| c.kind == "enum" && !c.numeric_values.is_empty());
+    if needs_deserializer {
+        let _ = writeln!(out, "use serde::{{Serialize, Deserialize, Deserializer}};");
+    } else {
+        let _ = writeln!(out, "use serde::{{Deserialize, Serialize}};");
+    }
 
     for imp in extra_imports {
         let _ = writeln!(out, "use {imp};");
@@ -663,9 +731,121 @@ pub fn render_module(
 
     let _ = writeln!(out);
 
+    // Render custom types first.
+    for (type_name, type_config) in custom_types {
+        let _ = writeln!(out, "{}", render_custom_type(type_name, type_config));
+    }
+
     for s in structs {
         let _ = writeln!(out, "{}", render_struct(s));
     }
 
+    out
+}
+
+/// Render a custom enum type definition.
+fn render_custom_type(name: &str, config: &crate::config::CustomTypeConfig) -> String {
+    let mut out = String::new();
+
+    if config.kind == "enum" {
+        // Doc comment
+        if let Some(ref doc) = config.doc {
+            for line in doc.lines() {
+                let _ = writeln!(out, "/// {line}");
+            }
+        }
+
+        let is_numeric = config.numeric;
+
+        // Derive macros for enum.
+        if is_numeric {
+            let _ = writeln!(
+                out,
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]"
+            );
+        }
+
+        let _ = writeln!(out, "pub enum {} {{", name);
+
+        if is_numeric {
+            for (idx, variant) in config.variants.iter().enumerate() {
+                let pascal_case = variant.to_upper_camel_case();
+                let _ = writeln!(out, "    #[serde(rename = \"{}\")]", idx);
+                let _ = writeln!(out, "    {},", pascal_case);
+            }
+        } else {
+            for variant in &config.variants {
+                let pascal_case = variant.to_upper_camel_case();
+                // Use the original variant name (from JSON) with serde rename only if it differs from pascal case
+                if &pascal_case != variant {
+                    let _ = writeln!(out, "    #[serde(rename = \"{}\")]", variant);
+                }
+                let _ = writeln!(out, "    {},", pascal_case);
+            }
+        }
+
+        let _ = writeln!(out, "}}");
+
+        // Add custom deserialize impl for numeric enums
+        if is_numeric {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "impl<'de> Deserialize<'de> for {} {{", name);
+            let _ = writeln!(
+                out,
+                "    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>"
+            );
+            let _ = writeln!(out, "    where");
+            let _ = writeln!(out, "        D: Deserializer<'de>,");
+            let _ = writeln!(out, "    {{");
+            let _ = writeln!(out, "        let value = u32::deserialize(deserializer)?;");
+            let _ = writeln!(out, "        match value {{");
+
+            for variant in config.variants.iter() {
+                let pascal_case = variant.to_upper_camel_case();
+                // Use the numeric value from the config if provided, otherwise use the variant index
+                let numeric_value = if !config.numeric_values.is_empty() {
+                    config.numeric_values.get(variant).copied().unwrap_or(0)
+                } else {
+                    config
+                        .variants
+                        .iter()
+                        .position(|v| v == variant)
+                        .unwrap_or(0) as u32
+                };
+                let _ = writeln!(
+                    out,
+                    "            {} => Ok(Self::{}),",
+                    numeric_value, pascal_case
+                );
+            }
+
+            let _ = writeln!(
+                out,
+                "            _ => Err(serde::de::Error::custom(format!(\"invalid {} value: {{}}\", value))),",
+                name
+            );
+            let _ = writeln!(out, "        }}");
+            let _ = writeln!(out, "    }}");
+            let _ = writeln!(out, "}}");
+        }
+
+        // Implement Default trait, defaulting to the first variant
+        if let Some(first_variant) = config.variants.first() {
+            let pascal_case = first_variant.to_upper_camel_case();
+            let _ = writeln!(out);
+            let _ = writeln!(out, "impl Default for {} {{", name);
+            let _ = writeln!(out, "    fn default() -> Self {{");
+            let _ = writeln!(out, "        Self::{}", pascal_case);
+            let _ = writeln!(out, "    }}");
+            let _ = writeln!(out, "}}");
+        }
+    }
+
+    let _ = writeln!(out);
     out
 }

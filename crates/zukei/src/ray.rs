@@ -1,6 +1,6 @@
 //! Ray primitive for intersection tests.
 
-use glam_dep::{DMat4, DVec3};
+use glam::{DMat4, DVec3};
 
 /// A ray with an origin and a direction.
 #[derive(Debug, Clone, Copy, PartialEq)]

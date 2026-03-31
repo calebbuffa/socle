@@ -3,6 +3,17 @@
     "Tileset": {
       "overrideName": "Tileset"
     },
+    "Asset": {
+      "overrideName": "Asset",
+      "extraFields": [
+        {
+          "name": "copyright",
+          "rustType": "Option<String>",
+          "skipSerde": false,
+          "doc": "Copyright notice. Not in the JSON Schema but present in real-world tilesets (e.g. Cesium ion)."
+        }
+      ]
+    },
     "Root Property": {
       "skip": true
     },
@@ -15,8 +26,32 @@
     "Definitions": {
       "skip": true
     },
-    "Metadata Entity": {
+    "Any Value": {
       "skip": true
+    },
+    "Numeric Value": {
+      "skip": true
+    },
+    "Numeric 1D Array": {
+      "skip": true
+    },
+    "Numeric 2D Array": {
+      "skip": true
+    },
+    "Boolean 1D Array": {
+      "skip": true
+    },
+    "String 1D Array": {
+      "skip": true
+    },
+    "No Data Value": {
+      "skip": true
+    },
+    "Metadata Entity": {
+      "overrideName": "MetadataEntity",
+      "propertyOverrides": {
+        "properties": "HashMap<String, serde_json::Value>"
+      }
     },
     "3DTILES_bounding_volume_S2 extension": {
       "overrideName": "Extension3dTilesBoundingVolumeS2"
@@ -34,20 +69,137 @@
       "overrideName": "Group"
     },
     "Implicit tiling": {
-      "overrideName": "ImplicitTiling"
+      "overrideName": "ImplicitTiling",
+      "propertyOverrides": {
+        "subdivisionScheme": "SubdivisionScheme",
+        "availableLevels": "u32",
+        "subtreeLevels": "u32"
+      }
+    },
+    "Tile": {
+      "overrideName": "Tile",
+      "propertyOverrides": {
+        "refine": "Refine"
+      }
+    },
+    "Content": {
+      "overrideName": "Content",
+      "propertyOverrides": {
+        "group": "usize"
+      }
+    },
+    "Class Property": {
+      "overrideName": "ClassProperty",
+      "propertyOverrides": {
+        "count": "u32",
+        "default": "serde_json::Value",
+        "min": "serde_json::Value",
+        "max": "serde_json::Value",
+        "offset": "serde_json::Value",
+        "scale": "serde_json::Value",
+        "noData": "serde_json::Value"
+      }
+    },
+    "Subtree": {
+      "overrideName": "Subtree",
+      "propertyOverrides": {
+        "tileMetadata": "usize",
+        "contentMetadata": "Vec<usize>"
+      }
     },
     "Template URI": {
       "overrideName": "TemplateUri"
     },
     "Property Statistics": {
-      "overrideName": "PropertyStatistics"
+      "overrideName": "PropertyStatistics",
+      "propertyOverrides": {
+        "min": "serde_json::Value",
+        "max": "serde_json::Value",
+        "mean": "serde_json::Value",
+        "median": "serde_json::Value",
+        "sum": "serde_json::Value",
+        "variance": "serde_json::Value",
+        "standardDeviation": "serde_json::Value"
+      }
     },
     "Class Statistics": {
-      "overrideName": "ClassStatistics"
+      "overrideName": "ClassStatistics",
+      "propertyOverrides": {
+        "count": "u64"
+      }
+    },
+    "Availability": {
+      "overrideName": "Availability",
+      "propertyOverrides": {
+        "bitstream": "usize",
+        "availableCount": "u32",
+        "constant": "u8"
+      }
+    },
+    "Buffer": {
+      "overrideName": "Buffer",
+      "propertyOverrides": {
+        "byteLength": "usize"
+      },
+      "extraFields": [
+        {
+          "name": "data",
+          "rustType": "Vec<u8>",
+          "doc": "Runtime binary payload. Not part of the 3D Tiles JSON schema; skipped during (de)serialization."
+        }
+      ]
+    },
+    "Buffer View": {
+      "overrideName": "BufferView",
+      "propertyOverrides": {
+        "buffer": "usize",
+        "byteOffset": "usize",
+        "byteLength": "usize"
+      }
+    },
+    "Property Table": {
+      "overrideName": "PropertyTable",
+      "propertyOverrides": {
+        "count": "u32"
+      }
+    },
+    "Property Table Property": {
+      "overrideName": "PropertyTableProperty",
+      "propertyOverrides": {
+        "values": "usize",
+        "arrayOffsets": "usize",
+        "stringOffsets": "usize",
+        "min": "serde_json::Value",
+        "max": "serde_json::Value",
+        "offset": "serde_json::Value",
+        "scale": "serde_json::Value"
+      }
     }
   },
+  "additionalSchemas": [
+    "Subtree/subtree.schema.json",
+    "PropertyTable/propertyTable.schema.json"
+  ],
   "extensions": [
     { "extensionName": "3DTILES_bounding_volume_S2" },
     { "extensionName": "3DTILES_ellipsoid" }
-  ]
+  ],
+  "customTypes": {
+    "SubdivisionScheme": {
+      "kind": "enum",
+      "doc": "Subdivision scheme for implicit tiling: QUADTREE (4 children) or OCTREE (8 children).",
+      "variants": [
+        "QUADTREE",
+        "OCTREE"
+      ]
+    },
+    "Refine": {
+      "kind": "enum",
+      "doc": "Tile refinement strategy: ADD accumulates child content, REPLACE substitutes it.",
+      "variants": [
+        "ADD",
+        "REPLACE"
+      ]
+    }
+  }
 }

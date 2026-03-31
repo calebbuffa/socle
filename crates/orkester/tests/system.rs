@@ -1,10 +1,24 @@
-use orkester::Scheduler;
+use orkester::ThreadPool;
 use std::future::Future as StdFutureTrait;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
+
+/// Create a `ThreadPool` with `n` threads and return its background context.
+fn bg(n: usize) -> (ThreadPool, orkester::Context) {
+    let pool = ThreadPool::new(n);
+    let ctx = pool.context();
+    (pool, ctx)
+}
+
+/// Create an immediately-rejected task.
+fn rejected<T: Send + 'static>(msg: &'static str) -> orkester::Task<T> {
+    let (r, task) = orkester::pair::<T>();
+    r.reject(msg);
+    task
+}
 
 struct CountingWake {
     wake_count: Arc<AtomicUsize>,
@@ -29,25 +43,25 @@ fn lcg_next(seed: &mut u64) -> u64 {
     *seed
 }
 
-fn run_cross_context_roundtrip_stress(system: &Scheduler, iterations: usize, mut seed: u64) {
+fn run_cross_context_roundtrip_stress(bg_ctx: &orkester::Context, iterations: usize, mut seed: u64) {
     for _ in 0..iterations {
         let sample = lcg_next(&mut seed);
         let should_fail = (sample & 1) == 1;
         let value = ((sample >> 16) % 1000) as i32;
 
         let base: orkester::Task<i32> = if should_fail {
-            system.task(|resolver| resolver.reject("seeded failure"))
+            rejected("seeded failure")
         } else {
-            system.resolved(value)
+            orkester::resolved(value)
         };
 
         let chain = base
-            .then(orkester::Context::BACKGROUND, |v| v + 2)
-            .then(orkester::Context::MAIN, |v| v * 2)
-            .catch(orkester::Context::MAIN, |_| -5)
-            .then(orkester::Context::BACKGROUND, |v| v - 1);
+            .then(&bg_ctx, |v| v + 2)
+            .then(&bg_ctx, |v| v * 2)
+            .catch(&bg_ctx, |_| -5)
+            .then(&bg_ctx, |v| v - 1);
 
-        let observed = chain.block_with_main().unwrap();
+        let observed = chain.block().unwrap();
         let expected = if should_fail {
             -6
         } else {
@@ -57,9 +71,9 @@ fn run_cross_context_roundtrip_stress(system: &Scheduler, iterations: usize, mut
     }
 }
 
-fn run_shared_fanout_stress(system: &Scheduler, iterations: usize, waiters: usize) {
+fn run_shared_fanout_stress(iterations: usize, waiters: usize) {
     for iteration in 0..iterations {
-        let (resolver, task) = system.resolver::<usize>();
+        let (resolver, task) = orkester::pair::<usize>();
         let shared = task.share();
         let barrier = Arc::new(Barrier::new(waiters + 1));
         let mut handles = Vec::with_capacity(waiters);
@@ -85,33 +99,30 @@ fn run_shared_fanout_stress(system: &Scheduler, iterations: usize, waiters: usiz
 
 #[test]
 fn create_promise_pair_resolves() {
-    let system = Scheduler::with_threads(1);
-    let (resolver, task) = system.resolver();
+    let (resolver, task) = orkester::pair::<i32>();
     resolver.resolve(42_i32);
     assert_eq!(task.block().unwrap(), 42);
 }
 
 #[test]
 fn run_in_main_thread_is_inline_inside_scope() {
-    let system = Scheduler::with_threads(1);
-    let _scope = system.main_scope();
-    let task = system.run(orkester::Context::MAIN, || 7_i32);
-    assert!(task.is_ready());
+    let (_pool, ctx) = bg(1);
+    let task = ctx.run(|| 7_i32);
     assert_eq!(task.block().unwrap(), 7);
 }
 
 #[test]
 fn block_with_main_pumps_queue() {
-    let system = Scheduler::with_threads(1);
-    let task = system.run(orkester::Context::MAIN, || 9_i32);
-    assert_eq!(task.block_with_main().unwrap(), 9);
+    let (_pool, ctx) = bg(1);
+    let task = ctx.run(|| 9_i32);
+    assert_eq!(task.block().unwrap(), 9);
 }
 
 #[test]
 fn shared_future_then_chain() {
-    let system = Scheduler::with_threads(1);
-    let shared = system.resolved(10_i32).share();
-    let doubled = shared.then(orkester::Context::BACKGROUND, |value| value * 2);
+    let (_pool, ctx) = bg(1);
+    let shared = orkester::resolved(10_i32).share();
+    let doubled = shared.then(&ctx, |value| value * 2);
 
     assert_eq!(doubled.block().unwrap(), 20);
     assert_eq!(shared.block().unwrap(), 10);
@@ -119,65 +130,49 @@ fn shared_future_then_chain() {
 
 #[test]
 fn all_future_values() {
-    let system = Scheduler::with_threads(2);
     let futures = vec![
-        system.resolved(1_i32),
-        system.resolved(2_i32),
-        system.resolved(3_i32),
+        orkester::resolved(1_i32),
+        orkester::resolved(2_i32),
+        orkester::resolved(3_i32),
     ];
 
-    let joined = system.join_all(futures);
+    let joined = orkester::join_all(futures);
     assert_eq!(joined.block().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
 fn run_in_worker_thread_flattens_future_result() {
-    let system = Scheduler::with_threads(2);
-    let system_clone = system.clone();
+    let (_pool, ctx) = bg(2);
 
-    let flattened: orkester::Task<i32> = system.run(orkester::Context::BACKGROUND, move || {
-        system_clone.resolved(21_i32)
-    });
+    let flattened: orkester::Task<i32> = ctx.run(move || orkester::resolved(21_i32));
     assert_eq!(flattened.block().unwrap(), 21);
 }
 
 #[test]
 fn then_in_worker_thread_flattens_future_result() {
-    let system = Scheduler::with_threads(2);
-    let system_clone = system.clone();
+    let (_pool, ctx) = bg(2);
+    let ctx2 = ctx.clone();
 
-    let flattened: orkester::Task<i32> = system
-        .resolved(5_i32)
-        .then(orkester::Context::BACKGROUND, move |value| {
-            system_clone.run(orkester::Context::BACKGROUND, move || value * 3)
-        });
+    let flattened: orkester::Task<i32> = orkester::resolved(5_i32)
+        .then(&ctx, move |value| ctx2.run(move || value * 3));
 
     assert_eq!(flattened.block().unwrap(), 15);
 }
 
 #[test]
 fn run_in_main_thread_flattens_future_result() {
-    let system = Scheduler::with_threads(1);
-    let _scope = system.main_scope();
-    let system_clone = system.clone();
+    let (_pool, ctx) = bg(1);
 
-    let flattened: orkester::Task<i32> = system.run(orkester::Context::MAIN, move || {
-        system_clone.resolved(33_i32)
-    });
-    assert!(flattened.is_ready());
+    let flattened: orkester::Task<i32> = ctx.run(move || orkester::resolved(33_i32));
     assert_eq!(flattened.block().unwrap(), 33);
 }
 
 #[test]
 fn then_in_worker_thread_flattens_rejected_future_result() {
-    let system = Scheduler::with_threads(2);
-    let system_clone = system.clone();
+    let (_pool, ctx) = bg(2);
 
-    let flattened: orkester::Task<i32> = system
-        .resolved(1_i32)
-        .then(orkester::Context::BACKGROUND, move |_| {
-            system_clone.task(|resolver| resolver.reject("boom"))
-        });
+    let flattened: orkester::Task<i32> = orkester::resolved(1_i32)
+        .then(&ctx, move |_| rejected::<i32>("boom"));
 
     let error = flattened.block().unwrap_err();
     assert_eq!(error.to_string(), "boom");
@@ -185,11 +180,9 @@ fn then_in_worker_thread_flattens_rejected_future_result() {
 
 #[test]
 fn map_runs_inline_for_resolved_future() {
-    let system = Scheduler::with_threads(1);
     let caller_thread = std::thread::current().id();
 
-    let same_thread = system
-        .resolved(1_i32)
+    let same_thread = orkester::resolved(1_i32)
         .map(move |_| std::thread::current().id() == caller_thread);
 
     assert!(same_thread.block().unwrap());
@@ -197,23 +190,21 @@ fn map_runs_inline_for_resolved_future() {
 
 #[test]
 fn all_accepts_shared_futures_via_map() {
-    let system = Scheduler::with_threads(1);
-    let shared = system.resolved(4_i32).share();
+    let shared = orkester::resolved(4_i32).share();
 
-    let joined = system.join_all(vec![shared.map(|v| v), shared.map(|v| v)]);
+    let joined = orkester::join_all(vec![shared.map(|v| v), shared.map(|v| v)]);
     assert_eq!(joined.block().unwrap(), vec![4, 4]);
 }
 
 #[test]
 fn all_rejects_when_any_input_rejects() {
-    let system = Scheduler::with_threads(2);
     let futures = vec![
-        system.resolved(1_i32),
-        system.task(|resolver| resolver.reject("join failed")),
-        system.resolved(3_i32),
+        orkester::resolved(1_i32),
+        rejected("join failed"),
+        orkester::resolved(3_i32),
     ];
 
-    let joined = system.join_all(futures);
+    let joined = orkester::join_all(futures);
     let error = joined.block().unwrap_err();
     assert_eq!(error.to_string(), "join failed");
 }
@@ -221,8 +212,7 @@ fn all_rejects_when_any_input_rejects() {
 #[test]
 fn shared_future_wait_is_consistent_for_concurrent_waiters() {
     const WAITERS: usize = 24;
-    let system = Scheduler::with_threads(4);
-    let (resolver, task) = system.resolver::<usize>();
+    let (resolver, task) = orkester::pair::<usize>();
     let shared = task.share();
     let barrier = Arc::new(Barrier::new(WAITERS + 1));
 
@@ -247,8 +237,7 @@ fn shared_future_wait_is_consistent_for_concurrent_waiters() {
 
 #[test]
 fn future_poll_deduplicates_same_waker_registration() {
-    let system = Scheduler::with_threads(1);
-    let (resolver, mut task) = system.resolver::<i32>();
+    let (resolver, mut task) = orkester::pair::<i32>();
     let wake_count = Arc::new(AtomicUsize::new(0));
     let waker = make_counting_waker(Arc::clone(&wake_count));
     let mut cx = Context::from_waker(&waker);
@@ -276,15 +265,15 @@ fn future_poll_deduplicates_same_waker_registration() {
 fn shared_future_continuations_before_and_after_resolution_run_once() {
     const BEFORE: usize = 32;
     const AFTER: usize = 32;
-    let system = Scheduler::with_threads(4);
-    let (resolver, task) = system.resolver::<usize>();
+    let (_pool, ctx) = bg(4);
+    let (resolver, task) = orkester::pair::<usize>();
     let shared = task.share();
     let callback_count = Arc::new(AtomicUsize::new(0));
 
     let mut before = Vec::with_capacity(BEFORE);
     for _ in 0..BEFORE {
         let callback_count_clone = Arc::clone(&callback_count);
-        before.push(shared.then(orkester::Context::BACKGROUND, move |value| {
+        before.push(shared.then(&ctx, move |value| {
             callback_count_clone.fetch_add(1, Ordering::SeqCst);
             value
         }));
@@ -299,7 +288,7 @@ fn shared_future_continuations_before_and_after_resolution_run_once() {
     let mut after = Vec::with_capacity(AFTER);
     for _ in 0..AFTER {
         let callback_count_clone = Arc::clone(&callback_count);
-        after.push(shared.then(orkester::Context::BACKGROUND, move |value| {
+        after.push(shared.then(&ctx, move |value| {
             callback_count_clone.fetch_add(1, Ordering::SeqCst);
             value
         }));
@@ -314,18 +303,17 @@ fn shared_future_continuations_before_and_after_resolution_run_once() {
 
 #[test]
 fn block_with_main_handles_large_queue_backlog() {
-    let system = Scheduler::with_threads(1);
+    let (_pool, ctx) = bg(1);
     let mut futures = Vec::new();
 
     for value in 0_i32..128_i32 {
-        futures.push(system.run(orkester::Context::MAIN, move || value));
+        futures.push(ctx.run(move || value));
     }
 
     let last = futures.pop().unwrap();
-    assert_eq!(last.block_with_main().unwrap(), 127);
+    assert_eq!(last.block().unwrap(), 127);
 
     for queued in futures {
-        assert!(queued.is_ready());
         assert!(queued.block().is_ok());
     }
 }
@@ -333,11 +321,11 @@ fn block_with_main_handles_large_queue_backlog() {
 #[test]
 fn long_worker_then_chain_preserves_value_ordering() {
     const STEPS: usize = 512;
-    let system = Scheduler::with_threads(4);
-    let mut current = system.resolved(0_usize);
+    let (_pool, ctx) = bg(4);
+    let mut current = orkester::resolved(0_usize);
 
     for _ in 0..STEPS {
-        current = current.then(orkester::Context::BACKGROUND, |value| value + 1);
+        current = current.then(&ctx, |value| value + 1);
     }
 
     assert_eq!(current.block().unwrap(), STEPS);
@@ -345,79 +333,60 @@ fn long_worker_then_chain_preserves_value_ordering() {
 
 #[test]
 fn worker_to_main_to_worker_chain_completes_with_main_pump() {
-    let system = Scheduler::with_threads(3);
-    let caller_thread = std::thread::current().id();
-    let ran_on_main = Arc::new(AtomicUsize::new(0));
-    let ran_on_main_clone = Arc::clone(&ran_on_main);
+    let (_pool, ctx) = bg(3);
 
-    let chained = system
-        .run(orkester::Context::BACKGROUND, || 3_i32)
-        .then(orkester::Context::MAIN, move |value| {
-            if std::thread::current().id() == caller_thread {
-                ran_on_main_clone.fetch_add(1, Ordering::SeqCst);
-            }
-            value + 1
-        })
-        .then(orkester::Context::BACKGROUND, |value| value * 2);
+    let chained = ctx.run(|| 3_i32)
+        .then(&ctx, |value| value + 1)
+        .then(&ctx, |value| value * 2);
 
-    assert_eq!(chained.block_with_main().unwrap(), 8);
-    assert_eq!(ran_on_main.load(Ordering::SeqCst), 1);
+    assert_eq!(chained.block().unwrap(), 8);
 }
 
 #[test]
 fn rejected_chain_skips_then_and_recovers_in_main_thread() {
-    let system = Scheduler::with_threads(3);
-    let caller_thread = std::thread::current().id();
+    let (_pool, ctx) = bg(3);
     let then_called = Arc::new(AtomicUsize::new(0));
-    let catch_on_main = Arc::new(AtomicUsize::new(0));
-    let system_clone = system.clone();
 
-    let failed: orkester::Task<i32> = system.run(orkester::Context::BACKGROUND, move || {
-        system_clone.task(|resolver| resolver.reject("worker failure"))
-    });
+    let failed: orkester::Task<i32> = ctx.run(move || rejected::<i32>("worker failure"));
 
     let then_called_clone = Arc::clone(&then_called);
-    let catch_on_main_clone = Arc::clone(&catch_on_main);
     let recovered = failed
-        .then(orkester::Context::MAIN, move |value| {
+        .then(&ctx, move |value| {
             then_called_clone.fetch_add(1, Ordering::SeqCst);
             value + 1
         })
-        .catch(orkester::Context::MAIN, move |error| {
+        .catch(&ctx, move |error| {
             assert_eq!(error.to_string(), "worker failure");
-            if std::thread::current().id() == caller_thread {
-                catch_on_main_clone.fetch_add(1, Ordering::SeqCst);
-            }
             42
         });
 
-    assert_eq!(recovered.block_with_main().unwrap(), 42);
+    assert_eq!(recovered.block().unwrap(), 42);
     assert_eq!(then_called.load(Ordering::SeqCst), 0);
-    assert_eq!(catch_on_main.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn randomized_repeated_flatten_and_recovery_stress() {
     const ITERS: usize = 96;
-    let system = Scheduler::with_threads(4);
+    let (_pool, ctx) = bg(4);
     let mut seed = 0xDEC0_DED5_EED5_u64;
 
     for _ in 0..ITERS {
         let sample = lcg_next(&mut seed);
         let should_fail = (sample & 1) == 1;
         let value = ((sample >> 8) % 1000) as i32;
-        let system_clone = system.clone();
+        let ctx2 = ctx.clone();
 
-        let outcome: orkester::Task<i32> = system.run(orkester::Context::BACKGROUND, move || {
+        let outcome: orkester::Task<i32> = ctx.run(move || {
             if should_fail {
-                system_clone.task(|resolver| resolver.reject("random failure"))
+                rejected::<i32>("random failure")
             } else {
-                system_clone.resolved(value)
+                orkester::resolved(value)
             }
         });
 
         let recovered = outcome.or_else(|_| -1);
         let observed = recovered.block().unwrap();
+        let _ = ctx2; // keep pool alive
 
         if should_fail {
             assert_eq!(observed, -1);
@@ -429,8 +398,7 @@ fn randomized_repeated_flatten_and_recovery_stress() {
 
 #[test]
 fn promise_drop_rejects_paired_future() {
-    let system = Scheduler::with_threads(1);
-    let (resolver, task) = system.resolver::<i32>();
+    let (resolver, task) = orkester::pair::<i32>();
     drop(resolver);
 
     let error = task.block().unwrap_err();
@@ -439,19 +407,17 @@ fn promise_drop_rejects_paired_future() {
 
 #[test]
 fn all_empty_resolves_to_empty_vec() {
-    let system = Scheduler::with_threads(1);
-    let joined: orkester::Task<Vec<i32>> = system.join_all(Vec::<orkester::Task<i32>>::new());
+    let joined: orkester::Task<Vec<i32>> = orkester::join_all(Vec::<orkester::Task<i32>>::new());
     assert_eq!(joined.block().unwrap(), Vec::<i32>::new());
 }
 
 #[test]
 fn all_preserves_input_order_when_resolved_out_of_order() {
-    let system = Scheduler::with_threads(2);
-    let (promise0, future0) = system.resolver::<i32>();
-    let (promise1, future1) = system.resolver::<i32>();
-    let (promise2, future2) = system.resolver::<i32>();
+    let (promise0, future0) = orkester::pair::<i32>();
+    let (promise1, future1) = orkester::pair::<i32>();
+    let (promise2, future2) = orkester::pair::<i32>();
 
-    let joined = system.join_all(vec![future0, future1, future2]);
+    let joined = orkester::join_all(vec![future0, future1, future2]);
 
     let handle2 = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(2));
@@ -474,13 +440,12 @@ fn all_preserves_input_order_when_resolved_out_of_order() {
 
 #[test]
 fn catch_in_main_thread_is_not_called_on_success() {
-    let system = Scheduler::with_threads(1);
+    let (_pool, ctx) = bg(1);
     let catch_called = Arc::new(AtomicUsize::new(0));
     let catch_called_clone = Arc::clone(&catch_called);
 
-    let passthrough = system
-        .resolved(5_i32)
-        .catch(orkester::Context::MAIN, move |_| {
+    let passthrough = orkester::resolved(5_i32)
+        .catch(&ctx, move |_| {
             catch_called_clone.fetch_add(1, Ordering::SeqCst);
             -1
         });
@@ -491,33 +456,27 @@ fn catch_in_main_thread_is_not_called_on_success() {
 
 #[test]
 fn catch_in_main_thread_recovers_on_main_when_pumped() {
-    let system = Scheduler::with_threads(2);
-    let caller_thread = std::thread::current().id();
-    let ran_on_main = Arc::new(AtomicUsize::new(0));
-    let ran_on_main_clone = Arc::clone(&ran_on_main);
+    let (_pool, ctx) = bg(2);
 
-    let recovered = system
-        .task(|resolver| resolver.reject("main recover"))
-        .catch(orkester::Context::MAIN, move |error| {
+    let recovered = rejected::<i32>("main recover")
+        .catch(&ctx, move |error| {
             assert_eq!(error.to_string(), "main recover");
-            if std::thread::current().id() == caller_thread {
-                ran_on_main_clone.fetch_add(1, Ordering::SeqCst);
-            }
             11
         });
 
-    assert_eq!(recovered.block_with_main().unwrap(), 11);
-    assert_eq!(ran_on_main.load(Ordering::SeqCst), 1);
+    assert_eq!(recovered.block().unwrap(), 11);
 }
 
 #[test]
 fn then_in_thread_pool_runs_inline_on_same_pool_thread() {
-    let system = Scheduler::with_threads(2);
-    let pool = system.thread_pool(1);
+    let pool = ThreadPool::new(2);
+    let bg_ctx = pool.context();
+    let inner_pool = ThreadPool::new(1);
+    let inner_ctx = inner_pool.context();
 
-    let same_thread = system
-        .run_in_pool(&pool, || std::thread::current().id())
-        .then_in_pool(&pool, |source_thread| {
+    // Both run on inner_ctx — the continuation should fire inline on the same thread.
+    let same_thread = inner_ctx.run(|| std::thread::current().id())
+        .then(&inner_ctx, |source_thread| {
             std::thread::current().id() == source_thread
         });
 
@@ -526,64 +485,37 @@ fn then_in_thread_pool_runs_inline_on_same_pool_thread() {
 
 #[test]
 fn then_in_thread_pool_runs_on_target_pool_context() {
-    let system = Scheduler::with_threads(2);
-    let pool = system.thread_pool(1);
+    let pool = ThreadPool::new(2);
+    let bg_ctx = pool.context();
+    let inner_pool = ThreadPool::new(1);
+    let inner_ctx = inner_pool.context();
 
-    let pool_thread = system
-        .run_in_pool(&pool, || std::thread::current().id())
+    let pool_thread = inner_ctx.run(|| std::thread::current().id())
         .block()
         .unwrap();
 
-    let observed = system
-        .run(orkester::Context::BACKGROUND, || 1_i32)
-        .then_in_pool(&pool, move |_| std::thread::current().id());
+    let observed = bg_ctx.run(|| 1_i32)
+        .then(&inner_ctx, move |_| std::thread::current().id());
 
     assert_eq!(observed.block().unwrap(), pool_thread);
 }
 
 #[test]
-fn shared_future_poll_wakes_distinct_wakers_once_each() {
-    let system = Scheduler::with_threads(1);
-    let (resolver, task) = system.resolver::<i32>();
-    let mut shared_a = task.share();
-    let mut shared_b = shared_a.clone();
+fn shared_handle_concurrent_block_resolves_consistently() {
+    let (resolver, task) = orkester::pair::<i32>();
+    let shared_a = task.share();
+    let shared_b = shared_a.clone();
 
-    let wake_count_a = Arc::new(AtomicUsize::new(0));
-    let wake_count_b = Arc::new(AtomicUsize::new(0));
-    let waker_a = make_counting_waker(Arc::clone(&wake_count_a));
-    let waker_b = make_counting_waker(Arc::clone(&wake_count_b));
-    let mut cx_a = Context::from_waker(&waker_a);
-    let mut cx_b = Context::from_waker(&waker_b);
-    let mut pinned_a = Pin::new(&mut shared_a);
-    let mut pinned_b = Pin::new(&mut shared_b);
-
-    assert!(matches!(
-        StdFutureTrait::poll(pinned_a.as_mut(), &mut cx_a),
-        Poll::Pending
-    ));
-    assert!(matches!(
-        StdFutureTrait::poll(pinned_b.as_mut(), &mut cx_b),
-        Poll::Pending
-    ));
-
+    let join_handle = std::thread::spawn(move || shared_b.block().unwrap());
     resolver.resolve(55);
 
-    assert_eq!(wake_count_a.load(Ordering::SeqCst), 1);
-    assert_eq!(wake_count_b.load(Ordering::SeqCst), 1);
-    assert!(matches!(
-        StdFutureTrait::poll(pinned_a.as_mut(), &mut cx_a),
-        Poll::Ready(Ok(55))
-    ));
-    assert!(matches!(
-        StdFutureTrait::poll(pinned_b.as_mut(), &mut cx_b),
-        Poll::Ready(Ok(55))
-    ));
+    assert_eq!(shared_a.block().unwrap(), 55);
+    assert_eq!(join_handle.join().unwrap(), 55);
 }
 
 #[test]
 fn future_poll_ready_then_wait_reports_consumed() {
-    let system = Scheduler::with_threads(1);
-    let mut task = system.resolved(9_i32);
+    let mut task = orkester::resolved(9_i32);
     let wake_count = Arc::new(AtomicUsize::new(0));
     let waker = make_counting_waker(Arc::clone(&wake_count));
     let mut cx = Context::from_waker(&waker);
@@ -602,61 +534,50 @@ fn future_poll_ready_then_wait_reports_consumed() {
 
 #[test]
 fn dispatch_one_main_thread_task_reports_queue_progress() {
-    let system = Scheduler::with_threads(1);
-    let futures: Vec<_> = (0_i32..3_i32)
-        .map(|value| system.run(orkester::Context::MAIN, move || value))
+    let (_pool, ctx) = bg(1);
+    let tasks: Vec<_> = (0_i32..3_i32)
+        .map(|value| ctx.run(move || value))
         .collect();
 
-    assert!(system.main_pending());
-    assert!(system.flush_main_one());
-    assert!(system.main_pending());
-    assert!(system.flush_main_one());
-    assert!(system.main_pending());
-    assert!(system.flush_main_one());
-    assert!(!system.flush_main_one());
-    assert!(!system.main_pending());
-
-    for (idx, task) in futures.into_iter().enumerate() {
+    for (idx, task) in tasks.into_iter().enumerate() {
         assert_eq!(task.block().unwrap(), idx as i32);
     }
 }
 
 #[test]
 fn repeated_shared_future_fanout_stress() {
-    let system = Scheduler::with_threads(4);
-    run_shared_fanout_stress(&system, 32, 8);
+    run_shared_fanout_stress(32, 8);
 }
 
 #[test]
 fn randomized_cross_context_then_catch_roundtrip_stress() {
-    let system = Scheduler::with_threads(4);
-    run_cross_context_roundtrip_stress(&system, 128, 0xA11C_EB0B_1357_2468_u64);
+    let (_pool, ctx) = bg(4);
+    run_cross_context_roundtrip_stress(&ctx, 128, 0xA11C_EB0B_1357_2468_u64);
 }
 
 #[test]
 #[ignore]
 fn soak_randomized_cross_context_then_catch_roundtrip() {
-    let system = Scheduler::with_threads(4);
-    run_cross_context_roundtrip_stress(&system, 512, 0xFACE_FEED_BADC_0FFE_u64);
+    let (_pool, ctx) = bg(4);
+    run_cross_context_roundtrip_stress(&ctx, 512, 0xFACE_FEED_BADC_0FFE_u64);
 }
 
 #[test]
 #[ignore]
 fn soak_randomized_cross_context_then_catch_roundtrip_alt_seed_a() {
-    let system = Scheduler::with_threads(4);
-    run_cross_context_roundtrip_stress(&system, 1024, 0x0123_4567_89AB_CDEF_u64);
+    let (_pool, ctx) = bg(4);
+    run_cross_context_roundtrip_stress(&ctx, 1024, 0x0123_4567_89AB_CDEF_u64);
 }
 
 #[test]
 #[ignore]
 fn soak_randomized_cross_context_then_catch_roundtrip_alt_seed_b() {
-    let system = Scheduler::with_threads(4);
-    run_cross_context_roundtrip_stress(&system, 2048, 0x0F0F_F0F0_AAAA_5555_u64);
+    let (_pool, ctx) = bg(4);
+    run_cross_context_roundtrip_stress(&ctx, 2048, 0x0F0F_F0F0_AAAA_5555_u64);
 }
 
 #[test]
 #[ignore]
 fn soak_shared_future_fanout_high_contention() {
-    let system = Scheduler::with_threads(6);
-    run_shared_fanout_stress(&system, 96, 16);
+    run_shared_fanout_stress(96, 16);
 }

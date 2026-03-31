@@ -1,6 +1,6 @@
 //! Minimal block_on implementation for driving futures to completion.
 //!
-//! Used by the default `Executor::spawn_future` implementation and async
+//! Used by the default `Executor::spawn` implementation and async
 //! convenience methods (`run_async`, `then_async`) when no async runtime
 //! (tokio, smol) is available.
 
@@ -37,3 +37,4 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
         }
     }
 }
+

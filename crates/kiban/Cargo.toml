@@ -1,0 +1,9 @@
+[package]
+name = "kiban"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Foundation utilities for socle — URI resolution, path helpers"
+repository.workspace = true
+
+[dependencies]

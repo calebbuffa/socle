@@ -1,107 +1,92 @@
-//! `selekt` — format-agnostic 3D tile selection engine.
+//! `selekt` — format-agnostic 3D spatial-hierarchy selection engine.
 //!
-//! Core data structures and traits for LOD-driven tile traversal,
-//! async content loading, and resource lifetime management.
-//! Format adapters (I3S, Cesium 3D Tiles, etc.) plug in via the trait
-//! interfaces.
+//! # Quick start
 //!
-//! # Main types
+//! ```ignore
+//! // 1. Implement the three required traits for your format:
+//! //    SpatialHierarchy, LodEvaluator, ContentLoader
 //!
-//! - [`SelectionEngine`] — the central engine
-//! - [`SelectionEngineExternals`] — shared infrastructure
-//! - [`SelectionOptions`] — configuration
+//! let mut engine = SelectionEngineBuilder::new(bg_context, hierarchy, lod, loader)
+//!     .with_resolver(my_resolver)          // optional: for external hierarchy references
+//!     .build();
 //!
-//! # Trait interfaces
+//! // 2. Per frame:
+//! let handle = engine.add_view_group(1.0);
+//! engine.update_view_group(handle, &[view]);
+//! engine.load();
+//! let result = engine.view_group_result(handle).unwrap();
+//! for &node_id in &result.nodes_to_render {
+//!     if let Some(content) = engine.content(node_id) { /* render */ }
+//! }
+//! ```
 //!
-//! - [`SpatialHierarchy`] / [`HierarchyResolver`] — read and extend the tile tree
-//! - [`ContentLoader`] — fetch tile data
-//! - [`ContentLoaderFactory`] — async factory
-//! - [`LodEvaluator`] — LOD refinement decision
+//! # Trait interfaces (implement these for your format)
+//!
+//! - [`SpatialHierarchy`] / [`HierarchyResolver`] — describe the node hierarchy
+//! - [`LodEvaluator`] — refinement decision per node
+//! - [`ContentLoader`] — fetch node content asynchronously
 //! - [`Policy`] = [`VisibilityPolicy`] + [`ResidencyPolicy`] — culling and eviction
+//!   (implement your own or use [`DefaultPolicy`] for frustum culling + LRU eviction)
 
 mod engine;
-mod factory;
+pub(crate) mod evaluators;
+mod format;
+mod frame;
 mod hierarchy;
 mod load;
 mod lod;
+mod lod_threshold;
+mod engine_state;
 mod node;
+pub(crate) mod step;
 mod options;
 mod policy;
+mod query;
 mod scheduler;
 pub(crate) mod traversal;
 mod view;
 
+// Engine and builder
+pub use engine::{SelectionEngine, SelectionEngineBuilder};
 
-// Engine
-pub use engine::SelectionEngine;
+// Default resolver
+pub use format::NoopResolver;
 
-// Externals & options
-pub use options::{SelectionError, SelectionOptions};
+// Options
+pub use options::{ClippingPlane, CullingOptions, DebugOptions, LoadingOptions, LodRefinementOptions, SelectionOptions, StreamingOptions};
 
 // Node identity and lifecycle
-pub use node::{NodeId, NodeKind, NodeLifecycleState};
+pub use node::{NodeId, NodeKind, NodeLoadState, NodeRefinementResult};
+
+// LOD threshold
+pub use lod_threshold::LodThreshold;
 
 // LOD evaluation
-pub use lod::{LodDescriptor, LodEvaluator, RefinementMode};
+pub use lod::{LodDescriptor, LodEvaluator, LodFamily, RefinementMode};
+
+// Spatial query
+pub use query::{QueryDepth, QueryShape};
 
 // Content loading
 pub use load::{
-    ContentHandle, ContentKey, ContentLoader, HierarchyReference, LoadCandidate, LoadPassResult,
-    LoadPriority, LoadedContent, Payload, PriorityGroup, RequestId,
+    ContentKey, ContentLoader, DecodeOutput, HierarchyReference, LoadFailureDetails,
+    LoadFailureType, LoadPassResult, LoadPriority, LoadResult, PriorityGroup,
 };
 
-// Spatial hierarchy and resolver
-pub use hierarchy::{HierarchyPatch, HierarchyPatchError, HierarchyResolver, SpatialHierarchy};
-
-// View state and results
-pub use view::{
-    PerViewUpdateResult, ViewGroupHandle, ViewGroupOptions, ViewState, ViewUpdateResult,
+// Spatial hierarchy
+pub use hierarchy::{
+    HierarchyExpansion, HierarchyExpansionError, HierarchyResolver, SpatialHierarchy,
 };
 
-// Factory (async construction)
-pub use factory::{ContentLoaderFactory, ContentLoaderFactoryResult};
+// View state and handle
+pub use view::{Projection, ViewGroupHandle, ViewState, ViewUpdateResult};
 
-// Scheduling
-pub use scheduler::{LoadScheduler, WeightedFairScheduler};
+// Frame result and render node
+pub use frame::{FrameResult, PickResult, RenderNode};
 
 // Policy
 pub use policy::{
-    CompositeExcluder, LruResidencyPolicy, NoOcclusion, OcclusionState, OcclusionTester, Policy,
-    ResidencyPolicy, TileExcluder, VisibilityPolicy,
+    AllVisibleLruPolicy, CompositeExcluder, DefaultPolicy, FrustumVisibilityPolicy,
+    LruResidencyPolicy, NoOcclusion, NodeExcluder, OcclusionState, OcclusionTester, Policy,
+    ResidencyPolicy, VisibilityPolicy,
 };
-#[cfg(feature = "glam")]
-pub use policy::{DefaultPolicy, FrustumVisibilityPolicy};
-
-
-use orkester::AsyncSystem;
-use orkester_io::AssetAccessor;
-use std::sync::{Arc, Mutex};
-
-/// Shared infrastructure for multiple [`SelectionEngine`] instances.
-///
-/// Create once per application, then pass a reference to each engine.
-/// The shared scheduler ensures fair load distribution across all engines.
-#[derive(Clone)]
-pub struct SelectionEngineExternals {
-    /// Async runtime for spawning worker tasks and scheduling main-thread
-    /// callbacks.
-    pub async_system: AsyncSystem,
-    /// Shared load queue for fair scheduling across all engines.
-    pub scheduler: Arc<Mutex<WeightedFairScheduler>>,
-    /// Async network I/O. Format-specific loaders use this to fetch tile data.
-    pub asset_accessor: Arc<dyn AssetAccessor>,
-}
-
-impl SelectionEngineExternals {
-    pub fn new(async_system: AsyncSystem, asset_accessor: Arc<dyn AssetAccessor>) -> Self {
-        Self {
-            async_system,
-            asset_accessor,
-            scheduler: Arc::new(Mutex::new(WeightedFairScheduler::new())),
-        }
-    }
-
-    pub fn reset_scheduler(&mut self) {
-        self.scheduler = Arc::new(Mutex::new(WeightedFairScheduler::new()));
-    }
-}

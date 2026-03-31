@@ -1,0 +1,19 @@
+[package]
+name = "i3s-content"
+description = "I3S content processing (geometry buffers, attributes ↔ GltfModel)"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+i3s = { path = "../i3s" }
+orkester-io = { path = "../orkester-io" }
+moderu = { path = "../moderu" }
+moderu-codec = { path = "../moderu-codec" }
+terra = { path = "../terra" }
+zukei = { path = "../zukei" }
+glam = { version = "0.32", features = ["std"] }
+serde_json = "1"
+flate2 = "1"
+thiserror = "2"

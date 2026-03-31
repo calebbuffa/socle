@@ -1,6 +1,6 @@
 //! Oriented bounding box — the primary bounding volume in I3S.
 
-use glam_dep::{DMat3, DMat4, DQuat, DVec3};
+use glam::{DMat3, DMat4, DQuat, DVec3};
 
 use crate::aabb::AxisAlignedBoundingBox;
 use crate::culling::CullingResult;
@@ -29,6 +29,79 @@ impl OrientedBoundingBox {
                 quaternion[3],
             ),
         }
+    }
+
+    /// Create an OBB from the 3D Tiles `boundingVolume.box` 12-element array.
+    ///
+    /// The array format is:
+    /// `[cx, cy, cz, ax, ay, az, bx, by, bz, cx, cy, cz]`
+    /// where `(cx,cy,cz)` is the centre and `(ax,ay,az)`, `(bx,by,bz)`,
+    /// `(cx,cy,cz)` are the three *half-axis* column vectors.
+    ///
+    /// Returns `None` if the slice has fewer than 12 elements.
+    pub fn from_3dtiles_box(a: &[f64]) -> Option<Self> {
+        if a.len() < 12 {
+            return None;
+        }
+        let center = DVec3::new(a[0], a[1], a[2]);
+        let col0 = DVec3::new(a[3], a[4], a[5]);
+        let col1 = DVec3::new(a[6], a[7], a[8]);
+        let col2 = DVec3::new(a[9], a[10], a[11]);
+        Some(Self::from_half_axes(
+            center,
+            DMat3::from_cols(col0, col1, col2),
+        ))
+    }
+
+    /// Create an OBB from a centre point and a half-axes matrix whose columns
+    /// are the three oriented half-axis vectors (matching Cesium's
+    /// `OrientedBoundingBox(center, halfAxes)` constructor).
+    pub fn from_half_axes(center: DVec3, half_axes: DMat3) -> Self {
+        let xs = half_axes.x_axis.length();
+        let ys = half_axes.y_axis.length();
+        let zs = half_axes.z_axis.length();
+        let half_size = DVec3::new(xs, ys, zs);
+        let rot = DMat3::from_cols(
+            if xs > 0.0 {
+                half_axes.x_axis / xs
+            } else {
+                DVec3::X
+            },
+            if ys > 0.0 {
+                half_axes.y_axis / ys
+            } else {
+                DVec3::Y
+            },
+            if zs > 0.0 {
+                half_axes.z_axis / zs
+            } else {
+                DVec3::Z
+            },
+        );
+        Self {
+            center,
+            half_size,
+            quaternion: DQuat::from_mat3(&rot),
+        }
+    }
+
+    /// Serialise this OBB back to the 3D Tiles `boundingVolume.box` 12-element array.
+    pub fn to_3dtiles_box(&self) -> [f64; 12] {
+        let axes = self.half_axes();
+        [
+            self.center.x,
+            self.center.y,
+            self.center.z,
+            axes[0].x,
+            axes[0].y,
+            axes[0].z,
+            axes[1].x,
+            axes[1].y,
+            axes[1].z,
+            axes[2].x,
+            axes[2].y,
+            axes[2].z,
+        ]
     }
 
     /// The 3x3 rotation matrix (columns are the local axes in world space).

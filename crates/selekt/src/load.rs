@@ -1,11 +1,33 @@
 use crate::node::NodeId;
-use orkester::AsyncSystem;
-use zukei::math::Mat4;
+use glam::DMat4 as Mat4;
 
-/// Opaque handle assigned to loaded content by the engine.
-pub type ContentHandle = u64;
-/// Opaque identifier for an in-flight load request.
-pub type RequestId = u64;
+/// Classifies what kind of resource failed to load.
+///
+/// Passed to the `on_load_error` callback so callers can distinguish
+/// network errors from format errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadFailureType {
+    /// The failure occurred while fetching node content (the typical case).
+    NodeContent,
+    /// The failure occurred while resolving an external hierarchy reference.
+    HierarchyReference,
+    /// Unknown / unclassified failure.
+    Unknown,
+}
+
+/// Detailed information passed to the `on_load_error` callback.
+#[derive(Clone, Debug)]
+pub struct LoadFailureDetails {
+    /// Which node encountered the failure.
+    pub node_id: NodeId,
+    /// What kind of resource was being loaded.
+    pub failure_type: LoadFailureType,
+    /// HTTP status code if the failure was an HTTP error (e.g. 404, 503).
+    /// `None` for non-HTTP failures (e.g. parse errors, I/O errors).
+    pub http_status_code: Option<u16>,
+    /// Human-readable description of the error.
+    pub message: String,
+}
 
 /// Stable content address for a node (URI, key, or other format-defined identifier).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -13,7 +35,6 @@ pub struct ContentKey(pub String);
 
 /// Load scheduling tier. Determines which candidates are popped from the queue first.
 /// Processing order: Urgent → Normal → Preload.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PriorityGroup {
     /// Speculative: siblings of culled nodes, pre-loaded for smooth panning.
@@ -25,8 +46,7 @@ pub enum PriorityGroup {
 }
 
 /// Full load priority for a candidate. Ordering: group tier first, then score within tier.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LoadPriority {
     /// Scheduling tier.
     pub group: PriorityGroup,
@@ -36,14 +56,15 @@ pub struct LoadPriority {
     pub view_group_weight: u16,
 }
 
-/// A node candidate submitted to `LoadScheduler`.
-#[derive(Clone, Debug)]
-pub struct LoadCandidate {
-    /// Stable scheduler identity for the originating view group.
-    pub view_group: u64,
-    pub node_id: NodeId,
-    pub key: ContentKey,
-    pub priority: LoadPriority,
+/// A node candidate submitted to the internal load scheduler.
+///
+/// Does not carry the content key — the engine looks it up from the
+/// hierarchy at dispatch time, avoiding per-candidate `String` allocation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LoadCandidate {
+    pub(crate) view_group: u64,
+    pub(crate) node_id: NodeId,
+    pub(crate) priority: LoadPriority,
 }
 
 /// Results from a single `load()` pass.
@@ -52,25 +73,22 @@ pub struct LoadPassResult {
     pub started_requests: usize,
     pub completed_main_thread_tasks: usize,
     pub pending_worker_queue: usize,
-    pub pending_main_queue: usize,
+    /// Nodes that transitioned to `Renderable` during this pass.
+    pub nodes_newly_renderable: usize,
 }
 
-/// Raw content returned by `ContentLoader`. Not yet GPU-prepared.
-/// The engine wraps this into `Content<C>` once a `ContentHandle` is assigned.
-#[derive(Clone, Debug)]
-pub struct LoadedContent<C> {
-    pub payload: Payload<C>,
-    pub byte_size: usize,
-}
-
-/// Payload variant: what kind of data was decoded.
-#[derive(Clone, Debug)]
-pub enum Payload<C> {
-    /// Decoded renderable content (mesh, point cloud, etc.).
-    Renderable(C),
-    /// This node is a reference to an external hierarchy.
-    Reference(HierarchyReference),
-    /// No content; node is a structural pass-through.
+/// Intermediate value flowing from the worker-thread decode phase to the
+/// main-thread GPU-upload phase.
+///
+/// Produced inside [`ContentLoader::load`] implementations that have a
+/// two-phase worker→main pipeline (e.g. CPU-decode then GPU-upload). Using
+/// a shared enum avoids re-defining the three-case pattern in every format crate.
+pub enum DecodeOutput<W: Send + 'static> {
+    /// Decoded node data ready for main-thread GPU upload.
+    Decoded { result: W, byte_size: usize },
+    /// Pointer to an external child hierarchy — no GPU work needed.
+    Reference(HierarchyReference, usize),
+    /// Node carries no renderable content.
     Empty,
 }
 
@@ -82,48 +100,91 @@ pub struct HierarchyReference {
     pub transform: Option<Mat4>,
 }
 
+/// Result of a completed [`ContentLoader::load`] call.
+///
+/// The two variants reflect the two outcomes the engine must handle differently:
+/// - [`Content`](LoadResult::Content): decoded (or empty) node data ready for rendering.
+/// - [`Reference`](LoadResult::Reference): pointer to an external child hierarchy.
+///
+/// `byte_size` tracks the in-memory footprint for LRU eviction accounting.
+pub enum LoadResult<C> {
+    /// Decoded renderable data for this node.
+    ///
+    /// `content` is `None` when the node exists in the hierarchy but carries no
+    /// renderable geometry (structural nodes, empty tiles, etc.).
+    Content {
+        content: Option<C>,
+        /// Approximate byte footprint of `content` (used for memory-budget tracking).
+        byte_size: usize,
+    },
+    /// This node's content file turned out to be a pointer to a child hierarchy.
+    ///
+    /// The engine will use the configured [`HierarchyResolver`](crate::hierarchy::HierarchyResolver)
+    /// to fetch and expand the referenced hierarchy.
+    Reference {
+        reference: HierarchyReference,
+        /// Byte size of the reference descriptor itself (usually small).
+        byte_size: usize,
+    },
+}
+
+// Internal types (used by engine, not part of ContentLoader trait)
+
+/// Internal wrapper carrying both the result and the cancellation token.
+/// The cancellation token is threaded through so eviction can cancel mid-flight.
+pub(crate) struct LoadedContent<C> {
+    pub result: LoadResult<C>,
+}
+
 /// Async content loading contract.
 ///
-/// Implementations issue HTTP/file/cache requests and return futures. The engine
-/// calls `cancel` when a request is no longer needed (e.g., node evicted or view changed).
+/// Implement this for your format. The engine calls [`load`](ContentLoader::load)
+/// when it decides to fetch a node and cancels via the supplied
+/// [`CancellationToken`](orkester::CancellationToken) when the node is no longer needed.
+///
+/// # Required method
+///
+/// ```rust,ignore
+/// fn load(
+///     &self,
+///     bg: &Context,
+///     main: &Context,
+///     node: NodeId,
+///     key: &ContentKey,
+///     cancel: CancellationToken,
+/// ) -> Task<Result<Option<C>, Self::Error>>;
+/// ```
+///
+/// Return `Ok(LoadResult::Content { .. })` when decoded, `Ok(LoadResult::Reference { .. })`\n/// for nodes that reference a child hierarchy, or `Err(e)` on failure (triggers retry).
+///
+/// # Optional method
+///
+/// Override [`free`](ContentLoader::free) to release GPU or other external
+/// resources when a node is evicted. The default implementation drops `content`.
 pub trait ContentLoader<C: Send + 'static>: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Begin loading content for `node_id` at the given key and priority.
-    /// Returns an opaque `RequestId` for cancellation and a future that resolves to the content.
-    fn request(
+    /// Begin loading content for `node_id` at the given key.
+    ///
+    /// `bg` dispatches CPU-side work (decoding); `main` dispatches GPU-upload
+    /// work that must run on the caller's thread. `cancel` is signalled by the
+    /// engine when the load is no longer needed — check it in long-running
+    /// async chains.
+    ///
+    /// Returns `Ok(LoadResult::Content { .. })` on success, `Ok(LoadResult::Reference { .. })`
+    /// for nodes that reference a child hierarchy, or `Err(e)` on failure.
+    fn load(
         &self,
-        async_system: &AsyncSystem,
-        node_id: NodeId,
+        bg: &orkester::Context,
+        main: &orkester::Context,
+        node: NodeId,
         key: &ContentKey,
-        priority: LoadPriority,
-    ) -> (
-        RequestId,
-        orkester::Future<Result<LoadedContent<C>, Self::Error>>,
-    );
+        cancel: orkester::CancellationToken,
+    ) -> orkester::Task<Result<LoadResult<C>, Self::Error>>;
 
-    /// Cancel an in-flight request. Returns `true` if the request was still pending.
-    fn cancel(&self, request_id: RequestId) -> bool;
-}
-
-impl<C, E: std::error::Error + Send + Sync + 'static> ContentLoader<C>
-    for Box<dyn ContentLoader<C, Error = E>>
-where
-    C: Send + 'static,
-{
-    type Error = E;
-
-    fn request(
-        &self,
-        async_system: &AsyncSystem,
-        node_id: NodeId,
-        key: &ContentKey,
-        priority: LoadPriority,
-    ) -> (RequestId, orkester::Future<Result<LoadedContent<C>, E>>) {
-        (**self).request(async_system, node_id, key, priority)
-    }
-
-    fn cancel(&self, request_id: RequestId) -> bool {
-        (**self).cancel(request_id)
-    }
+    /// Release content when a node is evicted from the cache.
+    ///
+    /// Called on the main thread before the content is dropped. Override to
+    /// release GPU resources, unbind textures, etc. Default: drops normally.
+    fn free(&self, _content: C) {}
 }

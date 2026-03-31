@@ -11,6 +11,15 @@ pub struct Config {
     /// List of extensions to include.
     #[serde(default)]
     pub extensions: Vec<ExtensionConfig>,
+
+    /// Custom type definitions (enums, etc.) to generate at module level.
+    #[serde(default, rename = "customTypes")]
+    pub custom_types: HashMap<String, CustomTypeConfig>,
+
+    /// Additional root schema files to process, relative to `--schema-dir`.
+    /// These are seeded into the BFS queue alongside the main root schema.
+    #[serde(default, rename = "additionalSchemas")]
+    pub additional_schemas: Vec<String>,
 }
 
 impl Config {
@@ -37,6 +46,41 @@ pub struct ClassConfig {
 
     /// The official extension name string.
     pub extension_name: Option<String>,
+
+    /// Per-property type overrides: property name -> Rust type string.
+    /// Example: { "componentType": "u32", "mode": "u32" }
+    #[serde(default)]
+    pub property_overrides: HashMap<String, String>,
+
+    /// Extra fields to inject into the generated struct.
+    /// These are emitted with `#[serde(skip)]` just before `extensions`/`extras`.
+    #[serde(default)]
+    pub extra_fields: Vec<ExtraFieldConfig>,
+}
+
+/// A single extra field to inject into a generated struct.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtraFieldConfig {
+    /// Field name (Rust snake_case).
+    pub name: String,
+    /// Rust type expression, e.g. `"Vec<u8>"`.
+    pub rust_type: String,
+    /// Default expression used in `impl Default`. Defaults to `Default::default()`.
+    #[serde(default)]
+    pub default_expr: Option<String>,
+    /// Doc comment (single line).
+    #[serde(default)]
+    pub doc: Option<String>,
+    /// If true (default), emit `#[serde(skip)]` so the field is excluded from
+    /// JSON (de)serialization. Set to false for fields that exist in real JSON
+    /// payloads but are absent from the JSON Schema.
+    #[serde(default = "default_true")]
+    pub skip_serde: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,4 +97,28 @@ pub struct ExtensionConfig {
     /// Which glTF object(s) this extension attaches to.
     #[serde(default)]
     pub attach_to: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTypeConfig {
+    /// Type kind: "enum" for now.
+    pub kind: String,
+
+    /// For enums: list of variant names.
+    #[serde(default)]
+    pub variants: Vec<String>,
+
+    /// Doc comment for the type.
+    #[serde(default)]
+    pub doc: Option<String>,
+
+    /// For numeric enums: deserialize from u32 indices instead of string names.
+    #[serde(default)]
+    pub numeric: bool,
+
+    /// For numeric enums: maps variant names to actual numeric values.
+    /// If not provided, uses 0-based indices.
+    #[serde(default)]
+    pub numeric_values: std::collections::HashMap<String, u32>,
 }

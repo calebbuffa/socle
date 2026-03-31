@@ -1,6 +1,6 @@
 //! Axis-aligned bounding box.
 
-use glam_dep::DVec3;
+use glam::DVec3;
 
 use crate::culling::CullingResult;
 use crate::plane::Plane;

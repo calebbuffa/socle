@@ -1,8 +1,364 @@
 # orkester
 
-Context-aware task scheduling for Rust. Works with tokio, ships with FFI.
+Context-aware task scheduling for Rust.
 
 *orkester is Russian for "orchestra" — orchestrating asynchronous and concurrent tasks.*
+
+## Overview
+
+orkester is a **scheduling policy layer**. It doesn't replace tokio — it sits on top,
+adding explicit context-aware dispatch, thread affinity, and a C FFI.
+
+- **tokio** answers: *"run this async task somewhere."*
+- **orkester** answers: *"run this task **here**, on **this context**, and give me the result."*
+
+**Core types:**
+
+| Type | Description |
+|------|-------------|
+| `Context` | Scheduling token — identifies where work runs |
+| `ThreadPool` | Self-draining background thread pool |
+| `WorkQueue` | Caller-pumped queue for main/UI threads |
+| `Task<T>` | Move-only single-consumer async value |
+| `Handle<T>` | Cloneable multi-consumer async value (`T: Clone`) |
+| `Resolver<T>` | Completion handle for a `Task<T>` |
+| `Executor` | Trait for custom execution backends |
+
+**Primitives:**
+
+| Type | Description |
+|------|-------------|
+| `CancellationToken` | Cooperative cancellation, shared across tasks |
+| `Scope` | Structured cancellation — children cancelled when scope drops |
+| `Semaphore` | Async-aware counting semaphore |
+| `JoinSet<T>` | Tracked collection of in-flight tasks |
+| `Sender<T>` / `Receiver<T>` | Bounded MPSC channels |
+
+**Free function combinators:** `delay`, `timeout`, `race`, `retry`, `join_all`, `resolved`, `resolver`
+
+## Quick Start
+
+```rust
+use orkester::{ThreadPool, WorkQueue};
+
+// Background thread pool
+let bg = ThreadPool::new(4);
+let bg_ctx = bg.context();
+
+// Optional: caller-pumped queue for main/UI thread
+let mut wq = WorkQueue::new();
+let main_ctx = wq.context();
+
+// Resolver/task pair — resolve from anywhere
+let (resolver, task) = orkester::resolver::<i32>();
+resolver.resolve(42);
+assert_eq!(task.block().unwrap(), 42);
+
+// Run work on a background thread
+let result = bg_ctx.run(|| expensive_computation());
+
+// Continuation chains — closures may return T or Task<T> (flattened automatically)
+let chained = bg_ctx.run(|| 3_i32)
+    .then(&bg_ctx, |v| v + 1)
+    .then(&bg_ctx, |v| v * 2);
+assert_eq!(chained.block().unwrap(), 8);
+
+// Chain onto main/UI thread, pump to completion
+let task = bg_ctx.run(|| compute())
+    .then(&main_ctx, |v| update_ui(v));
+while !task.is_ready() {
+    wq.pump();
+}
+```
+
+## Scheduling Contexts
+
+`Context` is a lightweight, cloneable scheduling token. Three kinds:
+
+| Context | Description |
+|---------|-------------|
+| `Context::IMMEDIATE` | Runs inline on the completing thread — no overhead |
+| `pool.context()` | Routes work to a `ThreadPool` |
+| `wq.context()` | Routes work to a `WorkQueue` (caller pumps) |
+
+Pass `&Context` to `.then()`, `.catch()`, `.then_async()`, and `.and_then()`.
+Closures may return `T` or `Task<T>` — both are handled identically.
+
+## Async/Await
+
+`Task<T>` implements `std::future::Future<Output = Result<T, AsyncError>>`.
+
+```rust
+// Run an async closure in a specific context
+let task = bg_ctx.run_async(|| async {
+    let data = some_async_op().await;
+    transform(data)
+});
+
+// Mix callback chains and async
+let task = bg_ctx.run(|| fetch_bytes())
+    .then_async(&bg_ctx, |bytes| async move {
+        decompress(bytes).await
+    });
+```
+
+For IO-bound async work, use `TokioExecutor` so futures are polled by the tokio
+reactor rather than blocked on a worker thread.
+
+## Error Flow
+
+```rust
+// .then() propagates errors without invoking the closure
+// .catch() handles errors; .or_else() catches inline (no scheduling)
+let task = bg_ctx.run(|| might_fail())
+    .catch(&bg_ctx, |err| fallback_value())
+    .or_else(|err| default_value());
+
+// Fallible chains with Result
+let task: Task<Result<Decoded, MyError>> = bg_ctx.run(|| fetch())
+    .and_then(&bg_ctx, |bytes| decode(bytes));  // Err propagates without calling decode
+```
+
+## Cancellation
+
+```rust
+let token = CancellationToken::new();
+
+let task = bg_ctx.run(|| long_work())
+    .with_cancellation(&token);
+
+token.cancel();  // task rejects with ErrorCode::Cancelled if not yet complete
+```
+
+**Structured cancellation with `Scope`:**
+
+```rust
+let scope = Scope::new();
+
+let a = scope.run(&bg_ctx, || work_a());
+let b = scope.run(&bg_ctx, || work_b());
+
+drop(scope);  // cancels a and b if still in-flight
+```
+
+## Thread Affinity
+
+```rust
+// Dedicated single-thread pool for GPU work
+let gpu_pool = ThreadPool::new(1);
+let gpu_ctx = gpu_pool.context();
+
+bg_ctx.run(|| prepare_data())
+    .then(&gpu_ctx, |data| upload_to_gpu(data));
+
+// WorkQueue: caller decides when to drain
+let mut wq = WorkQueue::new();
+let ctx = wq.context();
+
+task.then(&ctx, |v| render(v));
+wq.pump();               // drain one batch
+wq.pump_until_empty();   // drain everything queued so far
+```
+
+## Shared Tasks (`Handle<T>`)
+
+```rust
+let (resolver, task) = orkester::resolver::<i32>();
+let handle = task.share();         // Task → Handle (requires T: Clone)
+let handle2 = handle.clone();
+
+resolver.resolve(99);
+
+assert_eq!(handle.block().unwrap(), 99);
+assert_eq!(handle2.block().unwrap(), 99);  // both see the same result
+```
+
+## Semaphore
+
+```rust
+let sem = Semaphore::new(3);  // at most 3 concurrent holders
+
+let permit = sem.acquire();   // blocks if all permits held
+// ... do limited work ...
+drop(permit);                  // releases, wakes next waiter
+
+if let Some(permit) = sem.try_acquire() { /* non-blocking */ }
+```
+
+## Channels
+
+```rust
+use orkester::channel;
+
+let (tx, rx) = channel::mpsc::<i32>(16);
+tx.send(1).unwrap();
+let val = rx.recv();  // Some(1)
+
+let (tx, rx) = channel::oneshot::<String>();
+tx.send("hello".into()).unwrap();
+```
+
+## Timeout and Combinators
+
+```rust
+use std::time::Duration;
+
+// Reject if task doesn't complete in time
+let task = bg_ctx.run(|| slow_work())
+    .with_timeout(Duration::from_secs(5));
+
+// Free function versions
+let task   = orkester::timeout(bg_ctx.run(|| work()), Duration::from_secs(5));
+let winner = orkester::race(vec![task_a, task_b]);    // first to complete wins
+let all    = orkester::join_all(vec![a, b, c]);        // wait for all, in order
+
+// Exponential backoff retry
+let task = orkester::retry(3, RetryConfig::default(), || bg_ctx.run(|| fallible()));
+
+// Timer (single background thread — no thread parked per call)
+let done = orkester::delay(Duration::from_millis(100));
+```
+
+## Feature Flags
+
+```toml
+[dependencies]
+orkester = "0.3"
+
+# With tokio backend
+orkester = { version = "0.3", features = ["tokio-runtime"] }
+
+# For WASM targets
+orkester = { version = "0.3", features = ["wasm"] }
+```
+
+| Feature | Description |
+|---------|-------------|
+| `custom-runtime` *(default)* | Built-in `ThreadPool` executor |
+| `tokio-runtime` | `TokioExecutor` via `tokio::runtime::Handle` |
+| `wasm` | `WasmExecutor` + `spawn_local` for WebAssembly |
+
+## API Summary
+
+### Free functions
+
+```rust
+orkester::resolver<T>() -> (Resolver<T>, Task<T>)
+orkester::resolved<T>(value: T) -> Task<T>
+orkester::delay(duration: Duration) -> Task<()>
+orkester::join_all<T>(tasks: impl IntoIterator<Item=Task<T>>) -> Task<Vec<T>>
+orkester::timeout<T>(task: Task<T>, duration: Duration) -> Task<T>
+orkester::race<T>(tasks: Vec<Task<T>>) -> Task<T>
+orkester::retry<T, F>(attempts: u32, config: RetryConfig, f: F) -> Task<T>
+```
+
+### `Context`
+
+```rust
+Context::IMMEDIATE                              // inline on completing thread
+Context::new(executor: impl Executor) -> Self
+context.run<T, F>(&self, f: F) -> Task<T>
+context.run_async<T, F, Fut>(&self, f: F) -> Task<T>
+```
+
+### `Task<T>`
+
+```rust
+task.is_ready(&self) -> bool
+task.block(self) -> Result<T, AsyncError>
+
+// Continuations (closure may return T or Task<T>)
+task.then<U, F>(self, context: &Context, f: F) -> Task<U>
+task.then_async<U, F, Fut>(self, context: &Context, f: F) -> Task<U>
+task.map<U, F>(self, f: F) -> Task<U>           // inline, = then(&IMMEDIATE, f)
+task.catch<F>(self, context: &Context, f: F) -> Task<T>
+task.or_else<F>(self, f: F) -> Task<T>          // inline, = catch(&IMMEDIATE, f)
+task.and_then<U, F>(self, context: &Context, f: F) -> Task<Result<U, E>>
+
+task.join<U>(self, other: Task<U>) -> Task<(T, U)>
+task.share(self) -> Handle<T>                   // requires T: Clone
+task.with_timeout(self, duration: Duration) -> Task<T>
+task.with_cancellation(self, token: &CancellationToken) -> Task<T>
+```
+
+`Task<T>` implements `Future<Output = Result<T, AsyncError>>`.
+
+### `Handle<T>` (cloneable)
+
+Same continuation API as `Task<T>` but borrows `&self` — can be awaited multiple times.
+
+### `Resolver<T>`
+
+```rust
+resolver.resolve(self, value: T)
+resolver.reject(self, error: impl Into<AsyncError>)
+// Dropping an unresolved Resolver<T> auto-rejects with ErrorCode::Dropped
+```
+
+### `Scope`
+
+```rust
+Scope::new() -> Scope
+scope.token(&self) -> &CancellationToken
+scope.run<T, F>(&self, context: &Context, f: F) -> Task<T>
+scope.run_async<T, F, Fut>(&self, context: &Context, f: F) -> Task<T>
+// Drop → cancels all in-flight tasks spawned through this scope
+```
+
+### `Semaphore`
+
+```rust
+Semaphore::new(permits: usize) -> Semaphore    // Clone
+semaphore.acquire(&self) -> SemaphorePermit    // blocking
+semaphore.try_acquire(&self) -> Option<SemaphorePermit>
+semaphore.available_permits(&self) -> usize
+semaphore.max_permits(&self) -> usize
+// SemaphorePermit releases on drop
+```
+
+### `JoinSet<T>`
+
+```rust
+JoinSet::new() -> JoinSet<T>
+join_set.push(&mut self, task: Task<T>)
+join_set.len(&self) -> usize
+join_set.block_all(self) -> Vec<Result<T, AsyncError>>
+join_set.join_next(&mut self) -> Option<Result<T, AsyncError>>
+```
+
+### `Executor` trait
+
+```rust
+pub trait Executor: Send + Sync {
+    fn execute(&self, task: Box<dyn FnOnce() + Send + 'static>);
+    fn spawn_future(&self, future: BoxFuture) { /* default: execute + block_on */ }
+    fn is_current_thread(&self) -> bool { false }
+}
+```
+
+Override `spawn_future` when backed by an async runtime so futures are polled by
+the reactor rather than blocked on a worker thread.
+
+### `AsyncError`
+
+```rust
+AsyncError::msg(message: impl Into<String>) -> AsyncError
+AsyncError::new<E: Error + Send + Sync>(error: E) -> AsyncError
+AsyncError::with_code(code: ErrorCode, message: impl Into<String>) -> AsyncError
+error.code(&self) -> ErrorCode
+error.downcast_ref<E: Error>(&self) -> Option<&E>
+
+enum ErrorCode { Generic, Cancelled, TimedOut, Dropped }
+```
+
+## Design Notes
+
+- `TaskCell<T>` — lock-free atomic state machine; no per-continuation watcher task
+- `TimerWheel` — single background thread services all timers; no thread parked per `delay`
+- `WorkQueue` — deterministic, caller-controlled pumping; no background reactor needed
+- `Task<T>` is move-only; use `.share()` for multi-consumer scenarios
+- `Context` is `Clone + PartialEq + Hash` — safe to store, compare, and deduplicate
+
 
 ## Overview
 
@@ -14,7 +370,7 @@ on top, adding context-aware dispatch, thread affinity, and a C FFI.
 
 **Core types:**
 
-- **`Scheduler`** — root runtime object; owns executors and the main-thread queue
+- **`Runtime`** — root runtime object; owns executors and the main-thread queue
 - **`Resolver<T>` / `Task<T>`** — single-producer / single-consumer async pair
 - **`SharedTask<T>`** — cloneable multi-consumer task (requires `T: Clone`)
 - **`Context`** — lightweight handle identifying a scheduling target (u32-indexed)
@@ -65,10 +421,10 @@ orkester = { version = "0.3", features = ["wasm"] }
 ## Quick Start
 
 ```rust
-use orkester::{Scheduler, Context};
+use orkester::{Runtime, Context};
 
-// Create a scheduler with a default thread pool
-let system = Scheduler::with_threads(4);
+// Create a Runtime with a default thread pool
+let system = Runtime::with_threads(4);
 
 // Resolver/task pair
 let (resolver, task) = system.resolver::<i32>();
@@ -95,9 +451,9 @@ assert_eq!(chained.block().unwrap(), 8);
 orkester supports both callback-chain and async/await styles, freely intermixed:
 
 ```rust
-use orkester::{Scheduler, Context};
+use orkester::{Runtime, Context};
 
-let system = Scheduler::with_threads(4);
+let system = Runtime::with_threads(4);
 
 // Callback chains (C++ interop style, zero-async)
 let result = system.run(Context::BACKGROUND, || compute())
@@ -152,18 +508,18 @@ for explicit pumping via `flush_main`.
 
 ### Custom Runtime (default)
 
-Create a scheduler with a built-in thread pool:
+Create a Runtime with a built-in thread pool:
 
 ```rust
-use orkester::Scheduler;
+use orkester::Runtime;
 
-let system = Scheduler::with_threads(4);
+let system = Runtime::with_threads(4);
 ```
 
 Or use the builder for more control:
 
 ```rust
-let system = Scheduler::builder()
+let system = Runtime::builder()
     .executor(MyCustomExecutor::new())
     .build();
 ```
@@ -173,9 +529,9 @@ let system = Scheduler::builder()
 Use tokio's runtime for async task spawning:
 
 ```rust
-use orkester::{Scheduler, TokioExecutor};
+use orkester::{Runtime, TokioExecutor};
 
-let system = Scheduler::builder()
+let system = Runtime::builder()
     .executor(TokioExecutor::current())
     .build();
 ```
@@ -185,9 +541,9 @@ let system = Scheduler::builder()
 For WebAssembly targets with `wasm-bindgen-futures`:
 
 ```rust
-use orkester::{Scheduler, WasmExecutor};
+use orkester::{Runtime, WasmExecutor};
 
-let system = Scheduler::builder()
+let system = Runtime::builder()
     .executor(WasmExecutor)
     .build();
 
@@ -197,56 +553,56 @@ let result = system.spawn_local(async { compute() });
 
 ## API Reference
 
-### `Scheduler`
+### `Runtime`
 
 ```rust
 // Construction
-Scheduler::new(executor: impl Executor) -> Scheduler
-Scheduler::with_threads(n: usize) -> Scheduler
-Scheduler::builder() -> SchedulerBuilder
+Runtime::new(executor: impl Executor) -> Runtime
+Runtime::with_threads(n: usize) -> Runtime
+Runtime::builder() -> RuntimeBuilder
 
 // Context management
-Scheduler::register_context(&self, executor: impl Executor) -> Context
-Scheduler::thread_pool(&self, num_threads: usize) -> ThreadPool
+Runtime::register_context(&self, executor: impl Executor) -> Context
+Runtime::thread_pool(&self, num_threads: usize) -> ThreadPool
 
 // Resolver/task creation
-Scheduler::resolver<T>(&self) -> (Resolver<T>, Task<T>)
-Scheduler::task<T, F>(&self, f: F) -> Task<T>
-Scheduler::resolved<T>(&self, value: T) -> Task<T>
+Runtime::resolver<T>(&self) -> (Resolver<T>, Task<T>)
+Runtime::task<T, F>(&self, f: F) -> Task<T>
+Runtime::resolved<T>(&self, value: T) -> Task<T>
 
 // Schedule work (sync closures)
-Scheduler::run<T, F>(&self, context: Context, f: F) -> Task<T>
-Scheduler::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Task<T>
+Runtime::run<T, F>(&self, context: Context, f: F) -> Task<T>
+Runtime::run_in_pool<T, F>(&self, pool: &ThreadPool, f: F) -> Task<T>
 
 // Schedule work (async)
-Scheduler::run_async<T, F, Fut>(&self, context: Context, f: F) -> Task<T>
-Scheduler::spawn<T, Fut>(&self, future: Fut) -> Task<T>  // on BACKGROUND
-Scheduler::spawn_local<T, Fut>(&self, future: Fut) -> Task<T>  // WASM only
-Scheduler::spawn_detached<F>(&self, context: Context, f: F)
+Runtime::run_async<T, F, Fut>(&self, context: Context, f: F) -> Task<T>
+Runtime::spawn<T, Fut>(&self, future: Fut) -> Task<T>  // on BACKGROUND
+Runtime::spawn_local<T, Fut>(&self, future: Fut) -> Task<T>  // WASM only
+Runtime::spawn_detached<F>(&self, context: Context, f: F)
 
 // Main-thread dispatch
-Scheduler::flush_main(&self) -> usize
-Scheduler::flush_main_one(&self) -> bool
-Scheduler::main_pending(&self) -> bool
-Scheduler::main_scope(&self) -> MainThreadScope
+Runtime::flush_main(&self) -> usize
+Runtime::flush_main_one(&self) -> bool
+Runtime::main_pending(&self) -> bool
+Runtime::main_scope(&self) -> MainThreadScope
 
 // Structured concurrency
-Scheduler::scope(&self) -> Scope
-Scheduler::join_set<T>(&self) -> JoinSet<T>
-Scheduler::join_all<T, I>(&self, tasks: I) -> Task<Vec<T>>
+Runtime::scope(&self) -> Scope
+Runtime::join_set<T>(&self) -> JoinSet<T>
+Runtime::join_all<T, I>(&self, tasks: I) -> Task<Vec<T>>
 
 // Timer
-Scheduler::delay(&self, duration: Duration) -> Task<()>
+Runtime::delay(&self, duration: Duration) -> Task<()>
 ```
 
-`Scheduler` is `Clone` (cheap `Arc` clone).
+`Runtime` is `Clone` (cheap `Arc` clone).
 
-### `SchedulerBuilder`
+### `RuntimeBuilder`
 
 ```rust
-SchedulerBuilder::executor(self, executor: impl Executor) -> Self
-SchedulerBuilder::context(self, executor: impl Executor) -> Self
-SchedulerBuilder::build(self) -> Scheduler
+RuntimeBuilder::executor(self, executor: impl Executor) -> Self
+RuntimeBuilder::context(self, executor: impl Executor) -> Self
+RuntimeBuilder::build(self) -> Runtime
 ```
 
 ### `Resolver<T>`
@@ -262,7 +618,7 @@ Dropping an unresolved `Resolver<T>` auto-rejects with `ErrorCode::Dropped`.
 
 ```rust
 Task::is_ready(&self) -> bool
-Task::system(&self) -> Scheduler
+Task::system(&self) -> Runtime
 Task::block(self) -> Result<T, AsyncError>
 Task::block_with_main(self) -> Result<T, AsyncError>
 
@@ -322,7 +678,7 @@ Scope::cancel(&self)
 ### `Semaphore`
 
 ```rust
-Semaphore::new(system: &Scheduler, permits: usize) -> Semaphore
+Semaphore::new(system: &Runtime, permits: usize) -> Semaphore
 Semaphore::acquire(&self) -> SemaphorePermit        // blocking
 Semaphore::try_acquire(&self) -> Option<SemaphorePermit>
 Semaphore::available_permits(&self) -> usize
@@ -356,9 +712,9 @@ Receiver::recv(&self) -> Option<T>
 ### Combinators (free functions)
 
 ```rust
-timeout<T>(system: &Scheduler, task: Task<T>, duration: Duration) -> Task<T>
-race<T>(system: &Scheduler, tasks: Vec<Task<T>>) -> Task<T>
-retry<T, F>(system: &Scheduler, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
+timeout<T>(system: &Runtime, task: Task<T>, duration: Duration) -> Task<T>
+race<T>(system: &Runtime, tasks: Vec<Task<T>>) -> Task<T>
+retry<T, F>(system: &Runtime, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
 ```
 
 `RetryConfig` controls exponential backoff:
@@ -492,7 +848,7 @@ let b = scope.run(Context::BACKGROUND, || compute_b());
 ### Custom Context
 
 ```rust
-use orkester::{Scheduler, Context, Executor};
+use orkester::{Runtime, Context, Executor};
 
 struct MyExecutor;
 impl Executor for MyExecutor {
@@ -501,7 +857,7 @@ impl Executor for MyExecutor {
     }
 }
 
-let system = Scheduler::with_threads(4);
+let system = Runtime::with_threads(4);
 let my_ctx = system.register_context(MyExecutor);
 let result = system.run(my_ctx, || 42);
 assert_eq!(result.block().unwrap(), 42);

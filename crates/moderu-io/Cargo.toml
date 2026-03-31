@@ -1,0 +1,42 @@
+[package]
+name = "moderu-io"
+description = "glTF 2.0 reader and writer with full codec pipeline (Draco, meshopt, KTX2, SPZ)"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["image", "draco", "meshopt", "ktx2", "spz"]
+image = ["moderu-codec/image"]
+draco = ["moderu-codec/draco"]
+meshopt = ["moderu-codec/meshopt"]
+ktx2 = ["moderu-codec/ktx2"]
+spz = ["moderu-codec/spz"]
+async = ["dep:orkester", "dep:orkester-io"]
+
+[dependencies]
+kiban = { path = "../kiban" }
+moderu = { path = "../moderu" }
+moderu-codec = { path = "../moderu-codec" }
+orkester = { path = "../orkester", optional = true }
+orkester-io = { path = "../orkester-io", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+thiserror = "2"
+glam = { version = "0.32", features = ["std"] }
+rayon = "1.10"
+parking_lot = "0.12"
+smallvec = { version = "1.13", features = ["union", "const_generics"] }
+byteorder = "1.5"
+bytemuck = "1"
+
+# Codec deps are now in moderu-codec; features above forward to it.
+
+[dev-dependencies]
+moderu = { path = "../moderu" }
+moderu-codec = { path = "../moderu-codec" }
+orkester = { path = "../orkester" }
+orkester-io = { path = "../orkester-io" }
+tempfile = "3"

@@ -1,0 +1,22 @@
+[package]
+name = "tiles3d-selekt"
+description = "selekt adapter for 3D Tiles streaming and selection"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tiles3d = { path = "../tiles3d" }
+tiles3d-content = { path = "../tiles3d-content" }
+selekt = { path = "../selekt" }
+orkester = { path = "../orkester" }
+orkester-io = { path = "../orkester-io" }
+terra = { path = "../terra" }
+zukei = { path = "../zukei" }
+glam = { version = "0.32", features = ["std"] }
+moderu = { path = "../moderu" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+egaku = { path = "../egaku" }

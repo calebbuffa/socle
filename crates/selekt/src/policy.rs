@@ -1,7 +1,6 @@
 use crate::node::NodeId;
 use crate::view::ViewState;
-use zukei::bounds::SpatialBounds;
-
+use zukei::SpatialBounds;
 
 /// Renderer-reported occlusion state for a single node.
 ///
@@ -35,13 +34,12 @@ pub trait OcclusionTester: Send + Sync + 'static {
 pub struct NoOcclusion;
 impl OcclusionTester for NoOcclusion {}
 
-
-/// Custom per-tile predicate that can reject nodes from the selection.
+/// Custom per-node predicate that can reject nodes from the selection.
 ///
-/// Analogous to cesium-native's `ITileExcluder`. Multiple excluders can be
+/// Analogous to cesium-native's `INodeExcluder`. Multiple excluders can be
 /// composed via [`CompositeExcluder`]. When any excluder returns `true`,
 /// the node (and its subtree) is skipped.
-pub trait TileExcluder: Send + Sync + 'static {
+pub trait NodeExcluder: Send + Sync + 'static {
     /// Called once at the start of each frame, before any `should_exclude` calls.
     fn start_new_frame(&mut self) {}
 
@@ -49,22 +47,24 @@ pub trait TileExcluder: Send + Sync + 'static {
     fn should_exclude(&self, node_id: NodeId, bounds: &SpatialBounds) -> bool;
 }
 
-/// Combines multiple [`TileExcluder`]s — excludes if ANY returns `true`.
+/// Combines multiple [`NodeExcluder`]s — excludes if ANY returns `true`.
 pub struct CompositeExcluder {
-    excluders: Vec<Box<dyn TileExcluder>>,
+    excluders: Vec<Box<dyn NodeExcluder>>,
 }
 
 impl CompositeExcluder {
-    pub fn new(excluders: Vec<Box<dyn TileExcluder>>) -> Self {
-        Self { excluders }
+    pub fn new(excluders: impl IntoIterator<Item = Box<dyn NodeExcluder>>) -> Self {
+        Self {
+            excluders: excluders.into_iter().collect(),
+        }
     }
 
-    pub fn push(&mut self, excluder: Box<dyn TileExcluder>) {
-        self.excluders.push(excluder);
+    pub fn push(&mut self, excluder: impl NodeExcluder + 'static) {
+        self.excluders.push(Box::new(excluder));
     }
 }
 
-impl TileExcluder for CompositeExcluder {
+impl NodeExcluder for CompositeExcluder {
     fn start_new_frame(&mut self) {
         for e in &mut self.excluders {
             e.start_new_frame();
@@ -78,7 +78,6 @@ impl TileExcluder for CompositeExcluder {
     }
 }
 
-
 /// Determines whether a node's bounding volume is visible within a view.
 ///
 /// Implementations perform frustum culling, occlusion checks, or any other
@@ -87,7 +86,6 @@ pub trait VisibilityPolicy: Send + Sync + 'static {
     /// Returns `true` if `bounds` is at least partially visible in `view`.
     fn is_visible(&self, node_id: NodeId, bounds: &SpatialBounds, view: &ViewState) -> bool;
 }
-
 
 /// Decides which resident nodes should be evicted to meet a memory budget.
 ///
@@ -133,32 +131,45 @@ impl ResidencyPolicy for Box<dyn Policy> {
 }
 // Policy for Box<dyn Policy> is covered by the blanket impl above.
 
-
 /// Frustum-culling visibility policy that builds a [`CullingVolume`] from each
 /// [`ViewState`] and tests the node's [`SpatialBounds`] against it.
 ///
 /// This is the standard implementation suitable for most adapters. Uses
 /// zukei's `CullingVolume::from_fov` which produces 4 side planes (no near/far)
 /// — appropriate for LOD selection where near/far clipping is a GPU concern.
-#[cfg(feature = "glam")]
 pub struct FrustumVisibilityPolicy;
 
-#[cfg(feature = "glam")]
 impl VisibilityPolicy for FrustumVisibilityPolicy {
     fn is_visible(&self, _node_id: NodeId, bounds: &SpatialBounds, view: &ViewState) -> bool {
-        use zukei::frustum::CullingVolume;
-        use zukei::glam::DVec3;
+        use crate::view::Projection;
+        use zukei::CullingVolume;
 
-        let position = DVec3::from(&view.position);
-        let direction = DVec3::from(&view.direction);
-        let up = DVec3::from(&view.up);
+        let position = view.position;
+        let direction = view.direction;
+        let up = view.up;
 
-        let cv = CullingVolume::from_fov(position, direction, up, view.fov_x, view.fov_y);
+        let cv = match &view.projection {
+            Projection::Perspective { fov_x, fov_y } => {
+                CullingVolume::from_fov(position, direction, up, *fov_x, *fov_y)
+            }
+            Projection::Orthographic {
+                half_width,
+                half_height,
+            } => CullingVolume::from_orthographic(
+                position,
+                direction,
+                up,
+                -*half_width,
+                *half_width,
+                -*half_height,
+                *half_height,
+                0.0,
+            ),
+        };
         let result = cv.visibility_bounds(bounds);
         result != zukei::CullingResult::Outside
     }
 }
-
 
 /// Simple LRU-based eviction policy: evicts nodes that were least recently
 /// rendered until memory fits within budget.
@@ -193,21 +204,41 @@ impl ResidencyPolicy for LruResidencyPolicy {
     }
 }
 
+/// Baseline policy: all nodes are visible, LRU eviction.
+///
+/// Used as the default `M` parameter for [`SelectionEngine`](crate::SelectionEngine)
+/// when no `Policy` is explicitly provided. Suitable for engines that disable
+/// frustum culling or where all nodes are relevant.
+pub struct AllVisibleLruPolicy;
+
+impl VisibilityPolicy for AllVisibleLruPolicy {
+    fn is_visible(&self, _node_id: NodeId, _bounds: &SpatialBounds, _view: &ViewState) -> bool {
+        true
+    }
+}
+
+impl ResidencyPolicy for AllVisibleLruPolicy {
+    fn select_evictions(
+        &self,
+        resident_nodes: &[(NodeId, usize)],
+        memory_budget_bytes: usize,
+        out: &mut Vec<NodeId>,
+    ) {
+        LruResidencyPolicy.select_evictions(resident_nodes, memory_budget_bytes, out);
+    }
+}
 
 /// Default policy combining [`FrustumVisibilityPolicy`] and [`LruResidencyPolicy`].
 ///
 /// Use this when you want frustum culling and LRU eviction out of the box.
-#[cfg(feature = "glam")]
 pub struct DefaultPolicy;
 
-#[cfg(feature = "glam")]
 impl VisibilityPolicy for DefaultPolicy {
     fn is_visible(&self, node_id: NodeId, bounds: &SpatialBounds, view: &ViewState) -> bool {
         FrustumVisibilityPolicy.is_visible(node_id, bounds, view)
     }
 }
 
-#[cfg(feature = "glam")]
 impl ResidencyPolicy for DefaultPolicy {
     fn select_evictions(
         &self,

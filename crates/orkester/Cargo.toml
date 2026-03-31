@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 description = "Context-aware task scheduling for Rust. Works with tokio, ships with FFI."
 repository.workspace = true
-keywords = ["scheduler", "async", "ffi", "game-engine", "main-thread"]
+keywords = ["Runtime", "async", "ffi", "game-engine", "main-thread"]
 categories = ["asynchronous", "concurrency", "game-development"]
 
 [lib]

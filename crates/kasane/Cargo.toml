@@ -1,0 +1,16 @@
+[package]
+name = "kasane"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Raster overlay system for socle tile streaming"
+repository.workspace = true
+
+[dependencies]
+egaku = { path = "../egaku" }
+moderu = { path = "../moderu" }
+selekt = { path = "../selekt" }
+orkester = { path = "../orkester" }
+orkester-io = { path = "../orkester-io" }
+terra = { path = "../terra" }
+glam = { version = "0.32", features = ["std"] }

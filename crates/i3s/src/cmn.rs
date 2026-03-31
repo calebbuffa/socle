@@ -11,6 +11,8 @@ pub enum SceneLayerCapabilities {
     Query,
     Edit,
     Extract,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for SceneLayerCapabilities {
@@ -28,6 +30,8 @@ pub enum SceneLayerType {
     Point,
     PointCloud,
     Building,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for SceneLayerType {
@@ -43,6 +47,8 @@ pub enum DomainType {
     CodedValue,
     #[serde(rename = "range")]
     Range,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DomainType {
@@ -66,6 +72,8 @@ pub enum DomainFieldType {
     SmallInteger,
     #[serde(rename = "esriFieldTypeString")]
     String,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DomainFieldType {
@@ -83,6 +91,8 @@ pub enum DomainMergePolicy {
     MPTSumValues,
     #[serde(rename = "esriMPTAreaWeighted")]
     MPTAreaWeighted,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DomainMergePolicy {
@@ -100,6 +110,8 @@ pub enum DomainSplitPolicy {
     SPTDuplicate,
     #[serde(rename = "esriSPTDefaultValue")]
     SPTDefaultValue,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DomainSplitPolicy {
@@ -129,6 +141,8 @@ pub enum FieldType {
     SmallInteger,
     #[serde(rename = "esriFieldTypeString")]
     String,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for FieldType {
@@ -144,6 +158,8 @@ pub enum HeightModelInfoHeightModel {
     GravityRelatedHeight,
     #[serde(rename = "ellipsoidal")]
     Ellipsoidal,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for HeightModelInfoHeightModel {
@@ -197,6 +213,8 @@ pub enum HeightModelInfoHeightUnit {
     Centimeter,
     #[serde(rename = "kilometer")]
     Kilometer,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for HeightModelInfoHeightUnit {
@@ -213,6 +231,8 @@ pub enum AttributeStorageInfoOrdering {
     #[serde(rename = "attributeValues")]
     AttributeValues,
     ObjectIds,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for AttributeStorageInfoOrdering {
@@ -226,6 +246,8 @@ impl Default for AttributeStorageInfoOrdering {
 pub enum CompressedAttributesEncoding {
     #[serde(rename = "draco")]
     Draco,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for CompressedAttributesEncoding {
@@ -249,6 +271,8 @@ pub enum CompressedAttributesAttributes {
     UvRegion,
     #[serde(rename = "feature-index")]
     FeatureIndex,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for CompressedAttributesAttributes {
@@ -262,6 +286,8 @@ impl Default for CompressedAttributesAttributes {
 pub enum DefaultGeometrySchemaGeometryType {
     #[serde(rename = "triangles")]
     Triangles,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DefaultGeometrySchemaGeometryType {
@@ -275,6 +301,8 @@ impl Default for DefaultGeometrySchemaGeometryType {
 pub enum DefaultGeometrySchemaTopology {
     PerAttributeArray,
     Indexed,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for DefaultGeometrySchemaTopology {
@@ -294,6 +322,8 @@ pub enum ElevationInfoMode {
     OnTheGround,
     #[serde(rename = "relativeToScene")]
     RelativeToScene,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for ElevationInfoMode {
@@ -306,6 +336,8 @@ impl Default for ElevationInfoMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryColorType {
     UInt8,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryColorType {
@@ -319,6 +351,8 @@ impl Default for GeometryColorType {
 pub enum GeometryColorEncoding {
     #[serde(rename = "normalized")]
     Normalized,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryColorEncoding {
@@ -332,6 +366,8 @@ impl Default for GeometryColorEncoding {
 pub enum GeometryColorBinding {
     #[serde(rename = "per-vertex")]
     PerVertex,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryColorBinding {
@@ -345,6 +381,8 @@ impl Default for GeometryColorBinding {
 pub enum GeometryDefinitionTopology {
     #[serde(rename = "triangle")]
     Triangle,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryDefinitionTopology {
@@ -357,6 +395,8 @@ impl Default for GeometryDefinitionTopology {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryFaceRangeType {
     UInt32,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFaceRangeType {
@@ -370,6 +410,8 @@ impl Default for GeometryFaceRangeType {
 pub enum GeometryFaceRangeEncoding {
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFaceRangeEncoding {
@@ -383,6 +425,8 @@ impl Default for GeometryFaceRangeEncoding {
 pub enum GeometryFaceRangeBinding {
     #[serde(rename = "per-feature")]
     PerFeature,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFaceRangeBinding {
@@ -397,6 +441,8 @@ pub enum GeometryFeatureIDType {
     UInt16,
     UInt32,
     UInt64,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFeatureIDType {
@@ -410,6 +456,8 @@ impl Default for GeometryFeatureIDType {
 pub enum GeometryFeatureIDEncoding {
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFeatureIDEncoding {
@@ -423,6 +471,8 @@ impl Default for GeometryFeatureIDEncoding {
 pub enum GeometryFeatureIDBinding {
     #[serde(rename = "per-feature")]
     PerFeature,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryFeatureIDBinding {
@@ -435,6 +485,8 @@ impl Default for GeometryFeatureIDBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryNormalType {
     Float32,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryNormalType {
@@ -448,6 +500,8 @@ impl Default for GeometryNormalType {
 pub enum GeometryNormalEncoding {
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryNormalEncoding {
@@ -461,6 +515,8 @@ impl Default for GeometryNormalEncoding {
 pub enum GeometryNormalBinding {
     #[serde(rename = "per-vertex")]
     PerVertex,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryNormalBinding {
@@ -473,6 +529,8 @@ impl Default for GeometryNormalBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryPositionType {
     Float32,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryPositionType {
@@ -486,6 +544,8 @@ impl Default for GeometryPositionType {
 pub enum GeometryPositionEncoding {
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryPositionEncoding {
@@ -499,6 +559,8 @@ impl Default for GeometryPositionEncoding {
 pub enum GeometryPositionBinding {
     #[serde(rename = "per-vertex")]
     PerVertex,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryPositionBinding {
@@ -511,6 +573,8 @@ impl Default for GeometryPositionBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryUVType {
     Float32,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVType {
@@ -524,6 +588,8 @@ impl Default for GeometryUVType {
 pub enum GeometryUVEncoding {
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVEncoding {
@@ -537,6 +603,8 @@ impl Default for GeometryUVEncoding {
 pub enum GeometryUVBinding {
     #[serde(rename = "per-vertex")]
     PerVertex,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVBinding {
@@ -549,6 +617,8 @@ impl Default for GeometryUVBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryUVRegionType {
     UInt16,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVRegionType {
@@ -562,6 +632,8 @@ impl Default for GeometryUVRegionType {
 pub enum GeometryUVRegionEncoding {
     #[serde(rename = "normalized")]
     Normalized,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVRegionEncoding {
@@ -577,6 +649,8 @@ pub enum GeometryUVRegionBinding {
     PerVertex,
     #[serde(rename = "per-uvregion")]
     PerUvregion,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for GeometryUVRegionBinding {
@@ -597,6 +671,8 @@ pub enum HeaderAttributeType {
     Int64,
     Float32,
     Float64,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for HeaderAttributeType {
@@ -617,6 +693,8 @@ pub enum HeaderValueType {
     Float32,
     Float64,
     String,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for HeaderValueType {
@@ -632,6 +710,8 @@ pub enum HeaderValueProperty {
     Count,
     #[serde(rename = "attributeValuesByteCount")]
     AttributeValuesByteCount,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for HeaderValueProperty {
@@ -653,6 +733,8 @@ pub enum LodSelectionMetricType {
     DistanceRangeFromDefaultCamera,
     #[serde(rename = "effectiveDensity")]
     EffectiveDensity,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for LodSelectionMetricType {
@@ -674,6 +756,8 @@ pub enum MaterialDefinitionInfoType {
     Leafcard,
     #[serde(rename = "reference")]
     Reference,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for MaterialDefinitionInfoType {
@@ -691,6 +775,8 @@ pub enum MaterialDefinitionsAlphaMode {
     Mask,
     #[serde(rename = "blend")]
     Blend,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for MaterialDefinitionsAlphaMode {
@@ -708,6 +794,8 @@ pub enum MaterialDefinitionsCullFace {
     Front,
     #[serde(rename = "back")]
     Back,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for MaterialDefinitionsCullFace {
@@ -727,6 +815,8 @@ pub enum MaterialParamsRenderMode {
     Untextured,
     #[serde(rename = "wireframe")]
     Wireframe,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for MaterialParamsRenderMode {
@@ -742,6 +832,8 @@ pub enum NodePageDefinitionLodSelectionMetricType {
     MaxScreenThreshold,
     #[serde(rename = "maxScreenThresholdSQ")]
     MaxScreenThresholdSQ,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for NodePageDefinitionLodSelectionMetricType {
@@ -761,6 +853,8 @@ pub enum StoreResourcePattern {
     Geometry,
     Texture,
     Attributes,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for StoreResourcePattern {
@@ -778,6 +872,8 @@ pub enum StoreNormalReferenceFrame {
     EarthCentered,
     #[serde(rename = "vertex-reference-frame")]
     VertexReferenceFrame,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for StoreNormalReferenceFrame {
@@ -793,6 +889,8 @@ pub enum StoreLodType {
     AutoThinning,
     Clustering,
     Generalizing,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for StoreLodType {
@@ -808,6 +906,8 @@ pub enum StoreLodModel {
     NodeSwitching,
     #[serde(rename = "none")]
     None,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for StoreLodModel {
@@ -825,6 +925,8 @@ pub enum TextureWrap {
     Repeat,
     #[serde(rename = "mirror")]
     Mirror,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for TextureWrap {
@@ -840,6 +942,8 @@ pub enum TextureChannels {
     Rgb,
     #[serde(rename = "rgba")]
     Rgba,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for TextureChannels {
@@ -855,6 +959,8 @@ pub enum TextureDefinitionInfoChannels {
     Rgb,
     #[serde(rename = "rgba")]
     Rgba,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for TextureDefinitionInfoChannels {
@@ -876,6 +982,8 @@ pub enum TextureSetDefinitionFormatFormat {
     KtxEtc2,
     #[serde(rename = "ktx2")]
     Ktx2,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for TextureSetDefinitionFormatFormat {
@@ -889,6 +997,8 @@ impl Default for TextureSetDefinitionFormatFormat {
 pub enum ValueTimeEncoding {
     #[serde(rename = "ECMA_ISO8601")]
     ECMAIS8601,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for ValueTimeEncoding {
@@ -903,6 +1013,8 @@ pub enum VestedGeometryParamsTopology {
     PerAttributeArray,
     InterleavedArray,
     Indexed,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for VestedGeometryParamsTopology {
@@ -1042,7 +1154,8 @@ pub struct ServiceUpdateTimeStamp {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct SlpkHashtable {}
+pub struct SlpkHashtable {
+}
 
 /// The spatialReference object is located at the top level of the JSON hierarchy.  A spatial
 /// reference can be defined using a Well-Known ID (WKID) or Well-Known Text (WKT). The default
@@ -1614,7 +1727,8 @@ pub struct GeometryNormal {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct GeometryParams {}
+pub struct GeometryParams {
+}
 
 /// Position vertex attribute.  Relative to the center of oriented-bounded box of the node.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

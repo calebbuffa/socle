@@ -1,0 +1,30 @@
+[package]
+name = "moderu-codec"
+description = "Codec implementations for glTF 2.0 models (Draco, meshopt, KTX2, SPZ, image)"
+edition = "2024"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+draco = ["dep:draco-core", "dep:rayon"]
+meshopt = ["dep:meshopt"]
+ktx2 = ["dep:ktx2-reader", "dep:basis-universal"]
+spz = ["dep:spz"]
+image = ["dep:image"]
+
+[dependencies]
+moderu = { path = "../moderu" }
+serde_json = "1"
+bytemuck = "1"
+thiserror = "2"
+
+# Optional codec dependencies (behind feature flags)
+draco-core = { git = "https://github.com/Filyus/draco", branch = "api", optional = true, features = ["decoder", "encoder"] }
+rayon = { version = "1.10", optional = true }
+meshopt = { version = "0.6", optional = true }
+ktx2-reader = { package = "ktx2", version = "0.4", optional = true }
+basis-universal = { version = "0.3", optional = true }
+spz = { version = "0.0.6", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp"] }

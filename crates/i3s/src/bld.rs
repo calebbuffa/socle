@@ -41,6 +41,8 @@ pub enum AttributeStatisticsModelName {
     SystemClass,
     #[serde(rename = "custom")]
     Custom,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for AttributeStatisticsModelName {
@@ -54,6 +56,8 @@ impl Default for AttributeStatisticsModelName {
 pub enum FilterAuthoringInfoType {
     #[serde(rename = "checkbox")]
     Checkbox,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for FilterAuthoringInfoType {
@@ -67,6 +71,8 @@ impl Default for FilterAuthoringInfoType {
 pub enum FilterModeSolidType {
     #[serde(rename = "solid")]
     Solid,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for FilterModeSolidType {
@@ -80,6 +86,8 @@ impl Default for FilterModeSolidType {
 pub enum FilterModeWireFrameType {
     #[serde(rename = "wireFrame")]
     WireFrame,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for FilterModeWireFrameType {
@@ -97,6 +105,8 @@ pub enum SublayerDiscipline {
     Electrical,
     Structural,
     Infrastructure,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for SublayerDiscipline {
@@ -113,6 +123,8 @@ pub enum SublayerLayerType {
     #[serde(rename = "3DObject")]
     ThreeDObject,
     Point,
+    #[serde(other)]
+    Unknown,
 }
 
 impl Default for SublayerLayerType {
@@ -219,7 +231,8 @@ pub struct FilterBlockAuthoringInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct FilterMode {}
+pub struct FilterMode {
+}
 
 /// Shows all elements that comply with the filter block of a filter in a building scene layer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -386,4 +399,5 @@ pub struct Sublayer {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct DefaultFilterTypes {}
+pub struct DefaultFilterTypes {
+}

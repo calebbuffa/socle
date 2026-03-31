@@ -91,7 +91,13 @@ impl TimerWheel {
         self.register(Instant::now() + duration, waker);
     }
 
-    /// Shut down the timer thread. Called on drop of the `Scheduler`.
+    /// Return the global shared timer wheel, creating it on first call.
+    pub(crate) fn global() -> &'static TimerWheel {
+        static GLOBAL: std::sync::OnceLock<TimerWheel> = std::sync::OnceLock::new();
+        GLOBAL.get_or_init(TimerWheel::new)
+    }
+
+    /// Shut down the timer thread. Called on drop of the `Runtime`.
     pub(crate) fn shutdown(&self) {
         let mut state = self.inner.state.lock().expect("timer lock");
         state.shutdown = true;

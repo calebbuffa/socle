@@ -1,5 +1,4 @@
-use crate::node::NodeId;
-use zukei::Vec3;
+use glam::DVec3 as Vec3;
 
 /// Projection model for a view.
 #[derive(Clone, Debug)]
@@ -96,57 +95,93 @@ impl ViewState {
             Projection::Orthographic { .. } => None,
         }
     }
-}
 
-/// Identifies a view group managed by the engine.
-/// A view group is a set of related views sharing the same content stream and scheduler slot.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ViewGroupHandle {
-    pub index: u32,
-    pub generation: u32,
-}
+    /// Construct a `ViewState` from a column-major view matrix and a projection matrix.
+    ///
+    /// Extracts camera world position, direction, and up vector from the inverse of
+    /// `view_matrix`, and derives the projection from the projection matrix coefficients.
+    ///
+    /// Assumes a standard OpenGL/Vulkan column-major convention:
+    /// - `view_matrix` transforms world → camera space
+    /// - `proj_matrix` is a perspective or orthographic projection matrix
+    ///
+    /// `viewport_px` is `[width, height]` in physical pixels.
+    pub fn from_matrices(
+        view_matrix: glam::DMat4,
+        proj_matrix: glam::DMat4,
+        viewport_px: [u32; 2],
+    ) -> Self {
+        // Extract camera-to-world transformation (inverse of view matrix).
+        debug_assert!(
+            view_matrix.determinant().abs() > 1e-10,
+            "view_matrix is singular or near-singular; inverse is undefined"
+        );
+        let cam_to_world = view_matrix.inverse();
+        let position = cam_to_world.col(3).truncate();
+        // Camera looks down −Z in camera space; transform to world space.
+        let direction = -(cam_to_world.col(2).truncate()).normalize();
+        let up = cam_to_world.col(1).truncate().normalize();
 
-/// Configuration for a view group.
-#[derive(Clone, Debug)]
-pub struct ViewGroupOptions {
-    /// Relative scheduling weight for load fair-sharing across view groups.
-    /// Higher weight = more load requests per frame.
-    pub weight: f64,
-}
+        // Detect perspective vs orthographic from the [3][3] element.
+        // Perspective: proj[3][3] == 0; Orthographic: proj[3][3] == 1.
+        let projection = if proj_matrix.col(3).w.abs() < 0.5 {
+            // Perspective: fov_y from proj[1][1] = 1/tan(fov_y/2)
+            let fov_y = 2.0 * (1.0 / proj_matrix.col(1).y).atan();
+            let aspect = proj_matrix.col(1).y / proj_matrix.col(0).x;
+            let fov_x = 2.0 * (aspect / proj_matrix.col(1).y).atan();
+            Projection::Perspective { fov_x, fov_y }
+        } else {
+            // Orthographic: half extents from proj[0][0] and proj[1][1].
+            // proj[0][0] = 2 / (right - left) ≈ 2 / (2 * half_width)
+            let half_width = 1.0 / proj_matrix.col(0).x;
+            let half_height = 1.0 / proj_matrix.col(1).y;
+            Projection::Orthographic {
+                half_width,
+                half_height,
+            }
+        };
 
-impl Default for ViewGroupOptions {
-    fn default() -> Self {
-        Self { weight: 1.0 }
+        Self {
+            viewport_px,
+            position,
+            direction,
+            up,
+            projection,
+            lod_metric_multiplier: 1.0,
+        }
     }
 }
 
-/// Node-selection outcome for a single view within a frame pass.
-#[derive(Clone, Debug, Default)]
-pub struct PerViewUpdateResult {
-    /// Nodes selected for rendering by this view.
-    pub selected: Vec<NodeId>,
-    /// Nodes traversed during the selection walk (incl. culled and selected).
-    pub visited: usize,
-    /// Nodes rejected by the frustum or visibility policy.
-    pub culled: usize,
+/// Identifies a view group managed by the engine.
+/// A view group is a set of related views sharing the same content stream and Runtime slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ViewGroupHandle {
+    pub(crate) index: u32,
+    pub(crate) generation: u32,
 }
 
-/// Aggregated node-selection outcome for a single view group within a frame pass.
-#[derive(Clone, Debug, Default)]
+/// Aggregate statistics from a single `update_view_group` call.
+///
+/// All scalar fields — `Copy`, no heap allocation. Access the actual
+/// selection lists via [`SelectionEngine::selected_nodes`] and
+/// [`SelectionEngine::per_view_selected`].
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ViewUpdateResult {
-    /// Nodes selected for rendering across all views in this group (union, deduped).
-    pub selected: Vec<NodeId>,
-    pub visited: usize,
-    pub culled: usize,
+    pub nodes_visited: usize,
+    pub nodes_culled: usize,
+    /// Nodes rejected by the occlusion tester this pass.
+    pub nodes_occluded: usize,
+    /// Nodes whose refinement was blocked by the loading descendant limit.
+    pub nodes_kicked: usize,
     /// Requests newly queued for this group during this pass.
     pub queued_requests: usize,
     /// Number of nodes in the worker thread load queue.
     pub worker_thread_load_queue_length: usize,
-    /// Number of nodes in the main thread load queue.
-    pub main_thread_load_queue_length: usize,
     /// Monotonically increasing frame counter.
     pub frame_number: u64,
-    /// Per-view breakdown.
-    pub per_view: Vec<PerViewUpdateResult>,
+    /// Count of nodes that were in the render set last frame but are not this
+    /// frame. The full node list is on `FrameResult::nodes_fading_out`.
+    pub nodes_fading_out: usize,
+    /// Nodes that transitioned to `Renderable` during this call (content finished loading).
+    pub nodes_newly_renderable: usize,
 }

@@ -10,8 +10,8 @@ pub type BoxFuture = Pin<Box<dyn StdFuture<Output = ()> + Send + 'static>>;
 
 /// Trait for dispatching tasks to a scheduling context.
 ///
-/// Implement this to create custom execution contexts that can be
-/// registered via [`AsyncSystem::register_context`](crate::AsyncSystem::register_context).
+/// Implement this to create custom execution contexts and wrap them in a
+/// [`Context`](crate::Context) via [`Context::new`](crate::Context::new).
 ///
 /// # Example
 ///
@@ -24,8 +24,8 @@ pub type BoxFuture = Pin<Box<dyn StdFuture<Output = ()> + Send + 'static>>;
 ///     }
 /// }
 ///
-/// let gpu = system.register_context("gpu", GpuThreadExecutor::new());
-/// system.run(gpu, || upload_texture(data));
+/// let gpu_ctx = Context::new(GpuThreadExecutor::new());
+/// gpu_ctx.run(|| upload_texture(data));
 /// ```
 pub trait Executor: Send + Sync {
     /// Dispatch a synchronous task for execution.
@@ -33,11 +33,14 @@ pub trait Executor: Send + Sync {
 
     /// Spawn an async future on this executor.
     ///
-    /// The default implementation dispatches the future as a blocking task
-    /// via [`execute`](Executor::execute) using a minimal `block_on` driver.
-    /// Executors backed by an async runtime (e.g. tokio) should override
-    /// this to use their native spawn mechanism.
-    fn spawn_future(&self, future: BoxFuture) {
+    /// The default implementation drives the future to completion by blocking
+    /// the current thread (`block_on`). This is correct for pure-Rust async
+    /// chains that only await orkester [`Task`](crate::Task)s, but **will
+    /// deadlock** if the future awaits an external reactor (e.g. a tokio timer
+    /// or `reqwest` response). Executors backed by an async runtime must
+    /// override this — [`TokioExecutor`] uses `handle.spawn()`, [`WasmExecutor`]
+    /// uses `spawn_local`.
+    fn spawn(&self, future: BoxFuture) {
         self.execute(Box::new(move || {
             crate::block_on::block_on(future);
         }));
@@ -47,7 +50,7 @@ pub trait Executor: Send + Sync {
     ///
     /// Used to optimize dispatch: if already on the target thread, the task
     /// runs inline instead of being queued.
-    fn is_current_thread(&self) -> bool {
+    fn is_current(&self) -> bool {
         false
     }
 }
@@ -55,15 +58,8 @@ pub trait Executor: Send + Sync {
 /// Executor backed by a tokio runtime handle.
 ///
 /// Uses `spawn_blocking` for synchronous tasks and `spawn` for async futures.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let rt = tokio::runtime::Runtime::new().unwrap();
-/// let system = AsyncSystem::builder()
-///     .executor(TokioExecutor::new(rt.handle().clone()))
-///     .build();
-/// ```
+/// Create via [`TokioExecutor::new`] with an explicit handle or
+/// [`TokioExecutor::current`] when inside a tokio runtime.
 #[cfg(feature = "tokio-runtime")]
 pub struct TokioExecutor {
     handle: tokio::runtime::Handle,
@@ -92,7 +88,7 @@ impl Executor for TokioExecutor {
         let _ = self.handle.spawn_blocking(task);
     }
 
-    fn spawn_future(&self, future: BoxFuture) {
+    fn spawn(&self, future: BoxFuture) {
         let _ = self.handle.spawn(future);
     }
 }
@@ -110,11 +106,12 @@ impl Executor for WasmExecutor {
         task();
     }
 
-    fn spawn_future(&self, future: BoxFuture) {
+    fn spawn(&self, future: BoxFuture) {
         wasm_bindgen_futures::spawn_local(future);
     }
 
-    fn is_current_thread(&self) -> bool {
+    fn is_current(&self) -> bool {
         true
     }
 }
+

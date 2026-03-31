@@ -1,6 +1,6 @@
-//! Ray intersection tests for geometric primitives.
+//! Ray intersection tests and point-to-volume distance utilities.
 
-use glam_dep::{DVec2, DVec3};
+use glam::{DMat3, DVec2, DVec3};
 
 use crate::aabb::AxisAlignedBoundingBox;
 use crate::obb::OrientedBoundingBox;
@@ -250,6 +250,28 @@ pub fn point_in_triangle_3d(point: DVec3, a: DVec3, b: DVec3, c: DVec3) -> Optio
     }
 
     Some(DVec3::new(bcp_ratio, cap_ratio, abp_ratio))
+}
+
+/// Compute the non-negative distance from `point` to the nearest surface of an
+/// oriented bounding box specified by its `center` and `half_axes` matrix
+/// (Cesium / 3D Tiles convention: columns are the three half-axis vectors).
+///
+/// Returns `0.0` when the point is inside the OBB.
+pub fn obb_distance_half_axes(point: DVec3, center: DVec3, half_axes: DMat3) -> f64 {
+    let d = point - center;
+    let mut dist_sq = 0.0_f64;
+
+    for col in [half_axes.x_axis, half_axes.y_axis, half_axes.z_axis] {
+        let len = col.length();
+        if len < f64::EPSILON {
+            continue;
+        }
+        let axis = col / len;
+        let proj = d.dot(axis).abs();
+        let excess = (proj - len).max(0.0);
+        dist_sq += excess * excess;
+    }
+    dist_sq.sqrt()
 }
 
 #[cfg(test)]

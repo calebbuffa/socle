@@ -1,0 +1,10 @@
+[package]
+name = "egaku"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Two-phase renderer resource preparation interface for tile format loaders"
+repository.workspace = true
+
+[dependencies]
+moderu = { path = "../moderu" }

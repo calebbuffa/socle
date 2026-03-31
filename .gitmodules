@@ -10,3 +10,6 @@
 	path = extern/i3s-spec
 	url = https://github.com/Esri/i3s-spec.git
 	branch = master
+[submodule "crates/moderu-io/tests/data/glTF-Sample-Assets"]
+	path = crates/moderu-io/tests/data/glTF-Sample-Assets
+	url = https://github.com/KhronosGroup/glTF-Sample-Assets.git

@@ -3,9 +3,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::resolver::Resolver;
-use crate::scheduler::Scheduler;
-use crate::task::Task;
+use crate::task::{Resolver, Task};
 
 /// A counting semaphore that limits concurrent access to a resource.
 ///
@@ -16,17 +14,17 @@ use crate::task::Task;
 /// # Example
 ///
 /// ```rust,ignore
-/// let sem = Semaphore::new(&system, 3);
+/// let sem = Semaphore::new(3);
 /// let permit = sem.acquire(); // blocks if 3 permits already held
 /// // ... do work ...
 /// drop(permit); // releases back to the semaphore
 /// ```
+#[derive(Clone)]
 pub struct Semaphore {
     inner: Arc<SemaphoreInner>,
 }
 
 struct SemaphoreInner {
-    system: Scheduler,
     state: Mutex<SemaphoreState>,
 }
 
@@ -42,11 +40,10 @@ impl Semaphore {
     /// # Panics
     ///
     /// Panics if `permits` is 0.
-    pub fn new(system: &Scheduler, permits: usize) -> Self {
+    pub fn new(permits: usize) -> Self {
         assert!(permits > 0, "semaphore requires at least 1 permit");
         Self {
             inner: Arc::new(SemaphoreInner {
-                system: system.clone(),
                 state: Mutex::new(SemaphoreState {
                     permits,
                     max_permits: permits,
@@ -72,13 +69,12 @@ impl Semaphore {
         }
 
         // Slow path: queue a resolver and wait.
-        let (resolver, task) = self.inner.system.resolver::<()>();
+        let (resolver, task) = crate::task::create_pair::<()>();
         {
             let mut state = self.inner.state.lock().expect("semaphore lock");
             // Re-check after acquiring lock (permit may have been released).
             if state.permits > 0 {
                 state.permits -= 1;
-                // Don't leave the resolver dangling.
                 resolver.resolve(());
                 return SemaphorePermit {
                     inner: Arc::clone(&self.inner),
@@ -118,64 +114,34 @@ impl Semaphore {
     pub fn max_permits(&self) -> usize {
         self.inner.state.lock().expect("semaphore lock").max_permits
     }
-
-    /// Acquire a permit asynchronously, returning a task that resolves
-    /// to a [`SemaphorePermit`] when a slot becomes available.
-    pub fn acquire_async(&self) -> Task<SemaphorePermit> {
-        let inner = Arc::clone(&self.inner);
-
-        {
-            let mut state = inner.state.lock().expect("semaphore lock");
-            if state.permits > 0 {
-                state.permits -= 1;
-                return self.inner.system.resolved(SemaphorePermit {
-                    inner: Arc::clone(&inner),
-                });
-            }
-        }
-
-        // Queue: create a resolver that gets resolved when a permit
-        // is released. When it fires, resolve with a permit.
-        let (inner_resolver, inner_task) = self.inner.system.resolver::<()>();
-        {
-            let mut state = inner.state.lock().expect("semaphore lock");
-            if state.permits > 0 {
-                state.permits -= 1;
-                inner_resolver.resolve(());
-                return self.inner.system.resolved(SemaphorePermit {
-                    inner: Arc::clone(&inner),
-                });
-            }
-            state.waiters.push_back(inner_resolver);
-        }
-
-        let inner2 = Arc::clone(&inner);
-        inner_task.map(move |()| SemaphorePermit { inner: inner2 })
-    }
 }
 
-impl Clone for Semaphore {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-/// RAII guard that releases a semaphore permit when dropped.
+/// RAII guard returned by [`Semaphore::acquire`].
+///
+/// Dropping this releases one permit back to the semaphore.
 pub struct SemaphorePermit {
     inner: Arc<SemaphoreInner>,
 }
 
 impl Drop for SemaphorePermit {
     fn drop(&mut self) {
-        let mut state = self.inner.state.lock().expect("semaphore lock");
+        let mut state = self.inner.state.lock().expect("semaphore lock on drop");
         if let Some(waiter) = state.waiters.pop_front() {
-            // Hand the permit directly to a waiter — don't increment count.
-            drop(state);
+            // Give the permit directly to the next waiter.
             waiter.resolve(());
         } else {
             state.permits += 1;
         }
+    }
+}
+
+impl<T: Send + 'static> Task<T> {
+    /// Acquire a semaphore permit before executing, releasing it when done.
+    pub fn with_semaphore(self, sem: &Semaphore) -> Task<T> {
+        let permit = sem.acquire();
+        self.map(move |v| {
+            drop(permit);
+            v
+        })
     }
 }

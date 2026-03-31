@@ -1,6 +1,6 @@
 //! Bounding sphere.
 
-use glam_dep::{DMat4, DVec3};
+use glam::{DMat4, DVec3};
 
 use crate::culling::CullingResult;
 use crate::plane::Plane;

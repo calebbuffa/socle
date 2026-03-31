@@ -4,6 +4,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::executor::Executor;
+
 type Task = Box<dyn FnOnce() + Send + 'static>;
 
 thread_local! {
@@ -12,16 +14,26 @@ thread_local! {
 
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 
-struct PoolImpl {
+struct PoolInner {
     id: u64,
     sender: mpsc::Sender<Task>,
     _workers: Vec<thread::JoinHandle<()>>,
 }
 
-/// Explicit thread-pool handle used by `run_in_pool` and `then_in_pool`.
+/// A dedicated thread-pool handle for pinning work to a fixed set of threads.
 #[derive(Clone)]
 pub struct ThreadPool {
-    inner: Arc<PoolImpl>,
+    inner: Arc<PoolInner>,
+}
+
+impl Executor for ThreadPool {
+    fn execute(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        self.schedule(task);
+    }
+
+    fn is_current(&self) -> bool {
+        CURRENT_POOL_ID.with(|slot| slot.get() == Some(self.inner.id))
+    }
 }
 
 impl ThreadPool {
@@ -57,7 +69,7 @@ impl ThreadPool {
         }
 
         Self {
-            inner: Arc::new(PoolImpl {
+            inner: Arc::new(PoolInner {
                 id,
                 sender,
                 _workers: workers,
@@ -65,12 +77,13 @@ impl ThreadPool {
         }
     }
 
-    pub(crate) fn schedule(&self, task: Task) {
+    fn schedule(&self, task: Task) {
         let _ = self.inner.sender.send(task);
     }
 
-    pub(crate) fn is_current_thread(&self) -> bool {
-        CURRENT_POOL_ID.with(|slot| slot.get() == Some(self.inner.id))
+    /// Return a [`Context`](crate::Context) that routes tasks into this pool.
+    pub fn context(&self) -> crate::context::Context {
+        crate::context::Context::new(self.clone())
     }
 }
 

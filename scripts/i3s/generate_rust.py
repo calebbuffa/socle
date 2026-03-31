@@ -260,6 +260,9 @@ def generate_enum(
         if variant != val:
             lines.append(f'    #[serde(rename = "{val}")]')
         lines.append(f"    {variant},")
+    # Catch-all for future or undocumented server values
+    lines.append("    #[serde(other)]")
+    lines.append("    Unknown,")
     lines.append("}")
     lines.append("")
     # Default impl: first variant

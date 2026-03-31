@@ -33,7 +33,7 @@ typedef void *orkester_sender_t;
 typedef void *orkester_receiver_t;
 
 /**
- * Opaque async runtime handle. Wraps `orkester::Scheduler`.
+ * Opaque async runtime handle. Wraps `orkester::Runtime`.
  */
 typedef struct orkester_t {
   uint8_t _opaque;
@@ -122,19 +122,19 @@ void orkester_channel_create_oneshot(orkester_sender_t *out_sender,
                                      orkester_receiver_t *out_receiver);
 
 /**
- * Clone a `Scheduler` (cheap Arc clone).
+ * Clone a `Runtime` (cheap Arc clone).
  */
 struct orkester_t *orkester_clone(const struct orkester_t *ptr);
 
 /**
- * Create a `Scheduler` from a dispatch function.
+ * Create a `Runtime` from a dispatch function.
  */
 struct orkester_t *orkester_create(orkester_dispatch_fn_t dispatch,
                                    void *ctx,
                                    void (*destroy)(void*));
 
 /**
- * Create a `Scheduler` with a built-in thread pool.
+ * Create a `Runtime` with a built-in thread pool.
  */
 struct orkester_t *orkester_create_default(size_t num_threads);
 
@@ -144,7 +144,7 @@ struct orkester_t *orkester_create_default(size_t num_threads);
 orkester_task_t orkester_delay(const struct orkester_t *system, uint64_t millis);
 
 /**
- * Destroy a `Scheduler`.
+ * Destroy a `Runtime`.
  */
 void orkester_destroy(struct orkester_t *ptr);
 

@@ -1,6 +1,6 @@
 //! View frustum culling volume composed of inward-facing planes.
 
-use glam_dep::{DMat4, DVec3};
+use glam::{DMat4, DVec3};
 
 use crate::aabb::AxisAlignedBoundingBox;
 use crate::bounds::SpatialBounds;
@@ -259,23 +259,19 @@ impl CullingVolume {
     pub fn visibility_bounds(&self, bounds: &SpatialBounds) -> CullingResult {
         match bounds {
             SpatialBounds::Sphere { center, radius } => {
-                let sphere = BoundingSphere::new(DVec3::from(center), *radius);
+                let sphere = BoundingSphere::new(*center, *radius);
                 self.visibility_sphere(&sphere)
             }
             SpatialBounds::OrientedBox { center, half_axes } => {
                 // Test directly using the half_axes columns against frustum planes,
                 // matching the same math as visibility_obb without needing OBB conversion.
-                let c = DVec3::from(center);
-                let axes = [
-                    DVec3::from(&half_axes.cols[0]),
-                    DVec3::from(&half_axes.cols[1]),
-                    DVec3::from(&half_axes.cols[2]),
-                ];
+                let c = *center;
+                let axes = [half_axes.x_axis, half_axes.y_axis, half_axes.z_axis];
                 let mut all_inside = true;
                 for plane in &self.planes {
-                    let r = axes[0].dot(plane.normal).abs()
-                        + axes[1].dot(plane.normal).abs()
-                        + axes[2].dot(plane.normal).abs();
+                    let r = (axes[0].dot(plane.normal)).abs()
+                        + (axes[1].dot(plane.normal)).abs()
+                        + (axes[2].dot(plane.normal)).abs();
                     let dist = plane.signed_distance(c);
                     if dist < -r {
                         return CullingResult::Outside;
@@ -291,11 +287,15 @@ impl CullingVolume {
                 }
             }
             SpatialBounds::AxisAlignedBox { min, max } => {
-                let aabb = AxisAlignedBoundingBox::new(DVec3::from(min), DVec3::from(max));
+                let aabb = AxisAlignedBoundingBox::new(*min, *max);
                 self.visibility_aabb(&aabb)
             }
             SpatialBounds::Rectangle { .. } => {
                 // 2D rectangle bounds — conservatively visible.
+                CullingResult::Intersecting
+            }
+            SpatialBounds::Polygon { .. } => {
+                // 2D polygon bounds — conservatively visible.
                 CullingResult::Intersecting
             }
         }
@@ -304,7 +304,7 @@ impl CullingVolume {
 
 #[cfg(test)]
 mod tests {
-    use glam_dep::DVec3;
+    use glam::DVec3;
 
     use super::*;
 

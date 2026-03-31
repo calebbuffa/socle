@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AsyncError, ErrorCode};
-use crate::task::{SharedTask, Task, TaskInner, create_pair};
+use crate::shared_cell::SharedCell;
+use crate::task::{Handle, Task, TaskInner, create_pair};
 use crate::task_cell::TaskCell;
 
 type Callback = Box<dyn FnOnce() + Send + 'static>;
@@ -97,12 +98,12 @@ impl<T: Send + 'static> Task<T> {
     /// `"cancelled"` error.
     pub fn with_cancellation(self, token: &CancellationToken) -> Task<T> {
         if token.is_cancelled() {
-            let (resolver, task) = create_pair(self.system.clone());
+            let (resolver, task) = create_pair();
             resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
             return task;
         }
 
-        let (resolver, output) = create_pair::<T>(self.system.clone());
+        let (resolver, output) = create_pair::<T>();
         let shared_resolver = Arc::new(Mutex::new(Some(resolver)));
 
         // Path 1: upstream completes first → forward result.
@@ -150,24 +151,24 @@ impl<T: Send + 'static> Task<T> {
     }
 }
 
-impl<T: Clone + Send + 'static> SharedTask<T> {
+impl<T: Clone + Send + 'static> Handle<T> {
     /// Attach a cancellation token. If the token is signalled before the
     /// upstream task completes, the returned task rejects with a
     /// `"cancelled"` error. Does NOT consume the shared task.
     pub fn with_cancellation(&self, token: &CancellationToken) -> Task<T> {
         if token.is_cancelled() {
-            let (resolver, task) = create_pair(self.system.clone());
+            let (resolver, task) = create_pair();
             resolver.reject(AsyncError::with_code(ErrorCode::Cancelled, "cancelled"));
             return task;
         }
 
         let source = Arc::clone(&self.cell);
-        let (resolver, output) = create_pair::<T>(self.system.clone());
+        let (resolver, output) = create_pair::<T>();
         let shared_resolver = Arc::new(Mutex::new(Some(resolver)));
 
         // Path 1: upstream completes first → forward result.
         let sp1 = shared_resolver.clone();
-        TaskCell::on_complete_cloned(source, move |result| {
+        SharedCell::on_complete(source, move |result| {
             let resolver = {
                 let mut guard = sp1.lock().expect("cancel resolver lock");
                 guard.take()

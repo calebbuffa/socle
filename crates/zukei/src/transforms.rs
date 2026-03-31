@@ -1,6 +1,6 @@
 //! Coordinate system transforms and matrix construction helpers.
 
-use glam_dep::{DMat3, DMat4, DQuat, DVec3, DVec4};
+use glam::{DMat3, DMat4, DQuat, DVec3, DVec4};
 
 /// Up-axis enumeration for coordinate system transforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

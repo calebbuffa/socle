@@ -6,9 +6,5 @@ license.workspace = true
 description = "FFI-safe math primitives for geospatial runtimes"
 repository.workspace = true
 
-[features]
-default = []
-glam = ["dep:glam_dep"]
-
 [dependencies]
-glam_dep = { package = "glam", version = "0.32", features = ["std"], optional = true }
+glam = { version = "0.32", features = ["std"] }

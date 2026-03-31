@@ -1,39 +1,63 @@
 use crate::context::Context;
-use crate::error::AsyncError;
+use crate::error::{AsyncError, ErrorCode};
 use crate::executor::Executor;
-use crate::main_loop::MainThreadQueue;
-use crate::resolver::Resolver;
-use crate::scheduler::Scheduler;
+use crate::shared_cell::SharedCell;
 use crate::task_cell::TaskCell;
-use crate::thread_pool::ThreadPool;
 use std::fmt::{self, Debug, Formatter};
 use std::future::Future as StdFuture;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Poll, Wake};
+use std::task::Poll;
 use std::time::Duration;
 
-/// Waker that calls `MainThreadQueue::notify()` to unblock `block_with_main`.
-struct NotifyWaker(Arc<MainThreadQueue>);
+// ─── Resolver ────────────────────────────────────────────────────────────────
 
-impl Wake for NotifyWaker {
-    fn wake(self: Arc<Self>) {
-        self.0.notify();
+/// A one-shot producer that completes a paired [`Task`].
+///
+/// Resolving or rejecting consumes the `Resolver`. If dropped without
+/// resolving, the paired task is automatically rejected with
+/// [`ErrorCode::Dropped`](crate::ErrorCode::Dropped).
+pub struct Resolver<T: Send + 'static> {
+    cell: Option<Arc<TaskCell<T>>>,
+}
+
+impl<T: Send + 'static> Resolver<T> {
+    pub(crate) fn new(cell: Arc<TaskCell<T>>) -> Self {
+        Self { cell: Some(cell) }
+    }
+
+    /// Resolve the paired task with a value.
+    pub fn resolve(mut self, value: T) {
+        if let Some(cell) = self.cell.take() {
+            cell.complete(Ok(value));
+        }
+    }
+
+    /// Reject the paired task with an error.
+    pub fn reject(mut self, error: impl Into<AsyncError>) {
+        if let Some(cell) = self.cell.take() {
+            cell.complete(Err(error.into()));
+        }
     }
 }
 
-fn notify_waker(queue: Arc<MainThreadQueue>) -> std::task::Waker {
-    std::task::Waker::from(Arc::new(NotifyWaker(queue)))
+impl<T: Send + 'static> Drop for Resolver<T> {
+    fn drop(&mut self) {
+        if let Some(cell) = self.cell.take() {
+            cell.complete(Err(AsyncError::with_code(
+                ErrorCode::Dropped,
+                "Resolver dropped without resolving",
+            )));
+        }
+    }
 }
+
+// ─── Task ────────────────────────────────────────────────────────────────────
 
 /// Internal state of a `Task<T>`.
 ///
 /// `Ready` holds a synchronous result (zero heap allocation).
 /// `Pending` is backed by a `TaskCell` for async completion.
-///
-/// There is no `Consumed` sentinel — ownership is tracked via
-/// `Option::take()` inside `Ready`, and `Pending` state is consumed
-/// via `Arc<TaskCell<T>>::take_result()`.
 pub(crate) enum TaskInner<T: Send + 'static> {
     Ready(Option<Result<T, AsyncError>>),
     Pending(Arc<TaskCell<T>>),
@@ -42,27 +66,24 @@ pub(crate) enum TaskInner<T: Send + 'static> {
 /// Single-consumer async task.
 ///
 /// Move-only. Use [`.share()`](Task::share) to convert to a cloneable
-/// [`SharedTask<T>`]. Implements [`std::future::Future`] for async/await.
+/// [`Handle<T>`]. Implements [`std::future::Future`] for async/await.
 pub struct Task<T: Send + 'static> {
-    pub(crate) system: Scheduler,
     pub(crate) inner: TaskInner<T>,
 }
 
 impl<T: Send + 'static> Task<T> {
     /// Create a task that is already resolved with a value.
     #[inline]
-    pub(crate) fn ready(system: Scheduler, value: T) -> Self {
+    pub(crate) fn ready(value: T) -> Self {
         Self {
-            system,
             inner: TaskInner::Ready(Some(Ok(value))),
         }
     }
 
     /// Create a task that is already rejected with an error.
     #[inline]
-    pub(crate) fn ready_err(system: Scheduler, error: AsyncError) -> Self {
+    pub(crate) fn ready_err(error: AsyncError) -> Self {
         Self {
-            system,
             inner: TaskInner::Ready(Some(Err(error))),
         }
     }
@@ -85,22 +106,21 @@ impl<T: Send + 'static> Debug for Task<T> {
     }
 }
 
-pub(crate) fn create_pair<T: Send + 'static>(system: Scheduler) -> (Resolver<T>, Task<T>) {
+pub(crate) fn create_pair<T: Send + 'static>() -> (Resolver<T>, Task<T>) {
     let cell = Arc::new(TaskCell::new());
     let resolver = Resolver::new(Arc::clone(&cell));
     let task = Task {
-        system,
         inner: TaskInner::Pending(cell),
     };
     (resolver, task)
 }
 
-#[doc(hidden)]
+/// Output-type adapter for [`Context::run`] and related combinators.
+///
+/// Sealed: only implemented for `T` (plain values) and `Task<T>` (chained tasks).
 pub trait ResolveOutput<T: Send + 'static>: Send + 'static {
-    /// Resolve a resolver with this value (used on the async/Pending path).
     fn resolve_into(self, resolver: Resolver<T>);
-    /// Convert to a ready task (used on the synchronous/Ready path).
-    fn into_task(self, system: Scheduler) -> Task<T>;
+    fn into_task(self) -> Task<T>;
 }
 
 impl<T> ResolveOutput<T> for T
@@ -111,8 +131,8 @@ where
         resolver.resolve(self);
     }
     #[inline]
-    fn into_task(self, system: Scheduler) -> Task<T> {
-        Task::ready(system, self)
+    fn into_task(self) -> Task<T> {
+        Task::ready(self)
     }
 }
 
@@ -124,7 +144,7 @@ where
         self.pipe_to(resolver);
     }
     #[inline]
-    fn into_task(self, _system: Scheduler) -> Task<T> {
+    fn into_task(self) -> Task<T> {
         self
     }
 }
@@ -157,12 +177,6 @@ impl<T: Send + 'static> Task<T> {
         }
     }
 
-    /// Returns a clone of the `Scheduler` that owns this task.
-    #[inline]
-    pub fn system(&self) -> Scheduler {
-        self.system.clone()
-    }
-
     pub fn block(self) -> Result<T, AsyncError> {
         match self.inner {
             TaskInner::Ready(Some(result)) => result,
@@ -175,52 +189,30 @@ impl<T: Send + 'static> Task<T> {
         }
     }
 
-    pub fn block_with_main(self) -> Result<T, AsyncError> {
-        match self.inner {
-            TaskInner::Ready(Some(result)) => result,
-            TaskInner::Ready(None) => Err(Self::consumed_error()),
-            TaskInner::Pending(cell) => {
-                let mq = Arc::clone(&self.system.inner.main_queue);
-                cell.register_extra_waker(&notify_waker(Arc::clone(&mq)));
-
-                loop {
-                    while mq.dispatch_one() {}
-                    if cell.is_ready() {
-                        return cell
-                            .take_result()
-                            .unwrap_or_else(|| Err(Self::consumed_error()));
-                    }
-                    mq.wait_for_work();
-                }
-            }
-        }
-    }
-
     fn then_with_executor<U, F, R>(self, executor: Arc<dyn Executor>, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        let system = self.system.clone();
         match self.inner {
             TaskInner::Ready(Some(Ok(value))) => {
-                if executor.is_current_thread() {
-                    f(value).into_task(system)
+                if executor.is_current() {
+                    f(value).into_task()
                 } else {
-                    let (resolver, next) = create_pair::<U>(system);
+                    let (resolver, next) = create_pair::<U>();
                     executor.execute(Box::new(move || f(value).resolve_into(resolver)));
                     next
                 }
             }
-            TaskInner::Ready(Some(Err(error))) => Task::ready_err(system, error),
-            TaskInner::Ready(None) => Task::ready_err(system, Self::consumed_error()),
+            TaskInner::Ready(Some(Err(error))) => Task::ready_err(error),
+            TaskInner::Ready(None) => Task::ready_err(Self::consumed_error()),
             TaskInner::Pending(cell) => {
-                let (resolver, next) = create_pair::<U>(system);
+                let (resolver, next) = create_pair::<U>();
                 TaskCell::on_complete(cell, move |result| match result {
                     Ok(value) => {
                         let run = move || f(value).resolve_into(resolver);
-                        if executor.is_current_thread() {
+                        if executor.is_current() {
                             run();
                         } else {
                             executor.execute(Box::new(run));
@@ -238,26 +230,25 @@ impl<T: Send + 'static> Task<T> {
         F: FnOnce(AsyncError) -> R + Send + 'static,
         R: ResolveOutput<T>,
     {
-        let system = self.system.clone();
         match self.inner {
-            TaskInner::Ready(Some(Ok(value))) => Task::ready(system, value),
+            TaskInner::Ready(Some(Ok(value))) => Task::ready(value),
             TaskInner::Ready(Some(Err(error))) => {
-                if executor.is_current_thread() {
-                    f(error).into_task(system)
+                if executor.is_current() {
+                    f(error).into_task()
                 } else {
-                    let (resolver, next) = create_pair::<T>(system);
+                    let (resolver, next) = create_pair::<T>();
                     executor.execute(Box::new(move || f(error).resolve_into(resolver)));
                     next
                 }
             }
-            TaskInner::Ready(None) => Task::ready_err(system, Self::consumed_error()),
+            TaskInner::Ready(None) => Task::ready_err(Self::consumed_error()),
             TaskInner::Pending(cell) => {
-                let (resolver, next) = create_pair::<T>(system);
+                let (resolver, next) = create_pair::<T>();
                 TaskCell::on_complete(cell, move |result| match result {
                     Ok(value) => resolver.resolve(value),
                     Err(error) => {
                         let run = move || f(error).resolve_into(resolver);
-                        if executor.is_current_thread() {
+                        if executor.is_current() {
                             run();
                         } else {
                             executor.execute(Box::new(run));
@@ -270,84 +261,61 @@ impl<T: Send + 'static> Task<T> {
     }
 
     /// Transform the value inline (on the completing thread).
-    /// Equivalent to `then(Context::IMMEDIATE, f)`.
+    /// Equivalent to `.then(Context::IMMEDIATE, f)`.
     pub fn map<U, F, R>(self, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        self.then(Context::IMMEDIATE, f)
+        self.then(&Context::IMMEDIATE, f)
     }
 
     /// Chain a continuation in the given scheduling context.
-    pub fn then<U, F, R>(self, context: Context, f: F) -> Task<U>
+    pub fn then<U, F, R>(self, context: &Context, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        match self.system.inner.executor_for(context) {
+        match context.executor_opt() {
             Some(executor) => self.then_with_executor(executor, f),
             None => self.then_immediate(f),
         }
     }
 
-    /// Chain a continuation in a named thread pool.
-    pub fn then_in_pool<U, F, R>(self, thread_pool: &ThreadPool, f: F) -> Task<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        let executor = self.system.inner.pool_executor(thread_pool);
-        self.then_with_executor(executor, f)
-    }
-
     /// Chain an async continuation in the given scheduling context.
-    ///
-    /// The closure receives the resolved value, returns a future, and that
-    /// future is driven to completion on the target context.
-    ///
-    /// ```rust,ignore
-    /// let result = system.resolved(42)
-    ///     .then_async(Context::BACKGROUND, |v| async move {
-    ///         async_transform(v).await
-    ///     })
-    ///     .block()
-    ///     .unwrap();
-    /// ```
-    pub fn then_async<U, F, Fut>(self, context: Context, f: F) -> Task<U>
+    pub fn then_async<U, F, Fut>(self, context: &Context, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = U> + Send + 'static,
     {
-        let system = self.system.clone();
         match self.inner {
             TaskInner::Ready(Some(Ok(value))) => {
                 let fut = f(value);
-                match system.inner.executor_for(context) {
+                match context.executor_opt() {
                     Some(executor) => {
-                        let (resolver, next) = create_pair::<U>(system);
-                        executor.spawn_future(Box::pin(async move {
+                        let (resolver, next) = create_pair::<U>();
+                        executor.spawn(Box::pin(async move {
                             resolver.resolve(fut.await);
                         }));
                         next
                     }
-                    None => Task::ready(system, crate::block_on::block_on(fut)),
+                    None => Task::ready(crate::block_on::block_on(fut)),
                 }
             }
-            TaskInner::Ready(Some(Err(error))) => Task::ready_err(system, error),
-            TaskInner::Ready(None) => Task::ready_err(system, Self::consumed_error()),
+            TaskInner::Ready(Some(Err(error))) => Task::ready_err(error),
+            TaskInner::Ready(None) => Task::ready_err(Self::consumed_error()),
             TaskInner::Pending(cell) => {
-                let (resolver, next) = create_pair::<U>(system.clone());
+                let (resolver, next) = create_pair::<U>();
+                let executor = context.executor_opt();
                 TaskCell::on_complete(cell, move |result| match result {
                     Ok(value) => {
                         let fut = f(value);
-                        match system.inner.executor_for(context) {
+                        match executor {
                             Some(executor) => {
-                                executor.spawn_future(Box::pin(async move {
+                                executor.spawn(Box::pin(async move {
                                     resolver.resolve(fut.await);
                                 }));
                             }
@@ -369,13 +337,12 @@ impl<T: Send + 'static> Task<T> {
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        let system = self.system.clone();
         match self.inner {
-            TaskInner::Ready(Some(Ok(value))) => f(value).into_task(system),
-            TaskInner::Ready(Some(Err(error))) => Task::ready_err(system, error),
-            TaskInner::Ready(None) => Task::ready_err(system, Self::consumed_error()),
+            TaskInner::Ready(Some(Ok(value))) => f(value).into_task(),
+            TaskInner::Ready(Some(Err(error))) => Task::ready_err(error),
+            TaskInner::Ready(None) => Task::ready_err(Self::consumed_error()),
             TaskInner::Pending(cell) => {
-                let (resolver, next) = create_pair::<U>(system);
+                let (resolver, next) = create_pair::<U>();
                 TaskCell::on_complete(cell, move |result| match result {
                     Ok(value) => f(value).resolve_into(resolver),
                     Err(error) => resolver.reject(error),
@@ -386,22 +353,22 @@ impl<T: Send + 'static> Task<T> {
     }
 
     /// Recover from an error inline (on the completing thread).
-    /// Equivalent to `catch(Context::IMMEDIATE, f)`.
+    /// Equivalent to `.catch(Context::IMMEDIATE, f)`.
     pub fn or_else<F, R>(self, f: F) -> Task<T>
     where
         F: FnOnce(AsyncError) -> R + Send + 'static,
         R: ResolveOutput<T>,
     {
-        self.catch(Context::IMMEDIATE, f)
+        self.catch(&Context::IMMEDIATE, f)
     }
 
     /// Catch an error in the given scheduling context.
-    pub fn catch<F, R>(self, context: Context, f: F) -> Task<T>
+    pub fn catch<F, R>(self, context: &Context, f: F) -> Task<T>
     where
         F: FnOnce(AsyncError) -> R + Send + 'static,
         R: ResolveOutput<T>,
     {
-        match self.system.inner.executor_for(context) {
+        match context.executor_opt() {
             Some(executor) => self.catch_with_executor(executor, f),
             None => self.catch_immediate(f),
         }
@@ -412,13 +379,12 @@ impl<T: Send + 'static> Task<T> {
         F: FnOnce(AsyncError) -> R + Send + 'static,
         R: ResolveOutput<T>,
     {
-        let system = self.system.clone();
         match self.inner {
-            TaskInner::Ready(Some(Ok(value))) => Task::ready(system, value),
-            TaskInner::Ready(Some(Err(error))) => f(error).into_task(system),
-            TaskInner::Ready(None) => Task::ready_err(system, Self::consumed_error()),
+            TaskInner::Ready(Some(Ok(value))) => Task::ready(value),
+            TaskInner::Ready(Some(Err(error))) => f(error).into_task(),
+            TaskInner::Ready(None) => Task::ready_err(Self::consumed_error()),
             TaskInner::Pending(cell) => {
-                let (resolver, next) = create_pair::<T>(system);
+                let (resolver, next) = create_pair::<T>();
                 TaskCell::on_complete(cell, move |result| match result {
                     Ok(value) => resolver.resolve(value),
                     Err(error) => f(error).resolve_into(resolver),
@@ -428,28 +394,51 @@ impl<T: Send + 'static> Task<T> {
         }
     }
 
-    /// Wrap this task with a timeout. If it doesn't complete within
-    /// `duration`, the returned task rejects with [`ErrorCode::TimedOut`].
+    /// Wrap this task with a timeout.
     pub fn with_timeout(self, duration: Duration) -> Task<T> {
-        crate::combinators::timeout(&self.system.clone(), self, duration)
+        crate::combinators::timeout(self, duration)
+    }
+}
+
+impl<T, E> Task<Result<T, E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    /// Chain a fallible continuation. Propagates `Err(e)` without invoking `f`.
+    pub fn and_then<U, F>(self, context: &Context, f: F) -> Task<Result<U, E>>
+    where
+        U: Send + 'static,
+        F: FnOnce(T) -> Result<U, E> + Send + 'static,
+    {
+        self.then(context, move |result| match result {
+            Ok(v) => f(v),
+            Err(e) => Err(e),
+        })
+    }
+}
+
+impl<T: Send + 'static> Task<T> {
+    /// Combine this task with `other`, resolving when **both** complete.
+    pub fn join<U: Send + 'static>(self, other: Task<U>) -> Task<(T, U)> {
+        crate::combinators::join(self, other)
     }
 
-    pub fn share(self) -> SharedTask<T>
+    /// Convert to a cloneable [`Handle<T>`].
+    pub fn share(self) -> Handle<T>
     where
         T: Clone,
     {
+        let shared = Arc::new(SharedCell::new());
+        let sc = Arc::clone(&shared);
         match self.inner {
-            TaskInner::Ready(result) => {
-                let cell = Arc::new(TaskCell::new());
-                match result {
-                    Some(Ok(value)) => cell.complete(Ok(value)),
-                    Some(Err(error)) => cell.complete(Err(error)),
-                    None => cell.complete(Err(Self::consumed_error())),
-                }
-                SharedTask::from_cell(self.system, cell)
+            TaskInner::Ready(Some(result)) => sc.complete(result),
+            TaskInner::Ready(None) => sc.complete(Err(Self::consumed_error())),
+            TaskInner::Pending(cell) => {
+                TaskCell::on_complete(cell, move |result| sc.complete(result));
             }
-            TaskInner::Pending(cell) => SharedTask::from_cell(self.system, cell),
         }
+        Handle { cell: shared }
     }
 }
 
@@ -472,7 +461,8 @@ impl<T: Send + 'static> StdFuture for Task<T> {
                             .unwrap_or_else(|| Err(Self::consumed_error())),
                     )
                 } else {
-                    cell.register_waker(cx.waker());
+                    // SAFETY: Task<T> is single-consumer (move-only, not Clone).
+                    unsafe { cell.register_waker(cx.waker()); }
                     Poll::Pending
                 }
             }
@@ -480,36 +470,36 @@ impl<T: Send + 'static> StdFuture for Task<T> {
     }
 }
 
-// ===========================================================================
-// SharedTask<T>
-// ===========================================================================
-
 /// Cloneable multi-consumer async task.
 ///
-/// Create via [`Task::share()`]. Multiple clones share the same underlying
-/// result. Blocking or polling clones the value (requires `T: Clone`).
-#[derive(Clone)]
-pub struct SharedTask<T: Clone + Send + 'static> {
-    pub(crate) system: Scheduler,
-    pub(crate) cell: Arc<TaskCell<T>>,
+/// Create via [`Task::share()`]. Multiple clones observe the same underlying
+/// result. Closures passed to [`then`](Handle::then) receive `T` by value
+/// (cloned from the stored result).
+///
+/// Requires `T: Clone + Send`.
+pub struct Handle<T: Clone + Send + 'static> {
+    pub(crate) cell: Arc<SharedCell<T>>,
 }
 
-impl<T: Clone + Send + 'static> Debug for SharedTask<T> {
+impl<T: Clone + Send + 'static> Clone for Handle<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: Arc::clone(&self.cell),
+        }
+    }
+}
+
+impl<T: Clone + Send + 'static> Debug for Handle<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SharedTask")
-            .field("system", &(Arc::as_ptr(&self.system.inner) as usize))
+        f.debug_struct("Handle")
             .field("cell", &(Arc::as_ptr(&self.cell) as usize))
             .finish()
     }
 }
 
-impl<T: Clone + Send + 'static> SharedTask<T> {
-    fn consumed_error() -> AsyncError {
-        AsyncError::msg("Task already consumed")
-    }
-
-    pub(crate) fn from_cell(system: Scheduler, cell: Arc<TaskCell<T>>) -> Self {
-        Self { system, cell }
+impl<T: Clone + Send + 'static> Handle<T> {
+    pub fn from_shared_cell(cell: Arc<SharedCell<T>>) -> Self {
+        Self { cell }
     }
 
     #[inline]
@@ -517,34 +507,15 @@ impl<T: Clone + Send + 'static> SharedTask<T> {
         self.cell.is_ready()
     }
 
-    /// Returns a clone of the `Scheduler` that owns this task.
+    /// Returns a clone of the result if ready, or `None` if still pending.
     #[inline]
-    pub fn system(&self) -> Scheduler {
-        self.system.clone()
+    pub fn get(&self) -> Option<Result<T, AsyncError>> {
+        self.cell.get()
     }
 
+    /// Block the current thread until the result is available.
     pub fn block(&self) -> Result<T, AsyncError> {
-        self.cell.wait_until_ready();
-        self.cell
-            .clone_result()
-            .unwrap_or_else(|| Err(Self::consumed_error()))
-    }
-
-    pub fn block_with_main(&self) -> Result<T, AsyncError> {
-        let mq = Arc::clone(&self.system.inner.main_queue);
-        self.cell
-            .register_extra_waker(&notify_waker(Arc::clone(&mq)));
-
-        loop {
-            while mq.dispatch_one() {}
-            if self.cell.is_ready() {
-                return self
-                    .cell
-                    .clone_result()
-                    .unwrap_or_else(|| Err(Self::consumed_error()));
-            }
-            mq.wait_for_work();
-        }
+        self.cell.wait_and_get()
     }
 
     fn then_with_executor<U, F, R>(&self, executor: Arc<dyn Executor>, f: F) -> Task<U>
@@ -554,40 +525,19 @@ impl<T: Clone + Send + 'static> SharedTask<T> {
         R: ResolveOutput<U>,
     {
         let source = Arc::clone(&self.cell);
-        let (resolver, next_task) = create_pair::<U>(self.system.clone());
+        let (resolver, next_task) = create_pair::<U>();
 
-        TaskCell::on_complete_cloned(source, move |result| match result {
-            Ok(value) => {
-                let run = move || f(value).resolve_into(resolver);
-                if executor.is_current_thread() {
-                    run();
-                } else {
-                    executor.execute(Box::new(run));
+        SharedCell::on_complete(source, move |result| {
+            match result {
+                Ok(value) => {
+                    let run = move || f(value).resolve_into(resolver);
+                    if executor.is_current() {
+                        run();
+                    } else {
+                        executor.execute(Box::new(run));
+                    }
                 }
-            }
-            Err(error) => resolver.reject(error),
-        });
-
-        next_task
-    }
-
-    fn catch_with_executor<F, R>(&self, executor: Arc<dyn Executor>, f: F) -> Task<T>
-    where
-        F: FnOnce(AsyncError) -> R + Send + 'static,
-        R: ResolveOutput<T>,
-    {
-        let source = Arc::clone(&self.cell);
-        let (resolver, next_task) = create_pair::<T>(self.system.clone());
-
-        TaskCell::on_complete_cloned(source, move |result| match result {
-            Ok(value) => resolver.resolve(value),
-            Err(error) => {
-                let run = move || f(error).resolve_into(resolver);
-                if executor.is_current_thread() {
-                    run();
-                } else {
-                    executor.execute(Box::new(run));
-                }
+                Err(error) => resolver.reject(error),
             }
         });
 
@@ -595,71 +545,26 @@ impl<T: Clone + Send + 'static> SharedTask<T> {
     }
 
     /// Transform the value inline (on the completing thread).
-    /// Equivalent to `then(Context::IMMEDIATE, f)`.
     pub fn map<U, F, R>(&self, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        self.then(Context::IMMEDIATE, f)
+        self.then(&Context::IMMEDIATE, f)
     }
 
     /// Chain a continuation in the given scheduling context.
-    pub fn then<U, F, R>(&self, context: Context, f: F) -> Task<U>
+    pub fn then<U, F, R>(&self, context: &Context, f: F) -> Task<U>
     where
         U: Send + 'static,
         F: FnOnce(T) -> R + Send + 'static,
         R: ResolveOutput<U>,
     {
-        match self.system.inner.executor_for(context) {
+        match context.executor_opt() {
             Some(executor) => self.then_with_executor(executor, f),
             None => self.then_immediate(f),
         }
-    }
-
-    /// Chain a continuation in a named thread pool.
-    pub fn then_in_pool<U, F, R>(&self, thread_pool: &ThreadPool, f: F) -> Task<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> R + Send + 'static,
-        R: ResolveOutput<U>,
-    {
-        self.then_with_executor(self.system.inner.pool_executor(thread_pool), f)
-    }
-
-    /// Chain an async continuation in the given scheduling context.
-    ///
-    /// See [`Task::then_async`] for details. This variant borrows `&self`
-    /// (cloning the resolved value) rather than consuming the task.
-    pub fn then_async<U, F, Fut>(&self, context: Context, f: F) -> Task<U>
-    where
-        U: Send + 'static,
-        F: FnOnce(T) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = U> + Send + 'static,
-    {
-        let source = Arc::clone(&self.cell);
-        let system = self.system.clone();
-        let (resolver, next_task) = create_pair::<U>(system.clone());
-
-        TaskCell::on_complete_cloned(source, move |result| match result {
-            Ok(value) => {
-                let fut = f(value);
-                match system.inner.executor_for(context) {
-                    Some(executor) => {
-                        executor.spawn_future(Box::pin(async move {
-                            resolver.resolve(fut.await);
-                        }));
-                    }
-                    None => {
-                        resolver.resolve(crate::block_on::block_on(fut));
-                    }
-                }
-            }
-            Err(error) => resolver.reject(error),
-        });
-
-        next_task
     }
 
     fn then_immediate<U, F, R>(&self, f: F) -> Task<U>
@@ -669,68 +574,14 @@ impl<T: Clone + Send + 'static> SharedTask<T> {
         R: ResolveOutput<U>,
     {
         let source = Arc::clone(&self.cell);
-        let (resolver, next_task) = create_pair::<U>(self.system.clone());
+        let (resolver, next_task) = create_pair::<U>();
 
-        TaskCell::on_complete_cloned(source, move |result| match result {
+        SharedCell::on_complete(source, move |result| match result {
             Ok(value) => f(value).resolve_into(resolver),
             Err(error) => resolver.reject(error),
         });
 
         next_task
     }
-
-    /// Recover from an error inline (on the completing thread).
-    /// Equivalent to `catch(Context::IMMEDIATE, f)`.
-    pub fn or_else<F, R>(&self, f: F) -> Task<T>
-    where
-        F: FnOnce(AsyncError) -> R + Send + 'static,
-        R: ResolveOutput<T>,
-    {
-        self.catch(Context::IMMEDIATE, f)
-    }
-
-    /// Catch an error in the given scheduling context.
-    pub fn catch<F, R>(&self, context: Context, f: F) -> Task<T>
-    where
-        F: FnOnce(AsyncError) -> R + Send + 'static,
-        R: ResolveOutput<T>,
-    {
-        match self.system.inner.executor_for(context) {
-            Some(executor) => self.catch_with_executor(executor, f),
-            None => self.catch_immediate(f),
-        }
-    }
-
-    fn catch_immediate<F, R>(&self, f: F) -> Task<T>
-    where
-        F: FnOnce(AsyncError) -> R + Send + 'static,
-        R: ResolveOutput<T>,
-    {
-        let source = Arc::clone(&self.cell);
-        let (resolver, next_task) = create_pair::<T>(self.system.clone());
-
-        TaskCell::on_complete_cloned(source, move |result| match result {
-            Ok(value) => resolver.resolve(value),
-            Err(error) => f(error).resolve_into(resolver),
-        });
-
-        next_task
-    }
 }
 
-impl<T: Clone + Send + 'static> StdFuture for SharedTask<T> {
-    type Output = Result<T, AsyncError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        if self.cell.is_ready() {
-            return Poll::Ready(
-                self.cell
-                    .clone_result()
-                    .unwrap_or_else(|| Err(Self::consumed_error())),
-            );
-        }
-
-        self.cell.register_extra_waker(cx.waker());
-        Poll::Pending
-    }
-}
