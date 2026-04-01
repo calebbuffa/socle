@@ -2590,7 +2590,9 @@ dependencies = [
  "moderu",
  "moderu-io",
  "serde_json",
+ "terra",
  "tiles3d",
+ "zukei",
 ]
 
 [[package]]

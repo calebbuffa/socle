@@ -96,7 +96,7 @@ impl B3dmOffsets {
                 ft_json_len: ft_json,
                 ft_bin_len: ft_bin,
                 bt_json_len: bt_json,
-                bt_bin_len: bt_bin,
+                bt_bin_len: bt_bin
             })
         }
     }
@@ -157,7 +157,10 @@ fn i3dm_read_rotations(
         .and_then(Json::as_bool)
         .unwrap_or(false);
     if east_north_up {
-        return positions.iter().map(|&p| enu_quaternion(p)).collect();
+        return positions
+            .iter()
+            .map(|&p| terra::enu_quaternion(p))
+            .collect();
     }
     if let (Some(up_off), Some(right_off)) = (
         parse_byte_offset(ft, "NORMAL_UP"),
@@ -168,7 +171,7 @@ fn i3dm_read_rotations(
         return ups
             .iter()
             .zip(rights.iter())
-            .map(|(u, r)| rotation_from_up_right(*u, *r))
+            .map(|(u, r)| zukei::rotation_from_up_right(*u, *r))
             .collect();
     }
     if let (Some(up_off), Some(right_off)) = (
@@ -180,7 +183,7 @@ fn i3dm_read_rotations(
         return ups
             .iter()
             .zip(rights.iter())
-            .map(|(u, r)| rotation_from_up_right(*u, *r))
+            .map(|(u, r)| zukei::rotation_from_up_right(*u, *r))
             .collect();
     }
     vec![[0.0, 0.0, 0.0, 1.0]; count]
@@ -533,99 +536,6 @@ fn decode_pnts(data: &[u8]) -> Option<GltfModel> {
 
 // (GltfModel::merge lives in moderu — see moderu::merge)
 
-// ── Instance math helpers ─────────────────────────────────────────────────────
-
-/// Build a quaternion [x,y,z,w] from a world-space up and right vector.
-///
-/// Matches `rotationFromUpRight` in cesium-native's `I3dmToGltfConverter.cpp`.
-fn rotation_from_up_right(up: [f32; 3], right: [f32; 3]) -> [f32; 4] {
-    // forward = cross(right, up)
-    let forward = [
-        right[1] * up[2] - right[2] * up[1],
-        right[2] * up[0] - right[0] * up[2],
-        right[0] * up[1] - right[1] * up[0],
-    ];
-    // Rotation matrix columns: right, up, forward.
-    mat3_to_quat([right, up, forward])
-}
-
-/// Compute the ENU-aligned quaternion for an instance at ECEF position `p`.
-///
-/// East = normalize(cross([0,0,1], radial_up))
-/// North = cross(radial_up, east)
-/// Up = radial_up
-fn enu_quaternion(p: [f32; 3]) -> [f32; 4] {
-    let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-    if len < 1e-6 {
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-    let up_vec = [p[0] / len, p[1] / len, p[2] / len];
-    let z = [0.0f32, 0.0, 1.0];
-    // east = cross(z, up_vec)
-    let mut east = [
-        z[1] * up_vec[2] - z[2] * up_vec[1],
-        z[2] * up_vec[0] - z[0] * up_vec[2],
-        z[0] * up_vec[1] - z[1] * up_vec[0],
-    ];
-    let elen = (east[0] * east[0] + east[1] * east[1] + east[2] * east[2]).sqrt();
-    if elen < 1e-6 {
-        // Near poles: fall back to identity.
-        return [0.0, 0.0, 0.0, 1.0];
-    }
-    east = [east[0] / elen, east[1] / elen, east[2] / elen];
-    // north = cross(up_vec, east)
-    let north = [
-        up_vec[1] * east[2] - up_vec[2] * east[1],
-        up_vec[2] * east[0] - up_vec[0] * east[2],
-        up_vec[0] * east[1] - up_vec[1] * east[0],
-    ];
-    mat3_to_quat([east, north, up_vec])
-}
-
-/// Convert a 3×3 rotation matrix (column-major: `[col0, col1, col2]`) to a
-/// unit quaternion `[x, y, z, w]`.
-///
-/// Uses the Shepperd method.
-fn mat3_to_quat(cols: [[f32; 3]; 3]) -> [f32; 4] {
-    // Row-major indexing: m[row][col]
-    let m = |r: usize, c: usize| cols[c][r];
-
-    let trace = m(0, 0) + m(1, 1) + m(2, 2);
-    if trace > 0.0 {
-        let s = 0.5 / (trace + 1.0).sqrt();
-        [
-            (m(2, 1) - m(1, 2)) * s,
-            (m(0, 2) - m(2, 0)) * s,
-            (m(1, 0) - m(0, 1)) * s,
-            0.25 / s,
-        ]
-    } else if m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2) {
-        let s = 2.0 * (1.0 + m(0, 0) - m(1, 1) - m(2, 2)).sqrt();
-        [
-            0.25 * s,
-            (m(0, 1) + m(1, 0)) / s,
-            (m(0, 2) + m(2, 0)) / s,
-            (m(2, 1) - m(1, 2)) / s,
-        ]
-    } else if m(1, 1) > m(2, 2) {
-        let s = 2.0 * (1.0 + m(1, 1) - m(0, 0) - m(2, 2)).sqrt();
-        [
-            (m(0, 1) + m(1, 0)) / s,
-            0.25 * s,
-            (m(1, 2) + m(2, 1)) / s,
-            (m(0, 2) - m(2, 0)) / s,
-        ]
-    } else {
-        let s = 2.0 * (1.0 + m(2, 2) - m(0, 0) - m(1, 1)).sqrt();
-        [
-            (m(0, 2) + m(2, 0)) / s,
-            (m(1, 2) + m(2, 1)) / s,
-            0.25 * s,
-            (m(1, 0) - m(0, 1)) / s,
-        ]
-    }
-}
-
 // Binary-read helpers
 
 /// Read a little-endian u32 from `data` at byte offset `off`.
@@ -637,7 +547,8 @@ pub(crate) fn le32(data: &[u8], off: usize) -> u32 {
 #[inline]
 fn read_f32(data: &[u8], off: usize) -> Option<f32> {
     data.get(off..off + 4)
-        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .and_then(|b| b.try_into().ok())
+        .map(f32::from_le_bytes)
 }
 
 /// Read `count` Vec3-f32 values (12 bytes each) starting at binary offset `off`.
@@ -807,7 +718,7 @@ mod tests {
 
     #[test]
     fn identity_matrix_gives_identity_quat() {
-        let q = mat3_to_quat([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]);
+        let q = zukei::mat3_to_quat([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]);
         // Identity quaternion: [0,0,0,1]
         assert!((q[3] - 1.0).abs() < 1e-5, "w should be 1, got {:?}", q);
         assert!(q[0].abs() < 1e-5);
@@ -817,12 +728,10 @@ mod tests {
 
     #[test]
     fn quat_is_unit_length() {
-        let q = mat3_to_quat([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]]);
+        let q = zukei::mat3_to_quat([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]]);
         let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
         assert!((len - 1.0).abs() < 1e-5, "len={len:.6}");
     }
-
-    // ── sRGB conversion ───────────────────────────────────────────────────────
 
     #[test]
     fn srgb_black_and_white() {
@@ -836,8 +745,6 @@ mod tests {
         assert!(mid < 0.5, "linear(128) should be < 0.5, got {mid}");
         assert!(mid > 0.2, "linear(128) should be > 0.2, got {mid}");
     }
-
-    // ── GltfModel::merge ──────────────────────────────────────────────────────
 
     fn minimal_model() -> GltfModel {
         let mut m = GltfModel {
@@ -881,8 +788,6 @@ mod tests {
         // Second accessor must point to buffer_view 1.
         assert_eq!(merged.accessors[1].buffer_view, Some(1));
     }
-
-    // ── b3dm header variants ──────────────────────────────────────────────────
 
     fn build_b3dm(
         header_extra: &[u8],
@@ -959,14 +864,10 @@ mod tests {
         assert_eq!(offsets.glb_start(), 20 + bt_data.len());
     }
 
-    // ── cmpt ──────────────────────────────────────────────────────────────────
-
     #[test]
     fn cmpt_too_short_returns_none() {
         assert!(decode_cmpt(b"cmpt\x01\x00\x00\x00").is_none());
     }
-
-    // ── quantized positions ───────────────────────────────────────────────────
 
     #[test]
     fn quantized_vec3_dequantizes_correctly() {

@@ -159,11 +159,13 @@ pub(crate) fn step<C: Send + 'static, H: SceneGraph, L: LodEvaluator>(
         let view_group_weight =
             (slot.weight * f64::from(u16::MAX)).clamp(1.0, f64::from(u16::MAX)) as u16;
 
-        let (camera_stationary_seconds, camera_velocity) = state
+        let (camera_stationary_seconds, camera_velocity) = match state
             .view_groups
             .get_mut(handle)
-            .unwrap()
-            .tick_camera(views);
+        {
+            Some(slot) => slot.tick_camera(views),
+            None => continue,
+        };
 
         state.traversal_buffers.clear(views.len());
 
@@ -186,45 +188,10 @@ pub(crate) fn step<C: Send + 'static, H: SceneGraph, L: LodEvaluator>(
         );
 
         // Enqueue candidates into the local scheduler.
-        let camera_speed = camera_velocity.length();
-        let cull_moving = options.streaming.cull_requests_while_moving && camera_speed > 0.0;
-        let cull_multiplier = options.streaming.cull_requests_while_moving_multiplier;
-
-        for candidate in &state.traversal_buffers.candidates {
-            let lifecycle = state.node_states.get(candidate.node_id).lifecycle;
-            if matches!(
-                lifecycle,
-                NodeLoadState::Loading | NodeLoadState::Renderable | NodeLoadState::Failed
-            ) {
-                continue;
-            }
-            if cull_moving && candidate.priority.group != crate::load::PriorityGroup::Urgent {
-                let geometric_error = hierarchy.lod_descriptor(candidate.node_id).value;
-                if camera_speed > geometric_error * cull_multiplier {
-                    continue;
-                }
-            }
-            state.scheduler.push(*candidate);
-        }
+        enqueue_candidates(state, hierarchy, &options.streaming, camera_velocity);
 
         // Write frame results back into the view group slot.
-        let selected = std::mem::take(&mut state.traversal_buffers.selected);
-        let fading_out = std::mem::take(&mut state.traversal_buffers.fading_out);
-
-        let slot = state.view_groups.get_mut(handle).unwrap();
-        slot.result.nodes_to_render.clear();
-        slot.result.nodes_fading_out.clear();
-        slot.result.nodes_to_render.extend_from_slice(&selected);
-        slot.result.nodes_fading_out.extend_from_slice(&fading_out);
-        slot.result.nodes_visited = stats.visited;
-        slot.result.nodes_culled = stats.culled;
-        slot.result.nodes_occluded = stats.occluded;
-        slot.result.nodes_kicked = stats.kicked;
-        slot.result.frame_number = state.frame_index;
-        slot.result.bytes_resident = state.resident.total_bytes;
-
-        state.traversal_buffers.selected = selected;
-        state.traversal_buffers.fading_out = fading_out;
+        write_view_group_result(state, handle, &stats);
     }
 
     //  5. Drain scheduler -> requests_to_start
@@ -265,6 +232,61 @@ pub(crate) fn step<C: Send + 'static, H: SceneGraph, L: LodEvaluator>(
 
 fn view_group_key(handle: ViewGroupHandle) -> u64 {
     (u64::from(handle.generation) << 32) | u64::from(handle.index)
+}
+
+/// Filter traversal candidates and push them into the scheduler.
+fn enqueue_candidates<C: Send + 'static, H: SceneGraph>(
+    state: &mut EngineState<C>,
+    hierarchy: &H,
+    streaming: &crate::options::StreamingOptions,
+    camera_velocity: glam::DVec3,
+) {
+    let camera_speed = camera_velocity.length();
+    let cull_moving = streaming.cull_requests_while_moving && camera_speed > 0.0;
+    let cull_multiplier = streaming.cull_requests_while_moving_multiplier;
+
+    for candidate in &state.traversal_buffers.candidates {
+        let lifecycle = state.node_states.get(candidate.node_id).lifecycle;
+        if matches!(
+            lifecycle,
+            NodeLoadState::Loading | NodeLoadState::Renderable | NodeLoadState::Failed
+        ) {
+            continue;
+        }
+        if cull_moving && candidate.priority.group != crate::load::PriorityGroup::Urgent {
+            let geometric_error = hierarchy.lod_descriptor(candidate.node_id).value;
+            if camera_speed > geometric_error * cull_multiplier {
+                continue;
+            }
+        }
+        state.scheduler.push(*candidate);
+    }
+}
+
+/// Copy traversal results into the view group slot.
+fn write_view_group_result<C: Send + 'static>(
+    state: &mut EngineState<C>,
+    handle: ViewGroupHandle,
+    stats: &crate::traversal::TraversalStats,
+) {
+    let selected = std::mem::take(&mut state.traversal_buffers.selected);
+    let fading_out = std::mem::take(&mut state.traversal_buffers.fading_out);
+
+    if let Some(slot) = state.view_groups.get_mut(handle) {
+        slot.result.nodes_to_render.clear();
+        slot.result.nodes_fading_out.clear();
+        slot.result.nodes_to_render.extend_from_slice(&selected);
+        slot.result.nodes_fading_out.extend_from_slice(&fading_out);
+        slot.result.nodes_visited = stats.visited;
+        slot.result.nodes_culled = stats.culled;
+        slot.result.nodes_occluded = stats.occluded;
+        slot.result.nodes_kicked = stats.kicked;
+        slot.result.frame_number = state.frame_index;
+        slot.result.bytes_resident = state.resident.total_bytes;
+    }
+
+    state.traversal_buffers.selected = selected;
+    state.traversal_buffers.fading_out = fading_out;
 }
 
 fn ingest_completion<C: Send + 'static>(

@@ -220,7 +220,9 @@ pub fn generate_mipmaps(img: &mut moderu::Image) -> Result<(), ImageError> {
         let next_h = (mip_height / 2).max(1);
 
         // Build an ImageBuffer from the *previous* mip level's bytes.
-        let prev_pos = mip_positions.last().unwrap();
+        let Some(prev_pos) = mip_positions.last() else {
+            break;
+        };
         let prev_bytes = &out_data[prev_pos.byte_offset..prev_pos.byte_offset + prev_pos.byte_size];
         let prev_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
             ImageBuffer::from_raw(mip_width, mip_height, prev_bytes.to_vec())

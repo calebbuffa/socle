@@ -2,7 +2,7 @@
 
 use crate::{GltfModel, Node, accessor::get_position_accessor};
 use glam::{DMat4, DQuat, DVec3};
-use zukei::Ray;
+use zukei::{AxisAlignedBoundingBox, Ray};
 
 /// Get the local-space transformation matrix for a node.
 pub fn get_node_transform(node: &Node) -> Option<DMat4> {
@@ -78,16 +78,7 @@ pub fn apply_gltf_up_axis_transform(model: &GltfModel, root_transform: DMat4) ->
         .and_then(|e| e.get("gltfUpAxis"))
         .and_then(|v| v.as_f64())
         .unwrap_or(1.0);
-    let correction: Option<DMat4> = match axis as i64 {
-        0 => Some(zukei::X_UP_TO_Z_UP),
-        2 => Some(zukei::Z_UP_TO_Y_UP),
-        _ => None,
-    };
-    if let Some(c) = correction {
-        root_transform * c
-    } else {
-        root_transform
-    }
+    zukei::apply_up_axis_correction(root_transform, axis as i64)
 }
 
 /// Data about a ray / glTF hit.
@@ -152,31 +143,6 @@ pub fn intersect_ray_gltf(
     best_hit
 }
 
-/// Axis-aligned bounding box in ECEF / world-space coordinates.
-#[derive(Debug, Clone, Copy)]
-pub struct BoundingBox {
-    pub min: DVec3,
-    pub max: DVec3,
-}
-
-impl BoundingBox {
-    fn empty() -> Self {
-        Self {
-            min: DVec3::splat(f64::INFINITY),
-            max: DVec3::splat(f64::NEG_INFINITY),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.min.x > self.max.x
-    }
-
-    fn expand(&mut self, p: DVec3) {
-        self.min = self.min.min(p);
-        self.max = self.max.max(p);
-    }
-}
-
 /// Compute an axis-aligned bounding box in world space over all triangle
 /// positions in every node of the model.
 ///
@@ -184,8 +150,8 @@ impl BoundingBox {
 /// `DMat4::IDENTITY` if the model is already in world space.
 ///
 /// Returns `None` if the model contains no geometry.
-pub fn compute_bounding_box(model: &GltfModel, model_to_world: DMat4) -> Option<BoundingBox> {
-    let mut bbox = BoundingBox::empty();
+pub fn compute_bounding_box(model: &GltfModel, model_to_world: DMat4) -> Option<AxisAlignedBoundingBox> {
+    let mut bbox = AxisAlignedBoundingBox::EMPTY;
 
     for node in &model.nodes {
         let node_local = get_node_transform(node).unwrap_or(DMat4::IDENTITY);
@@ -202,7 +168,7 @@ pub fn compute_bounding_box(model: &GltfModel, model_to_world: DMat4) -> Option<
                 if let Some(p) = positions.get(i) {
                     let wp =
                         node_world.transform_point3(DVec3::new(p.x as f64, p.y as f64, p.z as f64));
-                    bbox.expand(wp);
+                    bbox = bbox.expand(wp);
                 }
             }
         }

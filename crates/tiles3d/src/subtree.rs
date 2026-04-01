@@ -103,12 +103,18 @@ fn split_envelope(data: &[u8]) -> Result<(&[u8], &[u8]), SubtreeParseError> {
         if data.len() < HEADER {
             return Err(SubtreeParseError::TooShort);
         }
-        let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let version = u32::from_le_bytes(
+            data[4..8].try_into().map_err(|_| SubtreeParseError::TooShort)?,
+        );
         if version != 1 {
             return Err(SubtreeParseError::BadVersion(version));
         }
-        let json_len = u64::from_le_bytes(data[8..16].try_into().unwrap()) as usize;
-        let bin_len = u64::from_le_bytes(data[16..24].try_into().unwrap()) as usize;
+        let json_len = u64::from_le_bytes(
+            data[8..16].try_into().map_err(|_| SubtreeParseError::TooShort)?,
+        ) as usize;
+        let bin_len = u64::from_le_bytes(
+            data[16..24].try_into().map_err(|_| SubtreeParseError::TooShort)?,
+        ) as usize;
 
         let json_start = HEADER;
         let json_end = json_start.saturating_add(json_len);

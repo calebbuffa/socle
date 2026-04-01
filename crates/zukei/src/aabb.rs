@@ -16,6 +16,17 @@ pub struct AxisAlignedBoundingBox {
 }
 
 impl AxisAlignedBoundingBox {
+    /// An inverted AABB that expands to fit the first point added.
+    pub const EMPTY: Self = Self {
+        min: DVec3::splat(f64::INFINITY),
+        max: DVec3::splat(f64::NEG_INFINITY),
+    };
+
+    /// Returns `true` if no points have been added (min > max on any axis).
+    pub fn is_empty(&self) -> bool {
+        self.min.x > self.max.x
+    }
+
     /// Create a new AABB from min and max corners.
     pub fn new(min: DVec3, max: DVec3) -> Self {
         Self { min, max }

@@ -29,7 +29,7 @@ pub use rectangle::Rectangle;
 pub use sphere::BoundingSphere;
 pub use transforms::{
     Axis, Transforms, X_UP_TO_Y_UP, X_UP_TO_Z_UP, Y_UP_TO_X_UP, Y_UP_TO_Z_UP, Z_UP_TO_X_UP,
-    Z_UP_TO_Y_UP,
+    Z_UP_TO_Y_UP, apply_up_axis_correction, mat3_to_quat, rotation_from_up_right,
 };
 
 pub const EPSILON1: f64 = 1e-1;

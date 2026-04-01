@@ -154,16 +154,16 @@ impl GltfConverters {
 
     /// Register a converter for a 4-byte magic sequence.
     pub fn register_magic(magic: [u8; 4], converter: ConverterFn) {
-        global().write().unwrap().by_magic.insert(magic, converter);
+        if let Ok(mut reg) = global().write() {
+            reg.by_magic.insert(magic, converter);
+        }
     }
 
     /// Register a converter for a file extension (lowercase, without `.`).
     pub fn register_file_extension(ext: impl Into<String>, converter: ConverterFn) {
-        global()
-            .write()
-            .unwrap()
-            .by_extension
-            .insert(ext.into(), converter);
+        if let Ok(mut reg) = global().write() {
+            reg.by_extension.insert(ext.into(), converter);
+        }
     }
 
     /// Look up a converter by the first 4 bytes of the tile data.
@@ -173,8 +173,10 @@ impl GltfConverters {
         if data.len() < 4 {
             return None;
         }
-        let magic: [u8; 4] = data[..4].try_into().unwrap();
-        global().read().unwrap().by_magic.get(&magic).copied()
+        let Ok(magic) = <[u8; 4]>::try_from(&data[..4]) else {
+            return None;
+        };
+        global().read().ok()?.by_magic.get(&magic).copied()
     }
 
     /// Look up a converter by file path (examines the extension).
@@ -182,7 +184,7 @@ impl GltfConverters {
     /// Returns `None` if no converter is registered for that extension.
     pub fn get_converter_by_file_extension(file_path: &str) -> Option<ConverterFn> {
         let ext = file_extension(file_path)?.to_ascii_lowercase();
-        global().read().unwrap().by_extension.get(&ext).copied()
+        global().read().ok()?.by_extension.get(&ext).copied()
     }
 
     /// Convert tile bytes to a [`GltfConverterResult`], trying magic first

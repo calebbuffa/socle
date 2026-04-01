@@ -392,7 +392,9 @@ impl<C: Send + 'static> SelectionEngine<C> {
             self.graph_set.loader_for(node_id).free_dyn(content);
         }
 
-        let slot = self.state.view_groups.get(handle).unwrap();
+        let Some(slot) = self.state.view_groups.get(handle) else {
+            return ViewUpdateResult::default();
+        };
         let result = &slot.result;
         ViewUpdateResult {
             nodes_occluded: result.nodes_occluded,

@@ -128,11 +128,14 @@ impl<C: Send + 'static> GraphSet<C> {
         let sub_root_global = NodeId::from_index(sub_graph.root().index() + base);
 
         // Rewrite ref_node's children in the owning segment.
-        let ref_seg = self
+        let Some(ref_seg) = self
             .segments
             .iter_mut()
             .find(|s| s.owns(ref_node))
-            .expect("ref_node does not belong to any known segment");
+        else {
+            debug_assert!(false, "ref_node does not belong to any known segment");
+            return;
+        };
         let local_idx = ref_node.index() - ref_seg.base;
         ref_seg.global_children[local_idx] = vec![sub_root_global];
 

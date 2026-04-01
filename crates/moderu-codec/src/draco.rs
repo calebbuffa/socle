@@ -219,55 +219,14 @@ fn decode_primitive(
     model.meshes[mesh_idx].primitives[prim_idx].indices = Some(indices_acc_idx);
 
     // **OPTIMIZATION**: Batch extract all attributes in parallel
-    let attr_list: Vec<_> = attr_map
+    let attr_list: Vec<_> = Vec::from_iter(attr_map
         .iter()
         .map(|(name, id_val)| {
             let id = id_val.as_u64().map(|v| v as u32);
             (name.clone(), id)
-        })
-        .collect();
+        }));
 
-    let decoded_attrs = if attr_list.len() > 1 {
-        // Parallel extraction for multiple attributes
-        attr_list
-            .into_par_iter()
-            .map(|(name, id_opt)| {
-                let id = id_opt.ok_or(DracoError::InvalidAttributeId { name: name.clone() })?;
-                let data = extract_attribute_optimized(&draco_mesh, id).map_err(|e| {
-                    DracoError::AttributeError {
-                        name: name.clone(),
-                        source: Box::new(e),
-                    }
-                })?;
-                let num_components = (data.len() / (num_points * 4)) as u8;
-                Ok(BatchAttr {
-                    name,
-                    data: Arc::from(data.into_boxed_slice()),
-                    num_components,
-                })
-            })
-            .collect::<Result<Vec<_>, DracoError>>()?
-    } else {
-        // Single-threaded for single attribute
-        attr_list
-            .into_iter()
-            .map(|(name, id_opt)| {
-                let id = id_opt.ok_or(DracoError::InvalidAttributeId { name: name.clone() })?;
-                let data = extract_attribute_optimized(&draco_mesh, id).map_err(|e| {
-                    DracoError::AttributeError {
-                        name: name.clone(),
-                        source: Box::new(e),
-                    }
-                })?;
-                let num_components = (data.len() / (num_points * 4)) as u8;
-                Ok(BatchAttr {
-                    name,
-                    data: Arc::from(data.into_boxed_slice()),
-                    num_components,
-                })
-            })
-            .collect::<Result<Vec<_>, DracoError>>()?
-    };
+    let decoded_attrs = extract_all_attributes(&draco_mesh, &attr_list, num_points)?;
 
     // Write all attributes to buffer
     for attr in decoded_attrs {
@@ -317,6 +276,33 @@ fn decode_primitive(
         .remove(DracoDecoder::EXT_NAME);
 
     Ok(())
+}
+
+/// Extract all attributes, using parallel decoding when there are multiple.
+fn extract_all_attributes(
+    mesh: &DracoMesh,
+    attr_list: &[(String, Option<u32>)],
+    num_points: usize,
+) -> Result<Vec<BatchAttr>, DracoError> {
+    let decode_one = |(name, id_opt): &(String, Option<u32>)| -> Result<BatchAttr, DracoError> {
+        let id = id_opt.ok_or(DracoError::InvalidAttributeId { name: name.clone() })?;
+        let data = extract_attribute_optimized(mesh, id).map_err(|e| DracoError::AttributeError {
+            name: name.clone(),
+            source: Box::new(e),
+        })?;
+        let num_components = (data.len() / (num_points * 4)) as u8;
+        Ok(BatchAttr {
+            name: name.clone(),
+            data: Arc::from(data.into_boxed_slice()),
+            num_components,
+        })
+    };
+
+    if attr_list.len() > 1 {
+        attr_list.par_iter().map(decode_one).collect()
+    } else {
+        attr_list.iter().map(decode_one).collect()
+    }
 }
 
 /// Extract indices from Draco mesh with proper type handling.

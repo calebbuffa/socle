@@ -41,7 +41,7 @@ pub use globe::{GlobeAnchor, GlobeRectangle};
 pub use lhcs::{LocalDirection, LocalHorizontalCoordinateSystem};
 pub use projection::{GeographicProjection, WebMercatorProjection};
 pub use sr::{CrsRegistry, SpatialReference};
-pub use transforms::east_north_up_to_ecef;
+pub use transforms::{east_north_up_to_ecef, enu_quaternion};
 
 /// Maximum geometric error per radian for a quadtree tile, assuming a 65×65
 /// heightmap with 25 % vertical error relative to horizontal sample spacing

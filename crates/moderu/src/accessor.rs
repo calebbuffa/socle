@@ -267,6 +267,8 @@ pub enum AccessorViewError {
     MissingAttribute(String),
     /// Sparse accessors are not supported in this context.
     SparseNotSupported,
+    /// Expected accessor to have sparse data, but `sparse` field was `None`.
+    NoSparseData,
     /// Accessor component type is not compatible with the requested type.
     IncompatibleComponentType(i64),
     /// Accessor type (SCALAR/VEC2/…) does not match the expected type.
@@ -294,6 +296,7 @@ impl std::fmt::Display for AccessorViewError {
             ),
             Self::MissingAttribute(key) => write!(f, "missing attribute or field: '{key}'"),
             Self::SparseNotSupported => write!(f, "sparse accessors are not supported"),
+            Self::NoSparseData => write!(f, "expected sparse data but field was None"),
             Self::IncompatibleComponentType(id) => {
                 write!(f, "incompatible component type id: {id}")
             }
@@ -659,7 +662,10 @@ fn decode_sparse(
     use crate::AccessorComponentType;
 
     let count = acc.count;
-    let sparse = acc.sparse.as_ref().unwrap(); // caller ensures Some
+    let sparse = acc
+        .sparse
+        .as_ref()
+        .ok_or(AccessorViewError::NoSparseData)?;
 
     // --- base data (may be absent for pure-sparse accessors) ---
     let mut out = if let Some(bv_idx) = acc.buffer_view {

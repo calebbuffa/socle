@@ -241,6 +241,76 @@ impl Transforms {
     }
 }
 
+/// Convert a 3×3 rotation matrix (column-major: `[col0, col1, col2]`) to a
+/// unit quaternion `[x, y, z, w]`.
+///
+/// Uses the Shepperd method for numerical stability.
+pub fn mat3_to_quat(cols: [[f32; 3]; 3]) -> [f32; 4] {
+    let m = |r: usize, c: usize| cols[c][r];
+
+    let trace = m(0, 0) + m(1, 1) + m(2, 2);
+    if trace > 0.0 {
+        let s = 0.5 / (trace + 1.0).sqrt();
+        [
+            (m(2, 1) - m(1, 2)) * s,
+            (m(0, 2) - m(2, 0)) * s,
+            (m(1, 0) - m(0, 1)) * s,
+            0.25 / s,
+        ]
+    } else if m(0, 0) > m(1, 1) && m(0, 0) > m(2, 2) {
+        let s = 2.0 * (1.0 + m(0, 0) - m(1, 1) - m(2, 2)).sqrt();
+        [
+            0.25 * s,
+            (m(0, 1) + m(1, 0)) / s,
+            (m(0, 2) + m(2, 0)) / s,
+            (m(2, 1) - m(1, 2)) / s,
+        ]
+    } else if m(1, 1) > m(2, 2) {
+        let s = 2.0 * (1.0 + m(1, 1) - m(0, 0) - m(2, 2)).sqrt();
+        [
+            (m(0, 1) + m(1, 0)) / s,
+            0.25 * s,
+            (m(1, 2) + m(2, 1)) / s,
+            (m(0, 2) - m(2, 0)) / s,
+        ]
+    } else {
+        let s = 2.0 * (1.0 + m(2, 2) - m(0, 0) - m(1, 1)).sqrt();
+        [
+            (m(0, 2) + m(2, 0)) / s,
+            (m(1, 2) + m(2, 1)) / s,
+            0.25 * s,
+            (m(1, 0) - m(0, 1)) / s,
+        ]
+    }
+}
+
+/// Build a quaternion `[x, y, z, w]` from world-space up and right vectors.
+///
+/// Computes `forward = cross(right, up)` and converts the resulting
+/// rotation matrix (columns: right, up, forward) to a unit quaternion.
+pub fn rotation_from_up_right(up: [f32; 3], right: [f32; 3]) -> [f32; 4] {
+    let forward = [
+        right[1] * up[2] - right[2] * up[1],
+        right[2] * up[0] - right[0] * up[2],
+        right[0] * up[1] - right[1] * up[0],
+    ];
+    mat3_to_quat([right, up, forward])
+}
+
+/// Apply one of the six axis-correction transforms based on a numeric up-axis
+/// identifier.
+///
+/// `axis`: 0 = X-up, 1 = Y-up (identity / glTF default), 2 = Z-up.
+///
+/// Returns the corrected transform: `root_transform * correction`.
+pub fn apply_up_axis_correction(root_transform: DMat4, axis: i64) -> DMat4 {
+    match axis {
+        0 => root_transform * X_UP_TO_Z_UP,
+        2 => root_transform * Z_UP_TO_Y_UP,
+        _ => root_transform,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

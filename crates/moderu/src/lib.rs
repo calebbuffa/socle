@@ -94,6 +94,6 @@ pub use compaction::{
 pub use copyright::{parse_copyright_string, parse_gltf_copyright};
 
 pub use geometry::{
-    BoundingBox, RayGltfHit, SkirtMeshMetadata, apply_gltf_up_axis_transform, apply_rtc_center,
+    RayGltfHit, SkirtMeshMetadata, apply_gltf_up_axis_transform, apply_rtc_center,
     compute_bounding_box, get_node_transform, intersect_ray_gltf, set_node_transform,
 };

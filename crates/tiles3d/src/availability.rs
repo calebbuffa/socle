@@ -335,8 +335,10 @@ impl SubtreeAvailability {
         let bit_index = prefix + morton_id;
 
         let view = if is_content {
-            // Callers that need content use the dedicated content methods.
-            self.content_availability.first_mut().unwrap()
+            let Some(v) = self.content_availability.first_mut() else {
+                return;
+            };
+            v
         } else {
             &mut self.tile_availability
         };
@@ -595,14 +597,20 @@ impl QuadtreeAvailability {
             return TileAvailabilityFlags::TILE_AVAILABLE
                 | TileAvailabilityFlags::SUBTREE_AVAILABLE;
         }
-        if self.root.is_none() || tile_id.level > self.maximum_level {
+        let Some(root) = self.root.as_deref() else {
+            return TileAvailabilityFlags::empty();
+        };
+        if tile_id.level > self.maximum_level {
             return TileAvailabilityFlags::empty();
         }
 
         let mut level: u32 = 0;
-        let mut node: &AvailabilityNode = self.root.as_deref().unwrap();
+        let mut node: &AvailabilityNode = root;
 
+        // Loop terminates: `level` increases by `subtree_levels` each iteration,
+        // and we return once `level > tile_id.level` or no child is found.
         loop {
+            debug_assert!(level <= self.maximum_level + self.subtree_levels);
             let subtree = match &node.subtree {
                 Some(s) => s,
                 None => {
@@ -1102,12 +1110,15 @@ impl OctreeAvailability {
             return TileAvailabilityFlags::TILE_AVAILABLE
                 | TileAvailabilityFlags::SUBTREE_AVAILABLE;
         }
-        if self.root.is_none() || tile_id.level > self.maximum_level {
+        let Some(root) = self.root.as_deref() else {
+            return TileAvailabilityFlags::empty();
+        };
+        if tile_id.level > self.maximum_level {
             return TileAvailabilityFlags::empty();
         }
 
         let mut level: u32 = 0;
-        let mut node: &OctreeAvailabilityNode = self.root.as_deref().unwrap();
+        let mut node: &OctreeAvailabilityNode = root;
 
         loop {
             let subtree = match &node.subtree {
