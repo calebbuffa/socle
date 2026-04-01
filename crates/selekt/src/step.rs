@@ -21,17 +21,14 @@
 use std::time::Duration;
 
 use crate::engine_state::EngineState;
-use crate::hierarchy::SpatialHierarchy;
-use crate::load::{
-    ContentKey, LoadFailureDetails, LoadFailureType, LoadPriority, LoadResult,
-};
+use crate::hierarchy::SceneGraph;
+use crate::load::{ContentKey, LoadFailureDetails, LoadFailureType, LoadPriority, NodeContent};
 use crate::lod::LodEvaluator;
 use crate::node::{NodeId, NodeLoadState};
 use crate::options::SelectionOptions;
 use crate::policy::{NodeExcluder, OcclusionTester, ResidencyPolicy, VisibilityPolicy};
 use crate::traversal::traverse;
 use crate::view::{ViewGroupHandle, ViewState};
-
 
 /// Per-frame inputs fed into [`step`].
 ///
@@ -40,7 +37,7 @@ use crate::view::{ViewGroupHandle, ViewState};
 /// 2. Polling in-flight tasks, resolving any [`LoadResult::Reference`] items
 ///    (by calling `hierarchy.expand()` and synthesising a content completion),
 ///    and delivering all outcomes via `completed`.
-pub(crate) struct StepInput<'views, C> {
+pub(crate) struct StepInput<'views, C: Send + 'static> {
     /// One entry per active view group: its handle and the current camera array.
     ///
     /// Groups are visited in order; each receives fair scheduler weight.
@@ -55,13 +52,12 @@ pub(crate) struct StepInput<'views, C> {
 }
 
 /// A completed async load result to be ingested by [`step`].
-pub(crate) struct CompletedLoad<C> {
+pub(crate) struct CompletedLoad<C: Send + 'static> {
     /// Which node this result belongs to.
     pub node_id: NodeId,
-    /// The decoded payload, or an error string if loading or resolution failed.
-    pub result: Result<LoadResult<C>, String>,
+    /// The decoded payload, or an error string if loading failed.
+    pub result: Result<NodeContent<C>, String>,
 }
-
 
 /// Per-frame outputs produced by [`step`].
 ///
@@ -73,18 +69,19 @@ pub(crate) struct CompletedLoad<C> {
 /// 3. Calling `ContentLoader::free` for each item in `evicted_content`.
 /// 4. Feeding task results back on the next [`step`] call via
 ///    [`StepInput::completed`].
-pub(crate) struct StepOutput<C> {
+pub(crate) struct StepOutput<C: Send + 'static> {
     /// Loads the caller must start, in priority order (highest first).
     pub requests_to_start: Vec<LoadRequest>,
 
-    /// Node IDs whose in-flight loads or resolve futures must be cancelled.
+    /// Node IDs whose in-flight loads must be cancelled.
     pub requests_to_cancel: Vec<NodeId>,
 
     /// Decoded content evicted from the resident store this frame.
     ///
     /// The caller must call `ContentLoader::free` for each item to release
-    /// GPU or other format-owned resources.
-    pub evicted_content: Vec<C>,
+    /// GPU or other format-owned resources. The `NodeId` identifies which
+    /// loader (segment) should receive the `free` call.
+    pub evicted_content: Vec<(NodeId, C)>,
 }
 
 /// A single load the caller must dispatch asynchronously.
@@ -94,9 +91,9 @@ pub(crate) struct LoadRequest {
     /// The primary content key (URL/URI) to fetch.
     pub key: ContentKey,
     /// Scheduling priority (for caller-side ordering, if desired).
+    #[allow(dead_code)]
     pub priority: LoadPriority,
 }
-
 
 /// Pure synchronous frame step.
 ///
@@ -119,7 +116,7 @@ pub(crate) struct LoadRequest {
 /// - The caller must call `ContentLoader::free` for each item in
 ///   `StepOutput::evicted_content`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn step<C: Send + 'static, H: SpatialHierarchy, L: LodEvaluator>(
+pub(crate) fn step<C: Send + 'static, H: SceneGraph, L: LodEvaluator>(
     state: &mut EngineState<C>,
     hierarchy: &H,
     lod: &L,
@@ -162,8 +159,11 @@ pub(crate) fn step<C: Send + 'static, H: SpatialHierarchy, L: LodEvaluator>(
         let view_group_weight =
             (slot.weight * f64::from(u16::MAX)).clamp(1.0, f64::from(u16::MAX)) as u16;
 
-        let (camera_stationary_seconds, camera_velocity) =
-            state.view_groups.get_mut(handle).unwrap().tick_camera(views);
+        let (camera_stationary_seconds, camera_velocity) = state
+            .view_groups
+            .get_mut(handle)
+            .unwrap()
+            .tick_camera(views);
 
         state.traversal_buffers.clear(views.len());
 
@@ -187,8 +187,7 @@ pub(crate) fn step<C: Send + 'static, H: SpatialHierarchy, L: LodEvaluator>(
 
         // Enqueue candidates into the local scheduler.
         let camera_speed = camera_velocity.length();
-        let cull_moving =
-            options.streaming.cull_requests_while_moving && camera_speed > 0.0;
+        let cull_moving = options.streaming.cull_requests_while_moving && camera_speed > 0.0;
         let cull_multiplier = options.streaming.cull_requests_while_moving_multiplier;
 
         for candidate in &state.traversal_buffers.candidates {
@@ -257,14 +256,12 @@ pub(crate) fn step<C: Send + 'static, H: SpatialHierarchy, L: LodEvaluator>(
     evict_if_needed(state, residency, options, &mut output);
 
     // 7. Adjust LOD threshold
-    state.lod_threshold.adjust(
-        state.resident.total_bytes,
-        options.loading.max_cached_bytes,
-    );
+    state
+        .lod_threshold
+        .adjust(state.resident.total_bytes, options.loading.max_cached_bytes);
 
     output
 }
-
 
 fn view_group_key(handle: ViewGroupHandle) -> u64 {
     (u64::from(handle.generation) << 32) | u64::from(handle.index)
@@ -278,18 +275,21 @@ fn ingest_completion<C: Send + 'static>(
 ) {
     let node_id = item.node_id;
     match item.result {
-        Ok(LoadResult::Content { content, byte_size }) => {
-            state.resident.insert(node_id, content, byte_size);
-            mark_renderable(state, node_id);
-        }
-        Ok(LoadResult::Reference { .. }) => {
-            // The shell must resolve references before delivering completions.
-            // Treat as an unexpected no-content success — mark renderable with zero size.
-            state.resident.insert(node_id, None, 0);
+        Ok(node_content) => {
+            state
+                .resident
+                .insert(node_id, node_content.renderable, node_content.byte_size);
             mark_renderable(state, node_id);
         }
         Err(msg) => {
-            handle_failure(state, options, on_load_error, node_id, LoadFailureType::NodeContent, &msg);
+            handle_failure(
+                state,
+                options,
+                on_load_error,
+                node_id,
+                LoadFailureType::NodeContent,
+                &msg,
+            );
         }
     }
 }
@@ -340,21 +340,27 @@ fn handle_failure<C: Send + 'static>(
     }
 }
 
-fn expire_stale<C: Send + 'static, H: SpatialHierarchy>(
+fn expire_stale<C: Send + 'static, H: SceneGraph>(
     state: &mut EngineState<C>,
     hierarchy: &H,
     output: &mut StepOutput<C>,
 ) {
     let now_secs = state.load_epoch.elapsed().as_secs() as u32;
-    let expired: Vec<NodeId> = state.resident.map.keys().copied().filter(|&id| {
-        if let Some(max_age) = hierarchy.content_max_age(id) {
-            let loaded = state.node_states.get(id).loaded_epoch_secs;
-            loaded != 0
-                && Duration::from_secs(now_secs.saturating_sub(loaded) as u64) >= max_age
-        } else {
-            false
-        }
-    }).collect();
+    let expired: Vec<NodeId> = state
+        .resident
+        .map
+        .keys()
+        .copied()
+        .filter(|&id| {
+            if let Some(max_age) = hierarchy.content_max_age(id) {
+                let loaded = state.node_states.get(id).loaded_epoch_secs;
+                loaded != 0
+                    && Duration::from_secs(now_secs.saturating_sub(loaded) as u64) >= max_age
+            } else {
+                false
+            }
+        })
+        .collect();
     apply_evictions(state, &expired, output);
 }
 
@@ -392,7 +398,7 @@ fn apply_evictions<C: Send + 'static>(
     for &node_id in to_evict {
         if let Some(resident) = state.resident.remove(node_id) {
             if let Some(content) = resident.content {
-                output.evicted_content.push(content);
+                output.evicted_content.push((node_id, content));
             }
         }
         // The node may be in-flight — tell the caller to cancel it.

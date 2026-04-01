@@ -64,7 +64,7 @@ pub use executor::WasmExecutor;
 pub use join_set::JoinSet;
 pub use scope::Scope;
 pub use semaphore::{Semaphore, SemaphorePermit};
-pub use task::{Handle, Task, Resolver};
+pub use task::{Handle, Resolver, Task};
 pub use thread_pool::ThreadPool;
 pub use work_queue::WorkQueue;
 
@@ -122,9 +122,9 @@ pub fn delay(duration: std::time::Duration) -> Task<()> {
         }
     }
 
-    let waker = std::task::Waker::from(std::sync::Arc::new(ResolveOnWake(
-        std::sync::Mutex::new(Some(res)),
-    )));
+    let waker = std::task::Waker::from(std::sync::Arc::new(ResolveOnWake(std::sync::Mutex::new(
+        Some(res),
+    ))));
     timer::TimerWheel::global().register(deadline, waker);
     task
 }

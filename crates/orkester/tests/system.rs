@@ -43,7 +43,11 @@ fn lcg_next(seed: &mut u64) -> u64 {
     *seed
 }
 
-fn run_cross_context_roundtrip_stress(bg_ctx: &orkester::Context, iterations: usize, mut seed: u64) {
+fn run_cross_context_roundtrip_stress(
+    bg_ctx: &orkester::Context,
+    iterations: usize,
+    mut seed: u64,
+) {
     for _ in 0..iterations {
         let sample = lcg_next(&mut seed);
         let should_fail = (sample & 1) == 1;
@@ -153,8 +157,8 @@ fn then_in_worker_thread_flattens_future_result() {
     let (_pool, ctx) = bg(2);
     let ctx2 = ctx.clone();
 
-    let flattened: orkester::Task<i32> = orkester::resolved(5_i32)
-        .then(&ctx, move |value| ctx2.run(move || value * 3));
+    let flattened: orkester::Task<i32> =
+        orkester::resolved(5_i32).then(&ctx, move |value| ctx2.run(move || value * 3));
 
     assert_eq!(flattened.block().unwrap(), 15);
 }
@@ -171,8 +175,8 @@ fn run_in_main_thread_flattens_future_result() {
 fn then_in_worker_thread_flattens_rejected_future_result() {
     let (_pool, ctx) = bg(2);
 
-    let flattened: orkester::Task<i32> = orkester::resolved(1_i32)
-        .then(&ctx, move |_| rejected::<i32>("boom"));
+    let flattened: orkester::Task<i32> =
+        orkester::resolved(1_i32).then(&ctx, move |_| rejected::<i32>("boom"));
 
     let error = flattened.block().unwrap_err();
     assert_eq!(error.to_string(), "boom");
@@ -182,8 +186,8 @@ fn then_in_worker_thread_flattens_rejected_future_result() {
 fn map_runs_inline_for_resolved_future() {
     let caller_thread = std::thread::current().id();
 
-    let same_thread = orkester::resolved(1_i32)
-        .map(move |_| std::thread::current().id() == caller_thread);
+    let same_thread =
+        orkester::resolved(1_i32).map(move |_| std::thread::current().id() == caller_thread);
 
     assert!(same_thread.block().unwrap());
 }
@@ -335,7 +339,8 @@ fn long_worker_then_chain_preserves_value_ordering() {
 fn worker_to_main_to_worker_chain_completes_with_main_pump() {
     let (_pool, ctx) = bg(3);
 
-    let chained = ctx.run(|| 3_i32)
+    let chained = ctx
+        .run(|| 3_i32)
         .then(&ctx, |value| value + 1)
         .then(&ctx, |value| value * 2);
 
@@ -444,11 +449,10 @@ fn catch_in_main_thread_is_not_called_on_success() {
     let catch_called = Arc::new(AtomicUsize::new(0));
     let catch_called_clone = Arc::clone(&catch_called);
 
-    let passthrough = orkester::resolved(5_i32)
-        .catch(&ctx, move |_| {
-            catch_called_clone.fetch_add(1, Ordering::SeqCst);
-            -1
-        });
+    let passthrough = orkester::resolved(5_i32).catch(&ctx, move |_| {
+        catch_called_clone.fetch_add(1, Ordering::SeqCst);
+        -1
+    });
 
     assert_eq!(passthrough.block().unwrap(), 5);
     assert_eq!(catch_called.load(Ordering::SeqCst), 0);
@@ -458,11 +462,10 @@ fn catch_in_main_thread_is_not_called_on_success() {
 fn catch_in_main_thread_recovers_on_main_when_pumped() {
     let (_pool, ctx) = bg(2);
 
-    let recovered = rejected::<i32>("main recover")
-        .catch(&ctx, move |error| {
-            assert_eq!(error.to_string(), "main recover");
-            11
-        });
+    let recovered = rejected::<i32>("main recover").catch(&ctx, move |error| {
+        assert_eq!(error.to_string(), "main recover");
+        11
+    });
 
     assert_eq!(recovered.block().unwrap(), 11);
 }
@@ -475,7 +478,8 @@ fn then_in_thread_pool_runs_inline_on_same_pool_thread() {
     let inner_ctx = inner_pool.context();
 
     // Both run on inner_ctx — the continuation should fire inline on the same thread.
-    let same_thread = inner_ctx.run(|| std::thread::current().id())
+    let same_thread = inner_ctx
+        .run(|| std::thread::current().id())
         .then(&inner_ctx, |source_thread| {
             std::thread::current().id() == source_thread
         });
@@ -490,11 +494,13 @@ fn then_in_thread_pool_runs_on_target_pool_context() {
     let inner_pool = ThreadPool::new(1);
     let inner_ctx = inner_pool.context();
 
-    let pool_thread = inner_ctx.run(|| std::thread::current().id())
+    let pool_thread = inner_ctx
+        .run(|| std::thread::current().id())
         .block()
         .unwrap();
 
-    let observed = bg_ctx.run(|| 1_i32)
+    let observed = bg_ctx
+        .run(|| 1_i32)
         .then(&inner_ctx, move |_| std::thread::current().id());
 
     assert_eq!(observed.block().unwrap(), pool_thread);
@@ -535,9 +541,7 @@ fn future_poll_ready_then_wait_reports_consumed() {
 #[test]
 fn dispatch_one_main_thread_task_reports_queue_progress() {
     let (_pool, ctx) = bg(1);
-    let tasks: Vec<_> = (0_i32..3_i32)
-        .map(|value| ctx.run(move || value))
-        .collect();
+    let tasks: Vec<_> = (0_i32..3_i32).map(|value| ctx.run(move || value)).collect();
 
     for (idx, task) in tasks.into_iter().enumerate() {
         assert_eq!(task.block().unwrap(), idx as i32);

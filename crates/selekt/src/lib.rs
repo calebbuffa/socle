@@ -3,11 +3,10 @@
 //! # Quick start
 //!
 //! ```ignore
-//! // 1. Implement the three required traits for your format:
-//! //    SpatialHierarchy, LodEvaluator, ContentLoader
+//! // 1. Implement the two required traits for your format:
+//! //    SceneGraph + ContentLoader
 //!
 //! let mut engine = SelectionEngineBuilder::new(bg_context, hierarchy, lod, loader)
-//!     .with_resolver(my_resolver)          // optional: for external hierarchy references
 //!     .build();
 //!
 //! // 2. Per frame:
@@ -22,13 +21,14 @@
 //!
 //! # Trait interfaces (implement these for your format)
 //!
-//! - [`SpatialHierarchy`] / [`HierarchyResolver`] — describe the node hierarchy
+//! - [`SceneGraph`] — describe the node hierarchy
 //! - [`LodEvaluator`] — refinement decision per node
-//! - [`ContentLoader`] — fetch node content asynchronously
+//! - [`ContentLoader`] — fetch node content asynchronously; returns [`NodeContent`]
 //! - [`Policy`] = [`VisibilityPolicy`] + [`ResidencyPolicy`] — culling and eviction
-//!   (implement your own or use [`DefaultPolicy`] for frustum culling + LRU eviction)
 
+mod composite;
 mod engine;
+mod engine_state;
 pub(crate) mod evaluators;
 mod format;
 mod frame;
@@ -36,24 +36,23 @@ mod hierarchy;
 mod load;
 mod lod;
 mod lod_threshold;
-mod engine_state;
 mod node;
-pub(crate) mod step;
 mod options;
 mod policy;
 mod query;
 mod scheduler;
+pub(crate) mod step;
 pub(crate) mod traversal;
 mod view;
 
 // Engine and builder
 pub use engine::{SelectionEngine, SelectionEngineBuilder};
 
-// Default resolver
-pub use format::NoopResolver;
-
 // Options
-pub use options::{ClippingPlane, CullingOptions, DebugOptions, LoadingOptions, LodRefinementOptions, SelectionOptions, StreamingOptions};
+pub use options::{
+    ClippingPlane, CullingOptions, DebugOptions, LoadingOptions, LodRefinementOptions,
+    SelectionOptions, StreamingOptions,
+};
 
 // Node identity and lifecycle
 pub use node::{NodeId, NodeKind, NodeLoadState, NodeRefinementResult};
@@ -69,14 +68,12 @@ pub use query::{QueryDepth, QueryShape};
 
 // Content loading
 pub use load::{
-    ContentKey, ContentLoader, DecodeOutput, HierarchyReference, LoadFailureDetails,
-    LoadFailureType, LoadPassResult, LoadPriority, LoadResult, PriorityGroup,
+    ContentKey, ContentLoader, DynContentLoader, LoadFailureDetails, LoadFailureType,
+    LoadPassResult, LoadPriority, NodeContent, PriorityGroup, SceneRef,
 };
 
 // Spatial hierarchy
-pub use hierarchy::{
-    HierarchyExpansion, HierarchyExpansionError, HierarchyResolver, SpatialHierarchy,
-};
+pub use hierarchy::SceneGraph;
 
 // View state and handle
 pub use view::{Projection, ViewGroupHandle, ViewState, ViewUpdateResult};

@@ -67,6 +67,14 @@ pub(crate) enum TaskInner<T: Send + 'static> {
 ///
 /// Move-only. Use [`.share()`](Task::share) to convert to a cloneable
 /// [`Handle<T>`]. Implements [`std::future::Future`] for async/await.
+///
+/// # Consumption
+///
+/// A `Task<T>` can only be polled to completion **once**. After the first
+/// successful poll returns `Poll::Ready`, subsequent polls return
+/// `Err(AsyncError)` with [`ErrorCode::Dropped`]. If you need multiple
+/// consumers, call [`.share()`](Task::share) to obtain a [`Handle<T>`]
+/// (requires `T: Clone`).
 pub struct Task<T: Send + 'static> {
     pub(crate) inner: TaskInner<T>,
 }
@@ -462,7 +470,9 @@ impl<T: Send + 'static> StdFuture for Task<T> {
                     )
                 } else {
                     // SAFETY: Task<T> is single-consumer (move-only, not Clone).
-                    unsafe { cell.register_waker(cx.waker()); }
+                    unsafe {
+                        cell.register_waker(cx.waker());
+                    }
                     Poll::Pending
                 }
             }
@@ -498,7 +508,7 @@ impl<T: Clone + Send + 'static> Debug for Handle<T> {
 }
 
 impl<T: Clone + Send + 'static> Handle<T> {
-    pub fn from_shared_cell(cell: Arc<SharedCell<T>>) -> Self {
+    pub(crate) fn from_shared_cell(cell: Arc<SharedCell<T>>) -> Self {
         Self { cell }
     }
 
@@ -527,18 +537,16 @@ impl<T: Clone + Send + 'static> Handle<T> {
         let source = Arc::clone(&self.cell);
         let (resolver, next_task) = create_pair::<U>();
 
-        SharedCell::on_complete(source, move |result| {
-            match result {
-                Ok(value) => {
-                    let run = move || f(value).resolve_into(resolver);
-                    if executor.is_current() {
-                        run();
-                    } else {
-                        executor.execute(Box::new(run));
-                    }
+        SharedCell::on_complete(source, move |result| match result {
+            Ok(value) => {
+                let run = move || f(value).resolve_into(resolver);
+                if executor.is_current() {
+                    run();
+                } else {
+                    executor.execute(Box::new(run));
                 }
-                Err(error) => resolver.reject(error),
             }
+            Err(error) => resolver.reject(error),
         });
 
         next_task
@@ -584,4 +592,3 @@ impl<T: Clone + Send + 'static> Handle<T> {
         next_task
     }
 }
-

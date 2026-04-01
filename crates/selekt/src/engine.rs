@@ -5,102 +5,20 @@ use std::time::Duration;
 use glam::DVec3;
 use orkester::{Context, WorkQueue};
 
+use crate::composite::GraphSet;
 use crate::engine_state::EngineState;
-use crate::format::NoopResolver;
 use crate::frame::{FrameResult, PickResult};
-use crate::hierarchy::{HierarchyExpansion, HierarchyExpansionError, HierarchyResolver, SpatialHierarchy};
-use crate::load::{
-    ContentKey, ContentLoader, HierarchyReference, LoadFailureDetails,
-    LoadPassResult, LoadPriority, LoadResult, LoadedContent,
-};
+use crate::hierarchy::SceneGraph;
+use crate::load::{ContentKey, ContentLoader, LoadFailureDetails, LoadPassResult, NodeContent};
 use crate::lod::LodEvaluator;
 use crate::lod_threshold::LodThreshold;
 use crate::node::{NodeId, NodeLoadState};
 use crate::options::SelectionOptions;
 use crate::policy::{
-    FrustumVisibilityPolicy, NoOcclusion, NodeExcluder, OcclusionTester,
-    Policy, ResidencyPolicy, VisibilityPolicy,
+    FrustumVisibilityPolicy, NoOcclusion, NodeExcluder, OcclusionTester, Policy, ResidencyPolicy,
+    VisibilityPolicy,
 };
 use crate::view::{ViewGroupHandle, ViewState, ViewUpdateResult};
-
-// `ContentLoader` and `HierarchyResolver` each have an associated `Error` type
-// that prevents them from being used as `dyn Trait` directly.  These internal
-// wrappers erase the error into `Box<dyn Error>` so `SelectionEngine<C>` needs
-// only a single `C` type parameter.
-
-pub(crate) trait ErasedLoader<C: Send + 'static>: Send + Sync + 'static {
-    /// Begin a load, returning a cancellation token and the load future.
-    fn load_erased(
-        &self,
-        bg_context: &Context,
-        main_context: &Context,
-        node_id: NodeId,
-        key: &ContentKey,
-        priority: LoadPriority,
-    ) -> (
-        orkester::CancellationToken,
-        orkester::Task<Result<LoadedContent<C>, Box<dyn std::error::Error + Send + Sync>>>,
-    );
-    fn free_erased(&self, content: C);
-}
-
-impl<C: Send + 'static, L: ContentLoader<C>> ErasedLoader<C> for L {
-    fn load_erased(
-        &self,
-        bg_context: &Context,
-        main_context: &Context,
-        node_id: NodeId,
-        key: &ContentKey,
-        _priority: LoadPriority,
-    ) -> (
-        orkester::CancellationToken,
-        orkester::Task<Result<LoadedContent<C>, Box<dyn std::error::Error + Send + Sync>>>,
-    ) {
-        let cancel = orkester::CancellationToken::new();
-        let task = self
-            .load(bg_context, main_context, node_id, key, cancel.clone())
-            .map(|r| {
-                r.map(|result| LoadedContent { result })
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
-            });
-        (cancel, task)
-    }
-
-    fn free_erased(&self, content: C) {
-        ContentLoader::free(self, content);
-    }
-}
-
-pub(crate) trait ErasedResolver: Send + Sync + 'static {
-    fn resolve_erased(
-        &self,
-        bg_context: &Context,
-        reference: HierarchyReference,
-    ) -> orkester::Task<Result<Option<HierarchyExpansion>, Box<dyn std::error::Error + Send + Sync>>>;
-}
-
-impl<R: HierarchyResolver> ErasedResolver for R {
-    fn resolve_erased(
-        &self,
-        bg_context: &Context,
-        reference: HierarchyReference,
-    ) -> orkester::Task<Result<Option<HierarchyExpansion>, Box<dyn std::error::Error + Send + Sync>>>
-    {
-        self.resolve_reference(bg_context, reference)
-            .map(|r| r.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }))
-    }
-}
-
-
-
-struct PendingResolve {
-    future: orkester::Task<
-        Result<Option<HierarchyExpansion>, Box<dyn std::error::Error + Send + Sync>>,
-    >,
-    byte_size: usize,
-}
-
-
 
 /// Builder for constructing a [`SelectionEngine`].
 ///
@@ -117,10 +35,8 @@ struct PendingResolve {
 pub struct SelectionEngineBuilder<C: Send + 'static> {
     pub(crate) bg_context: Context,
     pub(crate) main_context: Context,
-    pub(crate) hierarchy: Box<dyn SpatialHierarchy>,
+    pub(crate) graph_set: GraphSet<C>,
     pub(crate) lod: Box<dyn LodEvaluator>,
-    pub(crate) loader: Box<dyn ErasedLoader<C>>,
-    pub(crate) resolver: Box<dyn ErasedResolver>,
     pub(crate) visibility: Box<dyn VisibilityPolicy>,
     pub(crate) residency: Box<dyn ResidencyPolicy>,
     pub(crate) options: SelectionOptions,
@@ -139,18 +55,17 @@ impl<C: Send + 'static> SelectionEngineBuilder<C> {
     /// (correct for formats that never emit [`LoadResult::Reference`]).
     pub fn new(
         bg_context: Context,
-        hierarchy: impl SpatialHierarchy + 'static,
+        hierarchy: impl SceneGraph + 'static,
         lod: impl LodEvaluator + 'static,
         loader: impl ContentLoader<C> + 'static,
     ) -> Self {
         let main_context = WorkQueue::default().context();
+        let graph_set = GraphSet::new(Box::new(hierarchy), Box::new(loader));
         Self {
             bg_context,
             main_context,
-            hierarchy: Box::new(hierarchy),
+            graph_set,
             lod: Box::new(lod),
-            loader: Box::new(loader),
-            resolver: Box::new(NoopResolver),
             visibility: Box::new(FrustumVisibilityPolicy),
             residency: Box::new(crate::policy::LruResidencyPolicy),
             options: SelectionOptions::default(),
@@ -172,12 +87,6 @@ impl<C: Send + 'static> SelectionEngineBuilder<C> {
         SelectionEngine::new(self)
     }
 
-    /// Set the hierarchy resolver (needed for formats that emit [`LoadResult::Reference`]).
-    pub fn with_resolver(mut self, resolver: impl HierarchyResolver + 'static) -> Self {
-        self.resolver = Box::new(resolver);
-        self
-    }
-
     /// Override both visibility and residency with a combined [`Policy`] implementation.
     ///
     /// Accepts any `P: Policy + 'static` — including concrete types and `Box<dyn Policy>`.
@@ -186,12 +95,22 @@ impl<C: Send + 'static> SelectionEngineBuilder<C> {
     pub fn with_policy<P: Policy + 'static>(mut self, policy: P) -> Self {
         struct ArcPolicy<P>(Arc<P>);
         impl<P: VisibilityPolicy> VisibilityPolicy for ArcPolicy<P> {
-            fn is_visible(&self, n: NodeId, b: &zukei::SpatialBounds, v: &crate::view::ViewState) -> bool {
+            fn is_visible(
+                &self,
+                n: NodeId,
+                b: &zukei::SpatialBounds,
+                v: &crate::view::ViewState,
+            ) -> bool {
                 self.0.is_visible(n, b, v)
             }
         }
         impl<P: ResidencyPolicy> ResidencyPolicy for ArcPolicy<P> {
-            fn select_evictions(&self, nodes: &[(NodeId, usize)], budget: usize, out: &mut Vec<NodeId>) {
+            fn select_evictions(
+                &self,
+                nodes: &[(NodeId, usize)],
+                budget: usize,
+                out: &mut Vec<NodeId>,
+            ) {
                 self.0.select_evictions(nodes, budget, out);
             }
         }
@@ -227,7 +146,6 @@ impl<C: Send + 'static> SelectionEngineBuilder<C> {
         self.on_error = Some(Box::new(callback));
         self
     }
-
 }
 
 /// Format-agnostic selection engine.
@@ -255,10 +173,8 @@ pub struct SelectionEngine<C: Send + 'static> {
     bg_context: Context,
     /// Context routing work to the main (GPU-upload) thread.
     main_context: Context,
-    hierarchy: Box<dyn SpatialHierarchy>,
+    graph_set: GraphSet<C>,
     lod: Box<dyn LodEvaluator>,
-    resolver: Box<dyn ErasedResolver>,
-    loader: Box<dyn ErasedLoader<C>>,
     visibility: Box<dyn VisibilityPolicy>,
     residency: Box<dyn ResidencyPolicy>,
     options: SelectionOptions,
@@ -270,13 +186,10 @@ pub struct SelectionEngine<C: Send + 'static> {
         NodeId,
         (
             orkester::CancellationToken,
-            orkester::Task<Result<LoadedContent<C>, Box<dyn std::error::Error + Send + Sync>>>,
+            orkester::Task<Result<NodeContent<C>, Box<dyn std::error::Error + Send + Sync>>>,
         ),
     >,
-    /// Pending hierarchy-reference resolve futures.
-    resolve_futures: HashMap<NodeId, PendingResolve>,
     /// Load requests produced by `step()` that have not yet been dispatched.
-    /// Consumed by the next `load()` call.
     pending_requests: Vec<crate::step::LoadRequest>,
     /// Pure mutable frame-state (node lifecycles, resident content, view groups, etc.)
     state: EngineState<C>,
@@ -288,10 +201,8 @@ impl<C: Send + 'static> SelectionEngine<C> {
         Self {
             bg_context: config.bg_context,
             main_context: config.main_context,
-            hierarchy: config.hierarchy,
+            graph_set: config.graph_set,
             lod: config.lod,
-            resolver: config.resolver,
-            loader: config.loader,
             visibility: config.visibility,
             residency: config.residency,
             options: config.options,
@@ -299,7 +210,6 @@ impl<C: Send + 'static> SelectionEngine<C> {
             occlusion_tester: Box::new(NoOcclusion),
             on_load_error: config.on_error,
             in_flight: HashMap::new(),
-            resolve_futures: HashMap::new(),
             pending_requests: Vec::new(),
             state: EngineState::new(),
         }
@@ -325,14 +235,15 @@ impl<C: Send + 'static> SelectionEngine<C> {
         handle: ViewGroupHandle,
     ) -> impl Iterator<Item = crate::frame::RenderNode<'_, C>> {
         let ids: &[NodeId] = self
-            .state.view_groups
+            .state
+            .view_groups
             .get(handle)
             .map(|slot| slot.result.nodes_to_render.as_slice())
             .unwrap_or(&[]);
         ids.iter().filter_map(|&id| {
             self.content(id).map(|content| crate::frame::RenderNode {
                 id,
-                world_transform: self.hierarchy.world_transform(id),
+                world_transform: self.graph_set.world_transform(id),
                 content,
             })
         })
@@ -352,14 +263,15 @@ impl<C: Send + 'static> SelectionEngine<C> {
         ray_direction: DVec3,
     ) -> Vec<PickResult> {
         let ids: &[NodeId] = self
-            .state.view_groups
+            .state
+            .view_groups
             .get(handle)
             .map(|slot| slot.result.nodes_to_render.as_slice())
             .unwrap_or(&[]);
         let mut hits: Vec<PickResult> = ids
             .iter()
             .filter_map(|&id| {
-                let bounds = self.hierarchy.bounds(id);
+                let bounds = self.graph_set.bounds(id);
                 crate::evaluators::ray_vs_bounds(ray_origin, ray_direction, bounds).map(
                     |distance| PickResult {
                         node_id: id,
@@ -394,13 +306,13 @@ impl<C: Send + 'static> SelectionEngine<C> {
         use crate::query::{QueryDepth, shape_intersects_bounds};
         let mut result = Vec::new();
         // DFS stack: (node, current_level)
-        let mut stack = vec![(self.hierarchy.root(), 0u32)];
+        let mut stack = vec![(self.graph_set.root(), 0u32)];
         while let Some((node, level)) = stack.pop() {
-            let bounds = self.hierarchy.bounds(node);
+            let bounds = self.graph_set.bounds(node);
             if !shape_intersects_bounds(shape, bounds) {
                 continue;
             }
-            let children = self.hierarchy.children(node);
+            let children = self.graph_set.children(node);
             let at_depth_limit = matches!(depth, QueryDepth::Level(n) if level >= n);
             if children.is_empty() || at_depth_limit {
                 result.push(node);
@@ -452,15 +364,20 @@ impl<C: Send + 'static> SelectionEngine<C> {
         let view_pairs: &[(ViewGroupHandle, &[ViewState])] = &[(handle, views)];
         let output = crate::step::step(
             &mut self.state,
-            &self.hierarchy,
+            &self.graph_set,
             &self.lod,
             &*self.visibility,
             &*self.residency,
             &self.excluders,
             &*self.occlusion_tester,
             &self.options,
-            self.on_load_error.as_ref().map(|f| f.as_ref() as &dyn Fn(&LoadFailureDetails)),
-            crate::step::StepInput { view_groups: view_pairs, completed },
+            self.on_load_error
+                .as_ref()
+                .map(|f| f.as_ref() as &dyn Fn(&LoadFailureDetails)),
+            crate::step::StepInput {
+                view_groups: view_pairs,
+                completed,
+            },
         );
         // Stash scheduled requests — they are dispatched by the next load() call.
         let queued = self.state.traversal_buffers.candidates.len();
@@ -470,10 +387,9 @@ impl<C: Send + 'static> SelectionEngine<C> {
             if let Some((token, _)) = self.in_flight.remove(&node_id) {
                 token.cancel();
             }
-            self.resolve_futures.remove(&node_id);
         }
-        for content in output.evicted_content {
-            self.loader.free_erased(content);
+        for (node_id, content) in output.evicted_content {
+            self.graph_set.loader_for(node_id).free_dyn(content);
         }
 
         let slot = self.state.view_groups.get(handle).unwrap();
@@ -484,7 +400,7 @@ impl<C: Send + 'static> SelectionEngine<C> {
             nodes_visited: result.nodes_visited,
             nodes_culled: result.nodes_culled,
             queued_requests: queued,
-            worker_thread_load_queue_length: self.in_flight.len() + self.resolve_futures.len(),
+            worker_thread_load_queue_length: self.in_flight.len(),
             frame_number: result.frame_number,
             nodes_fading_out: result.nodes_fading_out.len(),
             nodes_newly_renderable: result.nodes_newly_renderable,
@@ -524,30 +440,38 @@ impl<C: Send + 'static> SelectionEngine<C> {
         let mut started = self.pending_requests.len();
         let pending = std::mem::take(&mut self.pending_requests);
         for req in pending {
-            let (token, future) = self.loader.load_erased(
+            let cancel = orkester::CancellationToken::new();
+            let world_transform = self.graph_set.world_transform(req.node_id);
+            let task = self.graph_set.loader_for(req.node_id).load_dyn(
                 &self.bg_context,
                 &self.main_context,
                 req.node_id,
                 &req.key,
-                req.priority,
+                world_transform,
+                cancel.clone(),
             );
-            self.in_flight.insert(req.node_id, (token, future));
+            self.in_flight.insert(req.node_id, (cancel, task));
         }
 
-        // Also flush any late-arriving completions (resolve futures, etc.)
+        // Also flush any late-arriving completions.
         let completed = self.collect_completions();
         if !completed.is_empty() {
             let output = crate::step::step(
                 &mut self.state,
-                &self.hierarchy,
+                &self.graph_set,
                 &self.lod,
                 &*self.visibility,
                 &*self.residency,
                 &self.excluders,
                 &*self.occlusion_tester,
                 &self.options,
-                self.on_load_error.as_ref().map(|f| f.as_ref() as &dyn Fn(&LoadFailureDetails)),
-                crate::step::StepInput { view_groups: &[], completed },
+                self.on_load_error
+                    .as_ref()
+                    .map(|f| f.as_ref() as &dyn Fn(&LoadFailureDetails)),
+                crate::step::StepInput {
+                    view_groups: &[],
+                    completed,
+                },
             );
             started += output.requests_to_start.len();
             self.apply_step_output(output);
@@ -556,7 +480,7 @@ impl<C: Send + 'static> SelectionEngine<C> {
         LoadPassResult {
             started_requests: started,
             completed_main_thread_tasks: 0,
-            pending_worker_queue: self.in_flight.len() + self.resolve_futures.len(),
+            pending_worker_queue: self.in_flight.len(),
             nodes_newly_renderable: 0,
         }
     }
@@ -602,14 +526,25 @@ impl<C: Send + 'static> SelectionEngine<C> {
     /// Returns `100.0` when there are no tracked nodes (nothing to load).
     /// Corresponds to Cesium's `computeLoadProgress()`.
     pub fn compute_load_progress(&self) -> f32 {
-        let (tracked, renderable) = self.state.node_states.iter().fold((0usize, 0usize), |(t, r), s| {
-            if s.lifecycle != NodeLoadState::Unloaded {
-                (t + 1, r + usize::from(s.lifecycle == NodeLoadState::Renderable))
-            } else {
-                (t, r)
-            }
-        });
-        if tracked == 0 { 100.0 } else { (renderable as f32 / tracked as f32) * 100.0 }
+        let (tracked, renderable) =
+            self.state
+                .node_states
+                .iter()
+                .fold((0usize, 0usize), |(t, r), s| {
+                    if s.lifecycle != NodeLoadState::Unloaded {
+                        (
+                            t + 1,
+                            r + usize::from(s.lifecycle == NodeLoadState::Renderable),
+                        )
+                    } else {
+                        (t, r)
+                    }
+                });
+        if tracked == 0 {
+            100.0
+        } else {
+            (renderable as f32 / tracked as f32) * 100.0
+        }
     }
 
     pub fn options(&self) -> &SelectionOptions {
@@ -622,16 +557,8 @@ impl<C: Send + 'static> SelectionEngine<C> {
     }
 
     /// Read-only access to the spatial hierarchy.
-    pub fn hierarchy(&self) -> &dyn SpatialHierarchy {
-        &*self.hierarchy
-    }
-
-    /// Expand the hierarchy with an externally-resolved patch.
-    ///
-    /// Call this when you receive a [`HierarchyExpansion`] from outside the engine
-    /// (e.g. after manually resolving an external tileset reference).
-    pub fn expand_hierarchy(&mut self, patch: HierarchyExpansion) -> Result<(), HierarchyExpansionError> {
-        self.hierarchy.expand(patch)
+    pub fn hierarchy(&self) -> &dyn SceneGraph {
+        &self.graph_set
     }
 
     /// Read-only access to loaded content for a resident node.
@@ -651,12 +578,12 @@ impl<C: Send + 'static> SelectionEngine<C> {
     /// Useful for debugging, logging, and cache-control identification.
     /// Returns `None` for structural nodes with no content.
     pub fn content_key(&self, node_id: NodeId) -> Option<&ContentKey> {
-        self.hierarchy.content_keys(node_id).first()
+        self.graph_set.content_keys(node_id).first()
     }
 
     /// All content keys for a node (multi-content nodes may have more than one).
     pub fn content_keys(&self, node_id: NodeId) -> &[ContentKey] {
-        self.hierarchy.content_keys(node_id)
+        self.graph_set.content_keys(node_id)
     }
 
     /// Add an excluder that will skip entire subtrees during traversal.
@@ -687,52 +614,44 @@ impl<C: Send + 'static> SelectionEngine<C> {
 
     fn collect_completions(&mut self) -> Vec<crate::step::CompletedLoad<C>> {
         use crate::step::CompletedLoad;
-        let ok = |node_id, content, byte_size| CompletedLoad {
-            node_id,
-            result: Ok(LoadResult::Content { content, byte_size }),
-        };
-        let err = |node_id, msg: String| CompletedLoad { node_id, result: Err(msg) };
-
         let mut completions: Vec<CompletedLoad<C>> = Vec::new();
 
-        // Poll in-flight content loads.
-        let ready_ids: Vec<NodeId> = self.in_flight
+        let ready_ids: Vec<NodeId> = self
+            .in_flight
             .iter()
             .filter_map(|(&id, (_, f))| f.is_ready().then_some(id))
             .collect();
-        for node_id in ready_ids {
-            let Some((_token, future)) = self.in_flight.remove(&node_id) else { continue };
-            match future.block() {
-                Ok(Ok(loaded)) => match loaded.result {
-                    LoadResult::Content { content, byte_size } => {
-                        completions.push(ok(node_id, content, byte_size));
-                    }
-                    LoadResult::Reference { mut reference, byte_size } => {
-                        reference.transform = Some(self.hierarchy.world_transform(node_id));
-                        let resolve_future = self.resolver.resolve_erased(&self.bg_context, reference);
-                        self.resolve_futures.insert(node_id, PendingResolve { future: resolve_future, byte_size });
-                    }
-                },
-                Ok(Err(e)) => completions.push(err(node_id, e.to_string())),
-                Err(e) => completions.push(err(node_id, format!("{e:?}"))),
-            }
-        }
 
-        // Poll pending resolve futures.
-        let ready_resolves: Vec<NodeId> = self.resolve_futures
-            .iter()
-            .filter_map(|(&id, p)| p.future.is_ready().then_some(id))
-            .collect();
-        for node_id in ready_resolves {
-            let Some(PendingResolve { future, byte_size }) = self.resolve_futures.remove(&node_id) else { continue };
+        for node_id in ready_ids {
+            let Some((_token, future)) = self.in_flight.remove(&node_id) else {
+                continue;
+            };
             match future.block() {
-                Ok(Ok(Some(patch))) => match self.hierarchy.expand(patch) {
-                    Ok(()) => completions.push(ok(node_id, None, byte_size)),
-                    Err(e) => completions.push(err(node_id, e.to_string())),
-                },
-                Ok(Ok(None)) => completions.push(ok(node_id, None, byte_size)),
-                Ok(Err(e)) => completions.push(err(node_id, e.to_string())),
-                Err(e) => completions.push(err(node_id, format!("{e:?}"))),
+                Ok(Ok(node_content)) => {
+                    // If the loader returned a sub-scene reference, attach it.
+                    if let Some(scene_ref) = node_content.reference {
+                        if !self.graph_set.has_sub_scene(node_id) {
+                            self.graph_set
+                                .attach(node_id, scene_ref.graph, scene_ref.loader);
+                        }
+                    }
+                    completions.push(CompletedLoad {
+                        node_id,
+                        result: Ok(crate::load::NodeContent {
+                            renderable: node_content.renderable,
+                            reference: None, // already consumed above
+                            byte_size: node_content.byte_size,
+                        }),
+                    });
+                }
+                Ok(Err(e)) => completions.push(CompletedLoad {
+                    node_id,
+                    result: Err(e.to_string()),
+                }),
+                Err(e) => completions.push(CompletedLoad {
+                    node_id,
+                    result: Err(format!("{e:?}")),
+                }),
             }
         }
 
@@ -743,25 +662,27 @@ impl<C: Send + 'static> SelectionEngine<C> {
     fn apply_step_output(&mut self, output: crate::step::StepOutput<C>) {
         // Start new loads.
         for req in output.requests_to_start {
-            let (token, future) = self.loader.load_erased(
+            let cancel = orkester::CancellationToken::new();
+            let world_transform = self.graph_set.world_transform(req.node_id);
+            let task = self.graph_set.loader_for(req.node_id).load_dyn(
                 &self.bg_context,
                 &self.main_context,
                 req.node_id,
                 &req.key,
-                req.priority,
+                world_transform,
+                cancel.clone(),
             );
-            self.in_flight.insert(req.node_id, (token, future));
+            self.in_flight.insert(req.node_id, (cancel, task));
         }
-        // Cancel evicted in-flight loads and resolve futures.
+        // Cancel evicted in-flight loads.
         for node_id in output.requests_to_cancel {
             if let Some((token, _)) = self.in_flight.remove(&node_id) {
                 token.cancel();
             }
-            self.resolve_futures.remove(&node_id);
         }
         // Free evicted content.
-        for content in output.evicted_content {
-            self.loader.free_erased(content);
+        for (node_id, content) in output.evicted_content {
+            self.graph_set.loader_for(node_id).free_dyn(content);
         }
     }
 }

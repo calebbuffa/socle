@@ -25,8 +25,7 @@ fn _geometric_error_family_token() {}
 /// The [`LodFamily`] token recognised by [`GeometricErrorEvaluator`].
 ///
 /// Use this when constructing a [`LodDescriptor`] for a 3D Tiles node.
-pub const GEOMETRIC_ERROR_FAMILY: LodFamily =
-    LodFamily::from_token(_geometric_error_family_token);
+pub const GEOMETRIC_ERROR_FAMILY: LodFamily = LodFamily::from_token(_geometric_error_family_token);
 
 /// Minimum camera-to-tile distance used in the SSE formula to avoid
 /// divide-by-zero when the camera is inside or touching a tile's bounding volume.

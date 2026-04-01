@@ -37,4 +37,3 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
         }
     }
 }
-

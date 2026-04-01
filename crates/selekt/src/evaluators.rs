@@ -45,7 +45,6 @@ pub fn ray_vs_bounds(origin: DVec3, direction: DVec3, bounds: &SpatialBounds) ->
     bounds.ray_intersect(origin, direction)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

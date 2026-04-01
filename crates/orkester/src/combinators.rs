@@ -153,12 +153,7 @@ impl Default for RetryConfig {
 /// Calls `f()` up to `max_attempts` times on `context`. If an attempt returns
 /// `Ok(v)`, the returned task resolves with `v`. If all attempts fail, the
 /// last error is propagated.
-pub fn retry<T, F>(
-    context: &Context,
-    max_attempts: u32,
-    config: RetryConfig,
-    f: F,
-) -> Task<T>
+pub fn retry<T, F>(context: &Context, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
 where
     T: Send + 'static,
     F: Fn() -> Task<Result<T, AsyncError>> + Send + 'static,
@@ -173,7 +168,10 @@ where
             let mut backoff = config.initial_backoff;
             for _ in 0..max_attempts {
                 match f().block() {
-                    Ok(Ok(v)) => { resolver.resolve(v); return output; }
+                    Ok(Ok(v)) => {
+                        resolver.resolve(v);
+                        return output;
+                    }
                     Ok(Err(e)) => last_err = e,
                     Err(e) => last_err = e,
                 }
@@ -318,7 +316,11 @@ where
         results: Arc<Mutex<Vec<Option<Result<T, AsyncError>>>>>,
         shared_resolver: Arc<Mutex<Option<Resolver<Vec<T>>>>>,
     ) {
-        let res = match shared_resolver.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let res = match shared_resolver
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             Some(r) => r,
             None => return,
         };
@@ -327,8 +329,14 @@ where
         for slot in guard.iter_mut() {
             match slot.take() {
                 Some(Ok(v)) => values.push(v),
-                Some(Err(e)) => { res.reject(e); return; }
-                None => { res.reject(AsyncError::msg("join_all: missing result")); return; }
+                Some(Err(e)) => {
+                    res.reject(e);
+                    return;
+                }
+                None => {
+                    res.reject(AsyncError::msg("join_all: missing result"));
+                    return;
+                }
             }
         }
         res.resolve(values);
@@ -340,7 +348,8 @@ where
         let shared_resolver = Arc::clone(&shared_resolver);
         match t.inner {
             TaskInner::Ready(result) => {
-                let result = result.unwrap_or_else(|| Err(AsyncError::msg("Task already consumed")));
+                let result =
+                    result.unwrap_or_else(|| Err(AsyncError::msg("Task already consumed")));
                 results.lock().unwrap_or_else(|p| p.into_inner())[i] = Some(result);
                 if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
                     settle(results, shared_resolver);
@@ -389,13 +398,22 @@ where
         let finish = move |result: Result<T, AsyncError>| {
             results.lock().unwrap_or_else(|p| p.into_inner())[i] = Some(result);
             if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                let res = match shared_resolver.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let res = match shared_resolver
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                {
                     Some(r) => r,
                     None => return,
                 };
                 let mut guard = results.lock().unwrap_or_else(|p| p.into_inner());
-                let values = guard.iter_mut()
-                    .map(|s| s.take().unwrap_or_else(|| Err(AsyncError::msg("join_all_settle: missing result"))))
+                let values = guard
+                    .iter_mut()
+                    .map(|s| {
+                        s.take().unwrap_or_else(|| {
+                            Err(AsyncError::msg("join_all_settle: missing result"))
+                        })
+                    })
                     .collect();
                 res.resolve(values);
             }

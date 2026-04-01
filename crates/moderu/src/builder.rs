@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    Accessor, AccessorComponentType, AccessorType, Asset, Buffer, BufferView, GltfModel, Mesh,
-    MeshPrimitive, PrimitiveMode,
+    Accessor, AccessorComponentType, AccessorType, Asset, Buffer, BufferView, GltfModel, Material,
+    MaterialPbrMetallicRoughness, Mesh, MeshPrimitive, Node, PrimitiveMode, Scene,
 };
 
 mod private {
@@ -88,10 +88,42 @@ pub struct BufferViewIndex(pub usize);
 #[repr(transparent)]
 pub struct MeshIndex(pub usize);
 
+/// Typed index into `GltfModel::materials`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct MaterialIndex(pub usize);
+
+/// Typed index into `GltfModel::nodes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct NodeIndex(pub usize);
+
+macro_rules! impl_index_conversions {
+    ($($T:ident),*) => { $(
+        impl From<$T> for usize {
+            fn from(idx: $T) -> Self { idx.0 }
+        }
+        impl From<usize> for $T {
+            fn from(val: usize) -> Self { $T(val) }
+        }
+        impl std::fmt::Display for $T {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+    )* };
+}
+
+impl_index_conversions!(AccessorIndex, BufferViewIndex, MeshIndex, MaterialIndex, NodeIndex);
+
 /// Ergonomic builder for [`GltfModel`].
 ///
 /// All binary data is accumulated into a single internal buffer.
 /// Call [`finish`](GltfModelBuilder::finish) to get the completed model.
+///
+/// On [`finish`](GltfModelBuilder::finish), if no scene has been created but
+/// meshes and nodes exist, a default scene referencing all root nodes is
+/// generated automatically (matching cesium-native's `Model` pattern).
 pub struct GltfModelBuilder {
     model: GltfModel,
     /// Index of the shared buffer all data is appended to.
@@ -110,6 +142,12 @@ impl GltfModelBuilder {
         };
         model.buffers.push(Buffer::default());
         Self { model, buf_idx: 0 }
+    }
+
+    /// Set the `asset.generator` string (e.g. `"MyApp v1.0"`).
+    pub fn set_asset_generator(&mut self, generator: &str) -> &mut Self {
+        self.model.asset.generator = Some(generator.into());
+        self
     }
 
     /// Append `bytes` to the shared buffer and register a buffer view over them.
@@ -205,6 +243,79 @@ impl GltfModelBuilder {
         AccessorIndex(acc_idx)
     }
 
+    /// Push a `POSITION` accessor from a slice of `[f32; 3]` vertices.
+    pub fn push_positions(&mut self, data: &[[f32; 3]]) -> AccessorIndex {
+        self.push_accessor(bytemuck::cast_slice::<[f32; 3], f32>(data), AccessorType::Vec3)
+    }
+
+    /// Push a `TEXCOORD` accessor from a slice of `[f32; 2]` UV pairs.
+    pub fn push_tex_coords(&mut self, data: &[[f32; 2]]) -> AccessorIndex {
+        self.push_accessor(bytemuck::cast_slice::<[f32; 2], f32>(data), AccessorType::Vec2)
+    }
+
+    /// Push a `NORMAL` accessor from a slice of `[f32; 3]` normals.
+    pub fn push_normals(&mut self, data: &[[f32; 3]]) -> AccessorIndex {
+        self.push_accessor(bytemuck::cast_slice::<[f32; 3], f32>(data), AccessorType::Vec3)
+    }
+
+    // ── Materials ──────────────────────────────────────────────────────────
+
+    /// Push a [`Material`] and return its index.
+    pub fn push_material(&mut self, material: Material) -> MaterialIndex {
+        let idx = self.model.materials.len();
+        self.model.materials.push(material);
+        MaterialIndex(idx)
+    }
+
+    /// Push a default PBR material with the given RGBA base color (each in 0..1).
+    ///
+    /// Metallic factor is 0 and roughness is 1 (fully dielectric/rough),
+    /// matching cesium-native's ellipsoid material.
+    pub fn push_default_material(&mut self, base_color: [f64; 4]) -> MaterialIndex {
+        self.push_material(Material {
+            pbr_metallic_roughness: Some(MaterialPbrMetallicRoughness {
+                base_color_factor: base_color.to_vec(),
+                metallic_factor: 0.0,
+                roughness_factor: 1.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+
+    // ── Nodes ──────────────────────────────────────────────────────────────
+
+    /// Push a node that references a mesh. Returns the node index.
+    pub fn push_node(&mut self, mesh: MeshIndex) -> NodeIndex {
+        let idx = self.model.nodes.len();
+        self.model.nodes.push(Node {
+            mesh: Some(mesh.0),
+            ..Default::default()
+        });
+        NodeIndex(idx)
+    }
+
+    /// Push a node with a mesh and a column-major 4×4 transform matrix.
+    pub fn push_node_with_transform(&mut self, mesh: MeshIndex, matrix: &[f64; 16]) -> NodeIndex {
+        let idx = self.model.nodes.len();
+        self.model.nodes.push(Node {
+            mesh: Some(mesh.0),
+            matrix: matrix.to_vec(),
+            ..Default::default()
+        });
+        NodeIndex(idx)
+    }
+
+    // ── Up-axis ────────────────────────────────────────────────────────────
+
+    /// Set the `gltfUpAxis` extras value (0 = X, 1 = Y, 2 = Z).
+    ///
+    /// Matches cesium-native's `model.extras["gltfUpAxis"]` convention.
+    pub fn set_up_axis(&mut self, axis: u8) {
+        let extras = self.model.extras.get_or_insert_with(|| serde_json::json!({}));
+        extras["gltfUpAxis"] = serde_json::json!(axis);
+    }
+
     /// Start building a [`MeshPrimitive`].
     pub fn primitive(&self) -> PrimitiveBuilder {
         PrimitiveBuilder::new()
@@ -232,10 +343,36 @@ impl GltfModelBuilder {
     }
 
     /// Finalise and return the [`GltfModel`].
-    /// Updates `buffer.byte_length` to match the actual payload.
+    ///
+    /// If meshes exist but no scene has been created, a default scene
+    /// referencing all root nodes is generated automatically. If nodes
+    /// exist but no scene, a scene referencing those nodes is created.
+    /// If meshes exist but no nodes, one node per mesh is created and
+    /// wired into the scene.
     pub fn finish(mut self) -> GltfModel {
         let len = self.model.buffers[self.buf_idx].data.len();
         self.model.buffers[self.buf_idx].byte_length = len;
+
+        // Auto-create nodes for meshes that have no node yet.
+        if !self.model.meshes.is_empty() && self.model.nodes.is_empty() {
+            for i in 0..self.model.meshes.len() {
+                self.model.nodes.push(Node {
+                    mesh: Some(i),
+                    ..Default::default()
+                });
+            }
+        }
+
+        // Auto-create a default scene if none exists.
+        if self.model.scenes.is_empty() && !self.model.nodes.is_empty() {
+            let node_indices: Vec<usize> = (0..self.model.nodes.len()).collect();
+            self.model.scenes.push(Scene {
+                nodes: Some(node_indices),
+                ..Default::default()
+            });
+            self.model.scene = Some(0);
+        }
+
         self.model
     }
 
@@ -288,8 +425,8 @@ impl PrimitiveBuilder {
     }
 
     /// Set the material index.
-    pub fn material(mut self, mat_idx: usize) -> Self {
-        self.material = Some(mat_idx);
+    pub fn material(mut self, mat_idx: MaterialIndex) -> Self {
+        self.material = Some(mat_idx.0);
         self
     }
 

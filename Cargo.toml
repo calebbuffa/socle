@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    # "crates/i3s",
+    "crates/i3s",
     # "crates/i3s-content",
     # "crates/i3s-selekt",
     "crates/kiban",
@@ -19,6 +19,7 @@ members = [
     "crates/tiles3d-selekt",
     "crates/zukei",
     "crates/egaku",
+    "crates/socle-viewer",
 ]
 resolver = "2"
 

@@ -34,16 +34,14 @@ impl std::fmt::Display for NodeId {
     }
 }
 
-/// Structural classification of a node in the hierarchy.
+/// Structural classification of a node in the scene graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
-    /// Has renderable content (mesh, point cloud, etc.).
+    /// Has renderable content (mesh, point cloud, etc.) and participates in LOD selection.
     Renderable,
-    /// Interior pass-through: no content, exists only to structure the hierarchy.
+    /// Interior pass-through: no content, exists only to structure the graph.
     Empty,
-    /// Links to an external child hierarchy (triggers `HierarchyResolver`).
-    Reference,
-    /// Root of a composite multi-layer structure (e.g., I3S building sublayers).
+    /// Root of a composite multi-layer structure (e.g., i3s building sublayers).
     CompositeRoot,
 }
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::executor::Executor;
-use crate::task::{Task, ResolveOutput, create_pair};
+use crate::task::{ResolveOutput, Task, create_pair};
 
 pub(crate) enum ContextKind {
     Immediate,
@@ -120,4 +120,3 @@ impl std::hash::Hash for Context {
         }
     }
 }
-

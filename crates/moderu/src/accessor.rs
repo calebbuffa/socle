@@ -537,8 +537,14 @@ pub fn get_texcoord_accessor<'a>(
 ) -> Result<AccessorTypedView<'a, [f32; 2]>, AccessorViewError> {
     // Avoid a heap allocation for the common sets (0–7).
     const NAMES: [&str; 8] = [
-        "TEXCOORD_0", "TEXCOORD_1", "TEXCOORD_2", "TEXCOORD_3",
-        "TEXCOORD_4", "TEXCOORD_5", "TEXCOORD_6", "TEXCOORD_7",
+        "TEXCOORD_0",
+        "TEXCOORD_1",
+        "TEXCOORD_2",
+        "TEXCOORD_3",
+        "TEXCOORD_4",
+        "TEXCOORD_5",
+        "TEXCOORD_6",
+        "TEXCOORD_7",
     ];
     let owned;
     let key: &str = if let Some(name) = NAMES.get(set as usize) {
@@ -668,12 +674,17 @@ fn decode_sparse(
             .data;
         let stride = bv.byte_stride.unwrap_or(elem_bytes);
         let base = bv.byte_offset + acc.byte_offset;
-        let total = count.checked_mul(elem_bytes).ok_or(AccessorViewError::Overflow)?;
+        let total = count
+            .checked_mul(elem_bytes)
+            .ok_or(AccessorViewError::Overflow)?;
         let mut v = vec![0u8; total];
         for i in 0..count {
-            let src = base.checked_add(i.checked_mul(stride).ok_or(AccessorViewError::Overflow)?)
+            let src = base
+                .checked_add(i.checked_mul(stride).ok_or(AccessorViewError::Overflow)?)
                 .ok_or(AccessorViewError::Overflow)?;
-            let dst = i.checked_mul(elem_bytes).ok_or(AccessorViewError::Overflow)?;
+            let dst = i
+                .checked_mul(elem_bytes)
+                .ok_or(AccessorViewError::Overflow)?;
             v[dst..dst + elem_bytes].copy_from_slice(buf.get(src..src + elem_bytes).ok_or(
                 AccessorViewError::BufferTooSmall {
                     required: src + elem_bytes,
@@ -683,7 +694,12 @@ fn decode_sparse(
         }
         v
     } else {
-        vec![0u8; count.checked_mul(elem_bytes).ok_or(AccessorViewError::Overflow)?]
+        vec![
+            0u8;
+            count
+                .checked_mul(elem_bytes)
+                .ok_or(AccessorViewError::Overflow)?
+        ]
     };
 
     // --- sparse indices ---

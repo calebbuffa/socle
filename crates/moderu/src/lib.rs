@@ -1,7 +1,22 @@
+//! # moderu — glTF 2.0 model toolkit
+//!
+//! Parse, inspect, build, and transform [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
+//! models in memory.
+//!
+//! * **Generated types** — auto-generated Rust structs for the full glTF JSON schema (re-exported
+//!   from [`generated`]).
+//! * **Accessor utilities** — type-safe views and iterators over buffer data
+//!   ([`resolve_accessor`], [`AccessorTypedView`], …).
+//! * **Builder** — construct models programmatically via [`GltfModelBuilder`].
+//! * **Scene graph** — traverse node hierarchies and compute world transforms
+//!   ([`SceneGraph`], [`TransformCache`]).
+//! * **Metadata** — access `EXT_structural_metadata` property tables, textures,
+//!   and attributes.
+//! * **Extensions** — pluggable extension registry ([`ExtensionRegistry`]).
+
 mod generated;
 
 mod accessor;
-mod animation;
 mod builder;
 mod compaction;
 mod copyright;
@@ -25,14 +40,9 @@ pub use accessor::{
     resolve_accessor, resolve_accessor_checked, resolve_accessor_mut, resolve_accessor_owned,
 };
 
-pub use animation::{
-    AnimationClip, AnimationError, AnimationPlayer, AnimationSampler, AnimationTarget,
-    InterpolationMode, TargetProperty,
-};
-
 pub use builder::{
-    AccessorIndex, BufferViewIndex, GltfData, GltfModelBuilder, MeshBuilder, MeshIndex,
-    PrimitiveBuilder,
+    AccessorIndex, BufferViewIndex, GltfData, GltfModelBuilder, MaterialIndex, MeshBuilder,
+    MeshIndex, NodeIndex, PrimitiveBuilder,
 };
 
 // extensions — individual types accessible via moderu::extensions::*
@@ -56,8 +66,8 @@ pub use property::{
     IntoF64, MetadataConvert, MetadataValue, PropertyArrayCopy, PropertyArrayIter,
     PropertyArrayView, PropertyComponentType, PropertyElement, PropertyMat2, PropertyMat3,
     PropertyMat4, PropertyType, PropertyViewStatus, TransformProperty, VariablePropertyArrayView,
-    apply_scale, normalize_i8, normalize_i16, normalize_i32, normalize_i64,
-    normalize_u8, normalize_u16, normalize_u32, normalize_u64, transform_value,
+    apply_scale, normalize_i8, normalize_i16, normalize_i32, normalize_i64, normalize_u8,
+    normalize_u16, normalize_u32, normalize_u64, transform_value,
 };
 
 pub use sampler::{FilterMode, WrapMode};

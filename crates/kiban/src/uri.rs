@@ -75,7 +75,12 @@ impl AsRef<str> for Uri {
 /// );
 /// ```
 pub fn resolve_url(base: &str, key: &str) -> String {
-    if key.contains("://") || key.starts_with('/') || key.starts_with('\\') {
+    // Already absolute: has a scheme, starts with /, \, or is a Windows drive-letter path (e.g. C:\).
+    let is_absolute = key.contains("://")
+        || key.starts_with('/')
+        || key.starts_with('\\')
+        || (key.len() >= 2 && key.as_bytes()[1] == b':' && key.as_bytes()[0].is_ascii_alphabetic());
+    if is_absolute {
         return key.to_owned();
     }
     let base_path = base.split('?').next().unwrap_or(base);

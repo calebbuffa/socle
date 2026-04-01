@@ -33,19 +33,20 @@ use std::time::{Duration, Instant};
 
 use egaku::PrepareRendererResources;
 use glam::DVec3;
-use orkester::{Resolver, Context, Handle, Task};
+use orkester::{Context, Handle, Resolver, Task};
 use orkester_io::AssetAccessor;
 use selekt::{
-    ContentKey, FrameResult, LoadFailureDetails,
-    LoadPassResult, LodThreshold, NodeExcluder, NodeId, OcclusionTester, PickResult, Policy,
-    QueryDepth, QueryShape, RenderNode, SelectionEngine, SelectionEngineBuilder,
-    SelectionOptions, ViewGroupHandle, ViewState, ViewUpdateResult,
+    ContentKey, FrameResult, LoadFailureDetails, LoadPassResult, LodThreshold, NodeExcluder,
+    NodeId, OcclusionTester, PickResult, Policy, QueryDepth, QueryShape, RenderNode,
+    SelectionEngine, SelectionEngineBuilder, SelectionOptions, ViewGroupHandle, ViewState,
+    ViewUpdateResult,
 };
 use terra::{Cartographic, Ellipsoid};
 
-use crate::height_sampler::{HeightSampler, SampleHeightResult};
 use crate::EllipsoidTilesetLoader;
+use crate::ellipsoid_content_loader::EllipsoidContentLoader;
 use crate::evaluator::GeometricErrorEvaluator;
+use crate::height_sampler::{HeightSampler, SampleHeightResult};
 use crate::hierarchy::ExplicitTilesetHierarchy;
 use crate::loader::{Tiles3dError, TilesetLoader, TilesetLoaderFactory};
 
@@ -74,6 +75,7 @@ pub struct TilesetBuilder {
     policy: Option<Box<dyn Policy>>,
     on_error: Option<Box<dyn Fn(&LoadFailureDetails) + Send + Sync + 'static>>,
     attribution: Option<Arc<str>>,
+    main_context: Option<Context>,
 }
 
 impl TilesetBuilder {
@@ -107,6 +109,7 @@ impl TilesetBuilder {
             policy: None,
             on_error: None,
             attribution: None,
+            main_context: None,
         }
     }
 
@@ -171,6 +174,14 @@ impl TilesetBuilder {
         self
     }
 
+    /// Set the main-thread context used to schedule GPU upload tasks
+    /// (`prepare_in_main_thread`).  Pass `work_queue.context()` so the host
+    /// application controls when uploads execute via `WorkQueue::pump_timed`.
+    pub fn with_main_context(mut self, ctx: Context) -> Self {
+        self.main_context = Some(ctx);
+        self
+    }
+
     /// Build the tileset and return a [`Tileset`] handle immediately.
     ///
     /// - **URL source**: `tileset.json` is fetched asynchronously in the
@@ -193,11 +204,14 @@ impl TilesetBuilder {
         let options = self.options;
         let policy = self.policy;
         let on_error = self.on_error;
+        let main_context = self.main_context;
         // Note: main_thread_budget is now caller-managed via WorkQueue::pump_timed.
         let apply_common =
             move |mut builder: SelectionEngineBuilder<R::Content>| -> SelectionEngineBuilder<R::Content> {
-                builder = builder
-                    .with_options(options);
+                builder = builder.with_options(options);
+                if let Some(ctx) = main_context {
+                    builder = builder.with_main_context(ctx);
+                }
                 if let Some(p) = policy {
                     builder = builder.with_policy(p);
                 }
@@ -216,14 +230,15 @@ impl TilesetBuilder {
                 let (ready_resolver, ready_task) =
                     orkester::pair::<Result<(), Arc<Tiles3dError>>>();
                 let override_attr = self.attribution;
-                let task = loader_factory
-                    .create(bg_context.clone(), &accessor)
-                    .map(move |result| {
-                        result.map(|(config, parsed_attr)| {
-                            let final_attr = override_attr.or(parsed_attr);
-                            (apply_common(config).build(), final_attr)
-                        })
-                    });
+                let task =
+                    loader_factory
+                        .create(bg_context.clone(), &accessor)
+                        .map(move |result| {
+                            result.map(|(config, parsed_attr)| {
+                                let final_attr = override_attr.or(parsed_attr);
+                                (apply_common(config).build(), final_attr)
+                            })
+                        });
 
                 Tileset {
                     state: TilesetState::Loading(task),
@@ -243,13 +258,12 @@ impl TilesetBuilder {
                 let tileset = loader.create_tileset();
                 let hierarchy = ExplicitTilesetHierarchy::from_tileset(&tileset);
                 let lod = GeometricErrorEvaluator::new(self.maximum_screen_space_error);
-                let content_loader = TilesetLoader::new(
-                    accessor,
-                    Arc::<str>::from(""),
-                    Arc::<[(String, String)]>::from(self.headers.as_slice()),
+                let content_loader = EllipsoidContentLoader::new(
+                    loader.ellipsoid().clone(),
                     preparer,
                 );
-                let config = SelectionEngineBuilder::new(bg_context.clone(), hierarchy, lod, content_loader);
+                let config =
+                    SelectionEngineBuilder::new(bg_context.clone(), hierarchy, lod, content_loader);
                 let engine = apply_common(config).build();
 
                 let (ready_resolver, ready_task) =
@@ -341,7 +355,9 @@ impl<C: Send + 'static> Tileset<C> {
         let TilesetState::Ready(engine) = &mut self.state else {
             return &self.empty;
         };
-        let handle = *self.default_view.get_or_insert_with(|| engine.add_view_group(1.0));
+        let handle = *self
+            .default_view
+            .get_or_insert_with(|| engine.add_view_group(1.0));
         engine.update_view_group(handle, views);
         engine.load();
         // Copy the result out so we can return a &FrameResult with lifetime 'self.
@@ -349,7 +365,9 @@ impl<C: Send + 'static> Tileset<C> {
             self.last_result.clone_from(result);
         }
         if !self.hidden_nodes.is_empty() {
-            self.last_result.nodes_to_render.retain(|id| !self.hidden_nodes.contains(id));
+            self.last_result
+                .nodes_to_render
+                .retain(|id| !self.hidden_nodes.contains(id));
         }
         &self.last_result
     }
@@ -458,7 +476,11 @@ impl<C: Send + 'static> Tileset<C> {
                     return Box::new(std::iter::empty());
                 };
                 let hidden = self.hidden_nodes.clone();
-                Box::new(engine.render_nodes(handle).filter(move |rn| !hidden.contains(&rn.id)))
+                Box::new(
+                    engine
+                        .render_nodes(handle)
+                        .filter(move |rn| !hidden.contains(&rn.id)),
+                )
             }
             _ => Box::new(std::iter::empty()),
         }
@@ -637,7 +659,7 @@ impl<C: Send + 'static> Tileset<C> {
     }
 
     /// Read-only access to the spatial hierarchy.
-    pub fn hierarchy(&self) -> Option<&dyn selekt::SpatialHierarchy> {
+    pub fn hierarchy(&self) -> Option<&dyn selekt::SceneGraph> {
         match &self.state {
             TilesetState::Ready(engine) => Some(engine.hierarchy()),
             _ => None,
@@ -769,6 +791,17 @@ impl<C: Send + 'static> Tileset<C> {
         }
     }
 
+    /// Returns the bounding volume of the root tile, or `None` if the engine is not yet ready.
+    pub fn root_bounds(&self) -> Option<&zukei::SpatialBounds> {
+        match &self.state {
+            TilesetState::Ready(engine) => {
+                let h = engine.hierarchy();
+                Some(h.bounds(h.root()))
+            }
+            _ => None,
+        }
+    }
+
     /// Check whether the background loading task has completed and transition
     /// state if so. Called automatically by all per-frame methods.
     fn poll_loading(&mut self) {
@@ -792,7 +825,10 @@ impl<C: Send + 'static> Tileset<C> {
                     (TilesetState::Ready(engine), Ok(()))
                 }
                 Ok(Err(e)) => (TilesetState::Failed, Err(Arc::new(e))),
-                Err(e) => (TilesetState::Failed, Err(Arc::new(Tiles3dError::Decode(Box::new(e))))),
+                Err(e) => (
+                    TilesetState::Failed,
+                    Err(Arc::new(Tiles3dError::Decode(Box::new(e)))),
+                ),
             };
             self.state = new_state;
 

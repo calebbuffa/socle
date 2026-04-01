@@ -1,10 +1,8 @@
 //! GltfModel merging — appends all arrays from one model into another,
 //! remapping every cross-array index to avoid collisions.
 
-use crate::generated::{
-    Accessor, Animation, BufferView, Material, Mesh, Node, Skin, Texture,
-};
 use crate::GltfModel;
+use crate::generated::{Accessor, Animation, BufferView, Material, Mesh, Node, Skin, Texture};
 
 impl GltfModel {
     /// Consume `other` and append all of its assets into `self`, remapping
@@ -16,13 +14,13 @@ impl GltfModel {
     /// Model-level extensions use a *first-wins* policy so that an already-set
     /// `CESIUM_RTC` on `self` is not overwritten by `other`'s value.
     pub fn merge(mut self, other: GltfModel) -> GltfModel {
-        let buf_off  = self.buffers.len();
-        let bv_off   = self.buffer_views.len();
-        let acc_off  = self.accessors.len();
-        let img_off  = self.images.len();
+        let buf_off = self.buffers.len();
+        let bv_off = self.buffer_views.len();
+        let acc_off = self.accessors.len();
+        let img_off = self.images.len();
         let samp_off = self.samplers.len();
-        let tex_off  = self.textures.len();
-        let mat_off  = self.materials.len();
+        let tex_off = self.textures.len();
+        let mat_off = self.materials.len();
         let mesh_off = self.meshes.len();
         let node_off = self.nodes.len();
         let skin_off = self.skins.len();

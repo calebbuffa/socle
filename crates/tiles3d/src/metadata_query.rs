@@ -56,7 +56,10 @@ impl MetadataQuery {
                 .as_deref()
                 .is_some_and(|s| s.eq_ignore_ascii_case(semantic))
             {
-                let value = entity.properties.as_ref().and_then(|p| p.get(property_id.as_str()));
+                let value = entity
+                    .properties
+                    .as_ref()
+                    .and_then(|p| p.get(property_id.as_str()));
                 return Some(FoundMetadataProperty {
                     class_id,
                     class_def,

@@ -14,7 +14,6 @@ pub struct ClippingPlane {
     pub distance: f64,
 }
 
-
 /// Options governing content load scheduling, retries, and memory budget.
 ///
 /// Accessed via `engine.options().loading`.
@@ -61,7 +60,6 @@ impl Default for LoadingOptions {
         }
     }
 }
-
 
 /// Options governing frustum, occlusion, fog, and clipping-plane culling.
 ///
@@ -113,7 +111,6 @@ impl Default for CullingOptions {
         }
     }
 }
-
 
 /// Options governing LOD refinement heuristics: skip-LOD, dynamic reduction,
 /// foveation, and progressive resolution.
@@ -185,7 +182,6 @@ impl Default for LodRefinementOptions {
     }
 }
 
-
 /// Options governing load prioritisation, flight preloading, and LOD transitions.
 ///
 /// Accessed via `engine.options().streaming`.
@@ -223,7 +219,6 @@ impl Default for StreamingOptions {
     }
 }
 
-
 /// Debug-only engine options.
 ///
 /// Accessed via `engine.options().debug`.
@@ -232,7 +227,6 @@ pub struct DebugOptions {
     /// When `true`, the engine skips traversal and returns the previous frame's result.
     pub enable_freeze_frame: bool,
 }
-
 
 /// Core engine options, grouped into five nested structs.
 ///

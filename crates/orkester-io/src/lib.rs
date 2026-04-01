@@ -288,7 +288,7 @@ impl AssetAccessor for ArchiveAccessor {
         let path = archive_url_path(url).to_owned();
         let data = Arc::clone(&self.data);
         let index = Arc::clone(&self.index);
-        self.bg_context.run( move || {
+        self.bg_context.run(move || {
             Self::read_entry_sync(&data, &index, &path).map(|data| AssetResponse {
                 status: 200,
                 data,
@@ -308,7 +308,7 @@ impl AssetAccessor for ArchiveAccessor {
         let path = archive_url_path(url).to_owned();
         let data = Arc::clone(&self.data);
         let index = Arc::clone(&self.index);
-        self.bg_context.run( move || {
+        self.bg_context.run(move || {
             Self::read_entry_sync(&data, &index, &path).and_then(|entry_data| {
                 let start = offset as usize;
                 let end = (offset + length) as usize;
@@ -330,7 +330,6 @@ impl AssetAccessor for ArchiveAccessor {
         })
     }
 }
-
 
 /// Synchronous `file://` accessor for local filesystem paths.
 ///
@@ -360,6 +359,19 @@ impl FileAccessor {
         // Strip query and fragment.
         let stripped = stripped.split('?').next().unwrap_or(stripped);
         let stripped = stripped.split('#').next().unwrap_or(stripped);
+        // Normalize forward slashes to backslashes so that mixed paths like
+        // `C:\tiles/0/0.b3dm` (produced by resolve_url when the base is a
+        // Windows path but the tile URI uses '/') are accepted by the Windows
+        // filesystem API (os error 123 = ERROR_INVALID_NAME).
+        // PathBuf::from handles '/' on Windows in some cases but not when the
+        // root is a drive letter with backslashes already present.
+        let normalized;
+        let stripped = if stripped.contains('\\') && stripped.contains('/') {
+            normalized = stripped.replace('/', "\\");
+            normalized.as_str()
+        } else {
+            stripped
+        };
         std::path::PathBuf::from(stripped)
     }
 }
@@ -372,12 +384,14 @@ impl AssetAccessor for FileAccessor {
         _priority: RequestPriority,
     ) -> orkester::Task<Result<AssetResponse, io::Error>> {
         let path = Self::url_to_path(url);
-        self.bg_context.run( move || {
-            std::fs::read(&path).map(|data| AssetResponse {
-                status: 200,
-                data,
-                content_encoding: ContentEncoding::None,
-            })
+        self.bg_context.run(move || {
+            std::fs::read(&path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{e} (path: {})", path.display())))
+                .map(|data| AssetResponse {
+                    status: 200,
+                    data,
+                    content_encoding: ContentEncoding::None,
+                })
         })
     }
 
@@ -393,13 +407,15 @@ impl AssetAccessor for FileAccessor {
         // Guard against OOM from an unreasonably large length.
         const MAX_FILE_RANGE: u64 = 512 * 1024 * 1024; // 512 MiB
         if length > MAX_FILE_RANGE {
-            let msg = format!("get_range: requested length {length} exceeds limit ({MAX_FILE_RANGE})");
+            let msg =
+                format!("get_range: requested length {length} exceeds limit ({MAX_FILE_RANGE})");
             return orkester::resolved(Err(io::Error::new(io::ErrorKind::InvalidInput, msg)));
         }
         let path = Self::url_to_path(url);
-        self.bg_context.run( move || {
+        self.bg_context.run(move || {
             use io::Read as _;
-            let mut file = std::fs::File::open(&path)?;
+            let mut file = std::fs::File::open(&path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{e} (path: {})", path.display())))?;
             io::Seek::seek(&mut file, io::SeekFrom::Start(offset))?;
             let mut buf = vec![0u8; length as usize];
             let n = file.read(&mut buf)?;
@@ -502,7 +518,7 @@ impl AssetAccessor for HttpAccessor {
         let url = url.to_owned();
         let default_headers = Arc::clone(&self.default_headers);
         let extra_headers = headers.to_vec();
-        self.bg_context.run( move || {
+        self.bg_context.run(move || {
             HttpAccessor::build_request(&url, &default_headers, &extra_headers)
                 .call()
                 .map_err(HttpAccessor::map_ureq_error)
@@ -532,7 +548,7 @@ impl AssetAccessor for HttpAccessor {
             format!("bytes={offset}-{last}")
         }));
         let extra_headers = range_header;
-        self.bg_context.run( move || {
+        self.bg_context.run(move || {
             HttpAccessor::build_request(&url, &default_headers, &extra_headers)
                 .call()
                 .map_err(HttpAccessor::map_ureq_error)

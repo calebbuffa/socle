@@ -46,10 +46,6 @@
 
 use crate::generated::{Buffer, Schema, Subtree, Tileset};
 
-// ---------------------------------------------------------------------------
-// Shared types
-// ---------------------------------------------------------------------------
-
 /// Options controlling serialization behaviour.
 #[derive(Debug, Clone, Default)]
 pub struct WriteOptions {

@@ -7,10 +7,10 @@
 mod converters;
 mod decoder;
 
-pub use decoder::decode_tile;
 pub use converters::{
     ConverterFn, GltfConverterResult, GltfConverters, register_all_tile_content_types,
 };
+pub use decoder::decode_tile;
 
 /// Binary tile format detected from the URL or magic bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

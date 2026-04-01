@@ -13,10 +13,9 @@ use glam::DVec3;
 use crate::frame::FrameResult;
 use crate::lod_threshold::LodThreshold;
 use crate::node::{NodeId, NodeStateVec};
-use crate::traversal::TraversalBuffers;
 use crate::scheduler::WeightedFairScheduler;
+use crate::traversal::TraversalBuffers;
 use crate::view::{ViewGroupHandle, ViewState};
-
 
 pub(crate) struct ResidentContent<C> {
     pub content: Option<C>,
@@ -38,7 +37,10 @@ impl<C> ResidentStore<C> {
     }
 
     pub fn insert(&mut self, node_id: NodeId, content: Option<C>, byte_size: usize) {
-        if let Some(prev) = self.map.insert(node_id, ResidentContent { content, byte_size }) {
+        if let Some(prev) = self
+            .map
+            .insert(node_id, ResidentContent { content, byte_size })
+        {
             self.total_bytes = self.total_bytes.saturating_sub(prev.byte_size);
         }
         self.total_bytes = self.total_bytes.saturating_add(byte_size);
@@ -58,7 +60,6 @@ impl<C> ResidentStore<C> {
         self.map.get_mut(&node_id).and_then(|r| r.content.as_mut())
     }
 }
-
 
 pub(crate) struct ViewGroupSlot {
     pub generation: u32,
@@ -149,7 +150,10 @@ impl ViewGroupTable {
 
         if let Some((index, slot)) = self.slots.iter_mut().enumerate().find(|(_, s)| !s.active) {
             *slot = ViewGroupSlot::new(generation, weight);
-            return ViewGroupHandle { index: index as u32, generation };
+            return ViewGroupHandle {
+                index: index as u32,
+                generation,
+            };
         }
 
         let index = self.slots.len() as u32;
@@ -179,7 +183,6 @@ impl ViewGroupTable {
             .filter(|s| s.active && s.generation == handle.generation)
     }
 }
-
 
 /// Pure mutable frame-state.
 ///

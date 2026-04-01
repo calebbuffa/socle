@@ -7,22 +7,22 @@
 //! high-level [`Tiles3dFormat`] adapter that wires them all together for
 //! `selekt::SelectionEngine`.
 
+mod ellipsoid_content_loader;
 mod ellipsoid_tileset_loader;
 mod evaluator;
-mod format;
-mod hierarchy;
 mod height_sampler;
+mod hierarchy;
 mod loader;
 mod resolver;
 mod tileset;
 
 pub use ellipsoid_tileset_loader::EllipsoidTilesetLoader;
 pub use evaluator::{GEOMETRIC_ERROR_FAMILY, GeometricErrorEvaluator};
+pub use height_sampler::{ApproximateHeightSampler, HeightSampler, SampleHeightResult};
 pub use hierarchy::{ExplicitTilesetHierarchy, ImplicitOctreeHierarchy, ImplicitQuadtreeHierarchy};
 pub use loader::{
-    TileContentDecoder, Tiles3dError, TilesetLoader, TilesetLoaderFactory,
+    TileContentDecoder, TileDecoded, Tiles3dError, TilesetLoader, TilesetLoaderFactory,
 };
-pub use height_sampler::{ApproximateHeightSampler, HeightSampler, SampleHeightResult};
 pub use resolver::ExternalTilesetResolver;
 pub use tiles3d_content::TileFormat;
 pub use tileset::{Tileset, TilesetBuilder};

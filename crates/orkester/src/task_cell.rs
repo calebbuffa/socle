@@ -350,7 +350,6 @@ impl<T> TaskCell<T> {
             }
         }
     }
-
 }
 
 impl<T> Drop for TaskCell<T> {
@@ -448,7 +447,9 @@ mod tests {
 
         let cell = TaskCell::<i32>::new();
         // SAFETY: single-consumer test, no concurrency.
-        unsafe { cell.register_waker(&waker); }
+        unsafe {
+            cell.register_waker(&waker);
+        }
         assert!(!WOKEN.load(Ordering::SeqCst));
 
         cell.complete(Ok(42));

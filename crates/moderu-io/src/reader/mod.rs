@@ -39,9 +39,9 @@ pub use image_ops::blit_image;
 // Re-export view types directly from moderu — no intermediate view module.
 pub use glam::{Vec2, Vec3};
 pub use moderu::{
-    AccessorData, AccessorDataView, AccessorViewError, AnimationClip, AnimationSampler,
-    ExtensionRegistry, NodeTransform, SceneError, SceneGraph, SceneNode, Transform, TransformCache,
-    TransformSOA, TypedExtension,
+    AccessorData, AccessorDataView, AccessorViewError, AnimationSampler, ExtensionRegistry,
+    NodeTransform, SceneError, SceneGraph, SceneNode, Transform, TransformCache, TransformSOA,
+    TypedExtension,
 };
 
 use moderu::GltfModel;

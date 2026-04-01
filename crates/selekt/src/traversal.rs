@@ -15,7 +15,7 @@
 use glam::DVec3;
 use zukei::SpatialBounds;
 
-use crate::hierarchy::SpatialHierarchy;
+use crate::hierarchy::SceneGraph;
 use crate::load::{LoadCandidate, LoadPriority, PriorityGroup};
 use crate::lod::{LodDescriptor, LodEvaluator, LodFamily, RefinementMode};
 use crate::node::{NodeId, NodeKind, NodeLoadState, NodeRefinementResult, NodeStateVec};
@@ -148,7 +148,7 @@ pub(crate) fn traverse<H, B>(
     buffers: &mut TraversalBuffers,
 ) -> TraversalStats
 where
-    H: SpatialHierarchy,
+    H: SceneGraph,
     B: LodEvaluator,
 {
     let view_count = views.len();
@@ -184,7 +184,8 @@ where
     // We detect active loading lazily inside the loop using `any_node_loading`.
     let progressive_multiplier = if options.lod.enable_progressive_resolution {
         options
-            .lod.progressive_resolution_height_fraction
+            .lod
+            .progressive_resolution_height_fraction
             .clamp(0.01, 0.99)
     } else {
         1.0
@@ -415,32 +416,6 @@ where
                     NodeRefinementResult::Refined
                 };
                 push_children_rev(children, ancestor_rendered, 0, &mut buffers.stack);
-            }
-            NodeKind::Reference => {
-                if !children.is_empty() {
-                    node_states.get_mut(node).last_result = NodeRefinementResult::Refined;
-                    push_children_rev(children, ancestor_rendered, 0, &mut buffers.stack);
-                } else {
-                    let score = priority_score(bounds, views, options, camera_velocity);
-                    let result = if lifecycle == NodeLoadState::Renderable && has_content {
-                        NodeRefinementResult::Rendered
-                    } else {
-                        NodeRefinementResult::None
-                    };
-                    leaf_select_or_queue(
-                        node,
-                        lifecycle,
-                        has_content,
-                        vis,
-                        ancestor_rendered,
-                        view_group_key,
-                        view_group_weight,
-                        score,
-                        buffers,
-                        node_states,
-                    );
-                    node_states.get_mut(node).last_result = result;
-                }
             }
             NodeKind::Renderable => {
                 let score = priority_score(bounds, views, options, camera_velocity);
@@ -819,7 +794,8 @@ fn priority_score(
                 let vel_angle = cos_vel.clamp(-1.0, 1.0).acos();
                 if vel_angle < options.streaming.request_render_mode_priority_angle {
                     // Reduce score (raise priority) proportionally to alignment.
-                    let boost = (1.0 - vel_angle / options.streaming.request_render_mode_priority_angle)
+                    let boost = (1.0
+                        - vel_angle / options.streaming.request_render_mode_priority_angle)
                         * distance
                         * 500_000.0;
                     score -= boost as i64;
@@ -851,7 +827,7 @@ fn do_select(node: NodeId, vis: u64, buffers: &mut TraversalBuffers, node_states
     }
 }
 
-fn preload_pass<H: SpatialHierarchy>(
+fn preload_pass<H: SceneGraph>(
     hierarchy: &H,
     node_states: &NodeStateVec,
     options: &SelectionOptions,
@@ -928,7 +904,7 @@ fn flight_preload_pass<H, B>(
     camera_velocity: DVec3,
     buffers: &mut TraversalBuffers,
 ) where
-    H: SpatialHierarchy,
+    H: SceneGraph,
     B: LodEvaluator,
 {
     const MAX_DEPTH: usize = 8;

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use glam::DVec3;
 use orkester::Task;
-use selekt::{NodeId, SpatialHierarchy};
+use selekt::{NodeId, SceneGraph};
 use terra::{Cartographic, Ellipsoid};
 
 /// Optional height sampling for terrain queries.
@@ -59,7 +59,7 @@ struct HierarchySnapshot {
 }
 
 impl HierarchySnapshot {
-    fn from_hierarchy(h: &dyn SpatialHierarchy) -> Self {
+    fn from_hierarchy(h: &dyn SceneGraph) -> Self {
         let root = h.root();
         // BFS to collect all reachable nodes.
         let mut queue: VecDeque<NodeId> = VecDeque::new();
@@ -143,14 +143,10 @@ impl HierarchySnapshot {
 unsafe impl Send for HierarchySnapshot {}
 unsafe impl Sync for HierarchySnapshot {}
 
-// ---------------------------------------------------------------------------
-// Public sampler
-// ---------------------------------------------------------------------------
-
 /// Approximate height sampler that uses bounding-volume ray traversal.
 ///
 /// Create from a [`SelectionEngine`](selekt::SelectionEngine) (or any
-/// [`SpatialHierarchy`]) and use as a [`HeightSampler`].
+/// [`SceneGraph`]) and use as a [`HeightSampler`].
 ///
 /// # Accuracy
 ///
@@ -176,15 +172,12 @@ pub struct ApproximateHeightSampler {
 }
 
 impl ApproximateHeightSampler {
-    /// Build from any [`SpatialHierarchy`] reference.
+    /// Build from any [`SceneGraph`] reference.
     ///
     /// Snapshots the entire hierarchy immediately (BFS walk, allocates one
     /// `SpatialBounds` clone per node). The sampler is then independent of
     /// the engine's lifetime.
-    pub fn from_hierarchy(
-        hierarchy: &dyn SpatialHierarchy,
-        ellipsoid: Ellipsoid,
-    ) -> Self {
+    pub fn from_hierarchy(hierarchy: &dyn SceneGraph, ellipsoid: Ellipsoid) -> Self {
         Self {
             snapshot: Arc::new(HierarchySnapshot::from_hierarchy(hierarchy)),
             ellipsoid,

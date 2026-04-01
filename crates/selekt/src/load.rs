@@ -1,5 +1,4 @@
 use crate::node::NodeId;
-use glam::DMat4 as Mat4;
 
 /// Classifies what kind of resource failed to load.
 ///
@@ -7,10 +6,8 @@ use glam::DMat4 as Mat4;
 /// network errors from format errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadFailureType {
-    /// The failure occurred while fetching node content (the typical case).
+    /// The failure occurred while fetching node content.
     NodeContent,
-    /// The failure occurred while resolving an external hierarchy reference.
-    HierarchyReference,
     /// Unknown / unclassified failure.
     Unknown,
 }
@@ -77,114 +74,140 @@ pub struct LoadPassResult {
     pub nodes_newly_renderable: usize,
 }
 
-/// Intermediate value flowing from the worker-thread decode phase to the
-/// main-thread GPU-upload phase.
+/// A self-contained sub-scene attached to a reference node.
 ///
-/// Produced inside [`ContentLoader::load`] implementations that have a
-/// two-phase worker→main pipeline (e.g. CPU-decode then GPU-upload). Using
-/// a shared enum avoids re-defining the three-case pattern in every format crate.
-pub enum DecodeOutput<W: Send + 'static> {
-    /// Decoded node data ready for main-thread GPU upload.
-    Decoded { result: W, byte_size: usize },
-    /// Pointer to an external child hierarchy — no GPU work needed.
-    Reference(HierarchyReference, usize),
-    /// Node carries no renderable content.
-    Empty,
+/// Returned as part of [`NodeContent`] when a node's content resolves to
+/// another scene (e.g. an external `tileset.json` in 3D Tiles). The engine
+/// attaches the sub-scene transparently — traversal crosses the boundary
+/// without any format-specific knowledge in the engine.
+pub struct SceneRef<C: Send + 'static> {
+    /// The spatial graph describing the sub-scene's nodes.
+    pub graph: Box<dyn crate::hierarchy::SceneGraph>,
+    /// Loader responsible for fetching content for nodes in `graph`.
+    pub loader: Box<dyn DynContentLoader<C>>,
+    /// Approximate byte footprint of the reference descriptor itself.
+    pub byte_size: usize,
 }
 
-/// Reference from a node to an external child hierarchy.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HierarchyReference {
-    pub key: ContentKey,
-    pub source: NodeId,
-    pub transform: Option<Mat4>,
+/// Unified result of a [`ContentLoader::load`] call.
+///
+/// A node's content is always some combination of renderable geometry and/or
+/// a sub-scene reference. There is no separate "reference" variant — the engine
+/// handles both independently and in combination (Add-mode nodes can carry
+/// geometry *and* introduce a sub-scene simultaneously).
+pub struct NodeContent<C: Send + 'static> {
+    /// Decoded renderable geometry for this node, if any.
+    pub renderable: Option<C>,
+    /// A sub-scene attached under this node, if any.
+    pub reference: Option<SceneRef<C>>,
+    /// Approximate byte footprint (geometry + reference descriptor combined).
+    pub byte_size: usize,
 }
 
-/// Result of a completed [`ContentLoader::load`] call.
-///
-/// The two variants reflect the two outcomes the engine must handle differently:
-/// - [`Content`](LoadResult::Content): decoded (or empty) node data ready for rendering.
-/// - [`Reference`](LoadResult::Reference): pointer to an external child hierarchy.
-///
-/// `byte_size` tracks the in-memory footprint for LRU eviction accounting.
-pub enum LoadResult<C> {
-    /// Decoded renderable data for this node.
-    ///
-    /// `content` is `None` when the node exists in the hierarchy but carries no
-    /// renderable geometry (structural nodes, empty tiles, etc.).
-    Content {
-        content: Option<C>,
-        /// Approximate byte footprint of `content` (used for memory-budget tracking).
-        byte_size: usize,
-    },
-    /// This node's content file turned out to be a pointer to a child hierarchy.
-    ///
-    /// The engine will use the configured [`HierarchyResolver`](crate::hierarchy::HierarchyResolver)
-    /// to fetch and expand the referenced hierarchy.
-    Reference {
-        reference: HierarchyReference,
-        /// Byte size of the reference descriptor itself (usually small).
-        byte_size: usize,
-    },
+impl<C: Send + 'static> NodeContent<C> {
+    /// Node has geometry and no sub-scene reference.
+    pub fn renderable(content: C, byte_size: usize) -> Self {
+        Self {
+            renderable: Some(content),
+            reference: None,
+            byte_size,
+        }
+    }
+
+    /// Node is a structural pass-through with no geometry.
+    pub fn empty() -> Self {
+        Self {
+            renderable: None,
+            reference: None,
+            byte_size: 0,
+        }
+    }
+
+    /// Node's content is a sub-scene reference with no local geometry.
+    pub fn scene_ref(reference: SceneRef<C>) -> Self {
+        let byte_size = reference.byte_size;
+        Self {
+            renderable: None,
+            reference: Some(reference),
+            byte_size,
+        }
+    }
 }
 
-// Internal types (used by engine, not part of ContentLoader trait)
+/// Object-safe erased version of [`ContentLoader<C>`].
+///
+/// Required so [`SceneRef`] can hold a `Box<dyn DynContentLoader<C>>` without a
+/// second generic type parameter. Implement [`ContentLoader<C>`] instead — the
+/// blanket impl below covers this trait automatically.
+pub trait DynContentLoader<C: Send + 'static>: Send + Sync + 'static {
+    fn load_dyn(
+        &self,
+        bg: &orkester::Context,
+        main: &orkester::Context,
+        node: NodeId,
+        key: &ContentKey,
+        parent_world_transform: glam::DMat4,
+        cancel: orkester::CancellationToken,
+    ) -> orkester::Task<Result<NodeContent<C>, Box<dyn std::error::Error + Send + Sync>>>;
 
-/// Internal wrapper carrying both the result and the cancellation token.
-/// The cancellation token is threaded through so eviction can cancel mid-flight.
-pub(crate) struct LoadedContent<C> {
-    pub result: LoadResult<C>,
+    fn free_dyn(&self, content: C);
 }
 
-/// Async content loading contract.
+impl<C: Send + 'static, L: ContentLoader<C>> DynContentLoader<C> for L {
+    fn load_dyn(
+        &self,
+        bg: &orkester::Context,
+        main: &orkester::Context,
+        node: NodeId,
+        key: &ContentKey,
+        parent_world_transform: glam::DMat4,
+        cancel: orkester::CancellationToken,
+    ) -> orkester::Task<Result<NodeContent<C>, Box<dyn std::error::Error + Send + Sync>>> {
+        self.load(bg, main, node, key, parent_world_transform, cancel)
+            .map(|r| r.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }))
+    }
+
+    fn free_dyn(&self, content: C) {
+        ContentLoader::free(self, content);
+    }
+}
+
+/// Async content loading contract. Implement this for your format.
 ///
-/// Implement this for your format. The engine calls [`load`](ContentLoader::load)
-/// when it decides to fetch a node and cancels via the supplied
-/// [`CancellationToken`](orkester::CancellationToken) when the node is no longer needed.
+/// The engine calls [`load`] when it decides to fetch a node, and cancels via
+/// the supplied [`CancellationToken`](orkester::CancellationToken) when the
+/// node is no longer needed.
 ///
-/// # Required method
+/// # Return type
 ///
-/// ```rust,ignore
-/// fn load(
-///     &self,
-///     bg: &Context,
-///     main: &Context,
-///     node: NodeId,
-///     key: &ContentKey,
-///     cancel: CancellationToken,
-/// ) -> Task<Result<Option<C>, Self::Error>>;
-/// ```
+/// Always return [`NodeContent<C>`]:
+/// - Geometry only: `Ok(NodeContent::renderable(mesh, bytes))`
+/// - Sub-scene ref: `Ok(NodeContent::scene_ref(SceneRef { graph, loader, .. }))`
+/// - Both (Add-mode): construct `NodeContent` with both fields `Some`
+/// - Empty node: `Ok(NodeContent::empty())`
 ///
-/// Return `Ok(LoadResult::Content { .. })` when decoded, `Ok(LoadResult::Reference { .. })`\n/// for nodes that reference a child hierarchy, or `Err(e)` on failure (triggers retry).
-///
-/// # Optional method
-///
-/// Override [`free`](ContentLoader::free) to release GPU or other external
-/// resources when a node is evicted. The default implementation drops `content`.
+/// The engine handles sub-scene attachment transparently when
+/// `NodeContent::reference` is `Some`.
 pub trait ContentLoader<C: Send + 'static>: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Begin loading content for `node_id` at the given key.
+    /// Begin loading content for `node` at the given `key`.
     ///
-    /// `bg` dispatches CPU-side work (decoding); `main` dispatches GPU-upload
-    /// work that must run on the caller's thread. `cancel` is signalled by the
-    /// engine when the load is no longer needed — check it in long-running
-    /// async chains.
-    ///
-    /// Returns `Ok(LoadResult::Content { .. })` on success, `Ok(LoadResult::Reference { .. })`
-    /// for nodes that reference a child hierarchy, or `Err(e)` on failure.
+    /// `bg` dispatches CPU-side work; `main` dispatches GPU-upload work that
+    /// must run on the caller's thread. `cancel` is signalled when the load is
+    /// no longer needed.
     fn load(
         &self,
         bg: &orkester::Context,
         main: &orkester::Context,
         node: NodeId,
         key: &ContentKey,
+        parent_world_transform: glam::DMat4,
         cancel: orkester::CancellationToken,
-    ) -> orkester::Task<Result<LoadResult<C>, Self::Error>>;
+    ) -> orkester::Task<Result<NodeContent<C>, Self::Error>>;
 
     /// Release content when a node is evicted from the cache.
     ///
-    /// Called on the main thread before the content is dropped. Override to
-    /// release GPU resources, unbind textures, etc. Default: drops normally.
+    /// Override to release GPU resources, unbind textures, etc. Default: drops normally.
     fn free(&self, _content: C) {}
 }

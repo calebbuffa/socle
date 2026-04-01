@@ -156,7 +156,6 @@ match engine_task.poll() {
 |---|---|---|
 | Frustum culling | `VisibilityPolicy` | Default: `FrustumVisibilityPolicy` |
 | Memory eviction | `ResidencyPolicy` | Default: `LruResidencyPolicy` |
-| External refs | `HierarchyResolver` | For formats with child-tileset references |
 | Node exclusion | `NodeExcluder` | Runtime per-node hide/show |
 | Occlusion | `OcclusionTester` | Feed GPU occlusion query results back in |
 
@@ -167,7 +166,6 @@ match engine_task.poll() {
 | Visibility policy | `FrustumVisibilityPolicy` (perspective + orthographic frustum) |
 | Residency policy | `LruResidencyPolicy` (evict least-recently-rendered first) |
 | Load scheduler | `WeightedFairScheduler` (fair across multiple view groups) |
-| Hierarchy resolver | No-op (panic on `LoadResult::Reference` if not set) |
 
 ## License
 

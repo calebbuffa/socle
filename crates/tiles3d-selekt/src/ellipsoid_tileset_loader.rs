@@ -19,7 +19,7 @@
 
 use std::f64::consts::PI;
 
-use terra::{Ellipsoid, calc_quadtree_max_geometric_error};
+use terra::{Cartographic, Ellipsoid, calc_quadtree_max_geometric_error};
 use tiles3d::{Asset, BoundingVolume, Content, Refine, Tile, Tileset};
 use tiles3d::{QuadtreeTileID, QuadtreeTilingScheme};
 use zukei::Rectangle;
@@ -61,6 +61,11 @@ impl EllipsoidTilesetLoader {
     pub fn with_max_depth(mut self, max_depth: u32) -> Self {
         self.max_depth = max_depth;
         self
+    }
+
+    /// The ellipsoid used for this loader.
+    pub fn ellipsoid(&self) -> &Ellipsoid {
+        &self.ellipsoid
     }
 
     /// Build and return the in-memory [`Tileset`].
@@ -110,14 +115,31 @@ impl EllipsoidTilesetLoader {
 
         let geometric_error = self.tile_geometric_error(id.level, id.x, id.y);
 
+        // Tile-local origin = center of the tile in ECEF.
+        // Vertices in the content loader are stored relative to this origin,
+        // and this transform places them back in ECEF world space.
+        let center_lon = (lon_west + lon_east) * 0.5;
+        let center_lat = (lat_south + lat_north) * 0.5;
+        let origin = self
+            .ellipsoid
+            .cartographic_to_ecef(Cartographic::new(center_lon, center_lat, 0.0));
+        // Column-major 4×4 translation matrix.
+        let transform = vec![
+            1.0, 0.0, 0.0, 0.0, // col 0
+            0.0, 1.0, 0.0, 0.0, // col 1
+            0.0, 0.0, 1.0, 0.0, // col 2
+            origin.x, origin.y, origin.z, 1.0, // col 3
+        ];
+
         let mut tile = Tile {
             bounding_volume,
             geometric_error,
             refine: Some(Refine::Replace),
-            // Content URI is intentionally empty — callers attach their own
-            // geometry source (e.g. a procedural mesh generator).
+            transform,
+            // Encode bounding rect into content URI so EllipsoidContentLoader
+            // can tessellate the patch without a network fetch.
             content: Some(Content {
-                uri: String::new(),
+                uri: format!("{lon_west},{lat_south},{lon_east},{lat_north}"),
                 ..Default::default()
             }),
             ..Default::default()

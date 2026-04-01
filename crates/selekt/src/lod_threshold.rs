@@ -61,8 +61,8 @@ impl LodThreshold {
     pub fn adjust(&mut self, resident_bytes: usize, budget_bytes: usize) -> f64 {
         if resident_bytes > budget_bytes {
             self.frames_under_budget = 0;
-            self.current = (self.current * self.coarsen_rate)
-                .min(self.base * self.max_multiplier_factor);
+            self.current =
+                (self.current * self.coarsen_rate).min(self.base * self.max_multiplier_factor);
         } else {
             self.frames_under_budget += 1;
             if self.frames_under_budget >= self.refine_stable_frames {

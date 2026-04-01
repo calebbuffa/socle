@@ -43,8 +43,14 @@ impl CrsRegistry {
         reg.register(4267, Box::new(|e| Box::new(GeographicCrs::new(e.clone()))));
         reg.register(4978, Box::new(|e| Box::new(EcefCrs::new(e.clone()))));
         reg.register(3857, Box::new(|e| Box::new(WebMercatorCrs::new(e.clone()))));
-        reg.register(102100, Box::new(|e| Box::new(WebMercatorCrs::new(e.clone()))));
-        reg.register(900913, Box::new(|e| Box::new(WebMercatorCrs::new(e.clone()))));
+        reg.register(
+            102100,
+            Box::new(|e| Box::new(WebMercatorCrs::new(e.clone()))),
+        );
+        reg.register(
+            900913,
+            Box::new(|e| Box::new(WebMercatorCrs::new(e.clone()))),
+        );
         reg
     }
 

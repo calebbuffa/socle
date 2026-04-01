@@ -9,8 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use crate::error::AsyncError;
 
-type SharedCallback<T> =
-    Box<dyn FnOnce(Result<T, AsyncError>) + Send + 'static>;
+type SharedCallback<T> = Box<dyn FnOnce(Result<T, AsyncError>) + Send + 'static>;
 
 enum CellState<T> {
     Pending { callbacks: Vec<SharedCallback<T>> },
@@ -32,7 +31,9 @@ impl<T: Clone + Send + 'static> SharedCell<T> {
     pub(crate) fn new() -> Self {
         Self {
             ready: AtomicBool::new(false),
-            state: Mutex::new(CellState::Pending { callbacks: Vec::new() }),
+            state: Mutex::new(CellState::Pending {
+                callbacks: Vec::new(),
+            }),
             condvar: Condvar::new(),
         }
     }
@@ -53,7 +54,9 @@ impl<T: Clone + Send + 'static> SharedCell<T> {
             let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
             let old = std::mem::replace(
                 &mut *st,
-                CellState::Ready { result: result.clone() },
+                CellState::Ready {
+                    result: result.clone(),
+                },
             );
             self.ready.store(true, Ordering::Release);
             match old {

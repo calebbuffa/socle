@@ -26,8 +26,7 @@ use egaku::PrepareRendererResources;
 use orkester::{CancellationToken, Context, Task};
 use orkester_io::{AssetAccessor, AssetResponse, RequestPriority, resolve_url};
 use selekt::{
-    ContentKey, ContentLoader, DecodeOutput, HierarchyReference,
-    LoadResult, NodeId, SelectionEngineBuilder, SpatialHierarchy,
+    ContentKey, ContentLoader, NodeContent, NodeId, SceneGraph, SceneRef, SelectionEngineBuilder,
 };
 
 use crate::GeometricErrorEvaluator;
@@ -181,10 +180,11 @@ where
                     if let Err(code) = response.check_status() {
                         return orkester::resolved(Err(Tiles3dError::Http(code)));
                     }
-                    let tileset: Tileset = match serde_json::from_slice(response.decompressed_data()) {
-                        Ok(t) => t,
-                        Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
-                    };
+                    let tileset: Tileset =
+                        match serde_json::from_slice(response.decompressed_data()) {
+                            Ok(t) => t,
+                            Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
+                        };
 
                     let lod = GeometricErrorEvaluator::new(sse);
                     // Extract copyright before tileset is partially moved below.
@@ -196,19 +196,13 @@ where
                         .map(Arc::from);
                     // Each of loader and resolver needs its own Arc reference.
                     // accessor/url/headers are moved into this closure (0 extra pre-clones);
-                    // one clone each goes to TilesetLoader, one to ExternalTilesetResolver,
-                    // and the originals are moved into fetch_implicit (implicit path) or
-                    // dropped (explicit path).
+                    // one clone goes to TilesetLoader and the original is moved into
+                    // fetch_implicit (implicit path) or dropped (explicit path).
                     let loader = TilesetLoader::new(
                         Arc::clone(&accessor),
                         Arc::clone(&url),
                         Arc::clone(&headers),
                         Arc::clone(&preparer),
-                    );
-                    let resolver = crate::resolver::ExternalTilesetResolver::new(
-                        Arc::clone(&accessor),
-                        Arc::clone(&url),
-                        Arc::clone(&headers),
                     );
 
                     // Detect implicit tiling
@@ -226,7 +220,9 @@ where
                             Some("ADD")
                         );
                         let content_template = tileset
-                            .root.content.as_ref()
+                            .root
+                            .content
+                            .as_ref()
                             .map(|c| c.uri.clone())
                             .or_else(|| tileset.root.contents.first().map(|c| c.uri.clone()))
                             .unwrap_or_default();
@@ -234,17 +230,32 @@ where
                             resolve_root_subtree_url(&url, &implicit.subtrees.uri, scheme);
 
                         fetch_implicit_subtree_and_build(
-                            bg_context_clone, accessor, headers, subtree_url,
-                            scheme, subtree_levels, available_levels,
-                            root_bv, root_geometric_error, implicit, content_template,
-                            use_add, lod, loader, resolver, attribution,
+                            bg_context_clone,
+                            accessor,
+                            headers,
+                            subtree_url,
+                            scheme,
+                            subtree_levels,
+                            available_levels,
+                            root_bv,
+                            root_geometric_error,
+                            implicit,
+                            content_template,
+                            use_add,
+                            lod,
+                            loader,
+                            attribution,
                         )
                     } else {
                         // Explicit tileset
-                        let hierarchy: Box<dyn SpatialHierarchy> =
+                        let hierarchy: Box<dyn SceneGraph> =
                             Box::new(ExplicitTilesetHierarchy::from_tileset(&tileset));
-                        let config = SelectionEngineBuilder::new(bg_context_clone.clone(), hierarchy, lod, loader)
-                            .with_resolver(resolver);
+                        let config = SelectionEngineBuilder::new(
+                            bg_context_clone.clone(),
+                            hierarchy,
+                            lod,
+                            loader,
+                        );
                         orkester::resolved(Ok((config, attribution)))
                     }
                 },
@@ -269,7 +280,6 @@ fn fetch_implicit_subtree_and_build<R>(
     use_add: bool,
     lod: GeometricErrorEvaluator,
     loader: TilesetLoader<R>,
-    resolver: crate::resolver::ExternalTilesetResolver,
     attribution: Option<Arc<str>>,
 ) -> Task<Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>>
 where
@@ -296,7 +306,6 @@ where
                     use_add,
                     lod,
                     loader,
-                    resolver,
                     attribution,
                 )
             },
@@ -318,7 +327,6 @@ fn parse_subtree_and_build<R>(
     use_add: bool,
     lod: GeometricErrorEvaluator,
     loader: TilesetLoader<R>,
-    resolver: crate::resolver::ExternalTilesetResolver,
     attribution: Option<Arc<str>>,
 ) -> Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>
 where
@@ -329,10 +337,10 @@ where
 {
     let sub_resp = subtree_io.map_err(Tiles3dError::from)?;
     sub_resp.check_status().map_err(Tiles3dError::Http)?;
-    let subtree_av =
-        parse_subtree(sub_resp.decompressed_data(), scheme, subtree_levels).map_err(Tiles3dError::Subtree)?;
+    let subtree_av = parse_subtree(sub_resp.decompressed_data(), scheme, subtree_levels)
+        .map_err(Tiles3dError::Subtree)?;
 
-    let hierarchy: Box<dyn SpatialHierarchy> = match scheme {
+    let hierarchy: Box<dyn SceneGraph> = match scheme {
         SubdivisionScheme::Quadtree => {
             let mut qa = QuadtreeAvailability::new(subtree_levels, available_levels);
             qa.add_subtree(QuadtreeTileID::new(0, 0, 0), subtree_av);
@@ -358,8 +366,10 @@ where
             ))
         }
     };
-    Ok((SelectionEngineBuilder::new(bg_context, hierarchy, lod, loader)
-        .with_resolver(resolver), attribution))
+    Ok((
+        SelectionEngineBuilder::new(bg_context, hierarchy, lod, loader),
+        attribution,
+    ))
 }
 
 /// Pure decode + prepare pipeline for a single 3D Tiles tile.
@@ -386,6 +396,14 @@ where
     preparer: Arc<R>,
 }
 
+/// Intermediate result of the worker-thread decode phase.
+pub enum TileDecoded<W> {
+    /// Tile content ready for main-thread GPU upload.
+    Decoded { result: W, byte_size: usize },
+    /// No renderable content (empty body, unknown format).
+    Empty,
+}
+
 impl<R> TileContentDecoder<R>
 where
     R: PrepareRendererResources,
@@ -402,31 +420,23 @@ where
     /// Detects the tile format from `url` and `response.data`, decodes the
     /// bytes, and calls `PrepareRendererResources::prepare_in_load_thread`.
     ///
+    /// JSON tiles (external tileset references) are **not** handled here —
+    /// they are intercepted by [`TilesetLoader::load`] before calling this
+    /// method.
+    ///
     /// Returns:
-    /// - `DecodeOutput::Decoded` — tile content ready for main-thread upload.
-    /// - `DecodeOutput::Reference` — the tile is a JSON external tileset.
-    /// - `DecodeOutput::Empty` — no renderable content (empty body or unknown format).
+    /// - `TileDecoded::Decoded` — tile content ready for main-thread upload.
+    /// - `TileDecoded::Empty` — no renderable content.
     pub fn worker(
         &self,
-        node_id: NodeId,
+        _node_id: NodeId,
         url: &str,
         response: AssetResponse,
-    ) -> Result<DecodeOutput<R::WorkerResult>, Tiles3dError> {
+    ) -> Result<TileDecoded<R::WorkerResult>, Tiles3dError> {
         if response.decompressed_data().is_empty() {
-            return Ok(DecodeOutput::Empty);
+            return Ok(TileDecoded::Empty);
         }
         let format = TileFormat::detect(url, response.decompressed_data());
-        if format == TileFormat::Json {
-            let byte_size = response.decompressed_data().len();
-            return Ok(DecodeOutput::Reference(
-                HierarchyReference {
-                    key: ContentKey(url.to_string()),
-                    source: node_id,
-                    transform: None,
-                },
-                byte_size,
-            ));
-        }
         let byte_size = response.decompressed_data().len();
         match decode_tile(response.decompressed_data(), &format) {
             Some(model) => {
@@ -434,41 +444,32 @@ where
                     .preparer
                     .prepare_in_load_thread(model)
                     .map_err(|e| Tiles3dError::Decode(Box::new(e)))?;
-                Ok(DecodeOutput::Decoded { result, byte_size })
+                Ok(TileDecoded::Decoded { result, byte_size })
             }
-            None => Ok(DecodeOutput::Empty),
+            None => Ok(TileDecoded::Empty),
         }
     }
 
     /// Main-thread phase.
     ///
-    /// Calls `PrepareRendererResources::prepare_in_main_thread` for
-    /// `Decoded` output and wraps everything in [`LoadResult`].
+    /// Calls `PrepareRendererResources::prepare_in_main_thread` and returns
+    /// a [`NodeContent`] containing the prepared GPU resource.
     pub fn main(
         &self,
-        decode_out: DecodeOutput<R::WorkerResult>,
-    ) -> Result<LoadResult<R::Content>, Tiles3dError>
+        decode_out: TileDecoded<R::WorkerResult>,
+    ) -> Result<NodeContent<R::Content>, Tiles3dError>
     where
         R::Content: Send + 'static,
     {
-        let result = match decode_out {
-            DecodeOutput::Decoded { result, byte_size } => LoadResult::Content {
-                content: Some(self.preparer.prepare_in_main_thread(result)),
+        match decode_out {
+            TileDecoded::Decoded { result, byte_size } => Ok(NodeContent::renderable(
+                self.preparer.prepare_in_main_thread(result),
                 byte_size,
-            },
-            DecodeOutput::Reference(reference, byte_size) => LoadResult::Reference {
-                reference,
-                byte_size,
-            },
-            DecodeOutput::Empty => LoadResult::Content {
-                content: None,
-                byte_size: 0,
-            },
-        };
-        Ok(result)
+            )),
+            TileDecoded::Empty => Ok(NodeContent::empty()),
+        }
     }
 }
-
 
 /// Async content loader for 3D Tiles tile content.
 ///
@@ -521,33 +522,72 @@ where
         main_context: &Context,
         node_id: NodeId,
         key: &ContentKey,
+        parent_world_transform: glam::DMat4,
         cancel: CancellationToken,
-    ) -> Task<Result<LoadResult<R::Content>, Self::Error>> {
+    ) -> Task<Result<NodeContent<R::Content>, Self::Error>> {
         let main_context = main_context.clone();
-        // Resolve url before borrowing it for .get(); NLL lets us move it afterward.
         let url: Arc<str> = resolve_url(&self.base_url, &key.0).into();
-        // Clone decoder once: forwarded through the task chain to avoid a second clone.
         let decoder = Arc::clone(&self.decoder);
-        let priority = RequestPriority(128); // normal priority; engine scheduler governs ordering
+        let accessor_clone = Arc::clone(&self.accessor);
+        let headers_clone = Arc::clone(&self.headers);
+        let priority = RequestPriority(128);
         self.accessor
             .get(&url, &self.headers, priority)
             .with_cancellation(&cancel)
             .then(
                 bg_context,
-                move |io_result: Result<AssetResponse, std::io::Error>| {
-                    let response = io_result.map_err(Tiles3dError::from)?;
-                    response.check_status().map_err(Tiles3dError::Http)?;
-                    let out = decoder.worker(node_id, &url, response)?;
-                    // Forward decoder to main phase to avoid a second Arc::clone.
-                    Ok((out, decoder))
-                },
-            )
-            .then(
-                // GPU-upload work routes to the engine's main-thread WorkQueue.
-                &main_context,
-                move |worker_out: Result<(DecodeOutput<R::WorkerResult>, Arc<TileContentDecoder<R>>), Tiles3dError>| {
-                    let (decode_out, decoder) = worker_out?;
-                    decoder.main(decode_out)
+                move |io_result: Result<AssetResponse, std::io::Error>| -> Task<Result<NodeContent<R::Content>, Tiles3dError>> {
+                    let response = match io_result {
+                        Ok(r) => r,
+                        Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
+                    };
+                    if let Err(code) = response.check_status() {
+                        return orkester::resolved(Err(Tiles3dError::Http(code)));
+                    }
+                    let data = response.decompressed_data();
+                    if data.is_empty() {
+                        return orkester::resolved(Ok(NodeContent::empty()));
+                    }
+
+                    // Detect external tileset reference (JSON content).
+                    if TileFormat::detect(&url, data) == TileFormat::Json {
+                        let byte_size = data.len();
+                        let tileset: Tileset = match serde_json::from_slice(data) {
+                            Ok(t) => t,
+                            Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
+                        };
+                        // Build a sub-scene: the child hierarchy + a new loader
+                        // with the child's URL as the base for relative content keys.
+                        // Pass the reference node's world transform so that sub-tileset
+                        // tile transforms are accumulated on top of it (mirrors cesium-native
+                        // passing tileTransform to parseTilesetJson for external tilesets).
+                        let child_hierarchy = ExplicitTilesetHierarchy::from_tileset_with_root_transform(&tileset, parent_world_transform);
+                        if child_hierarchy.node_count() == 0 {
+                            return orkester::resolved(Ok(NodeContent::empty()));
+                        }
+                        let child_loader = TilesetLoader {
+                            accessor: accessor_clone,
+                            base_url: Arc::clone(&url),
+                            headers: headers_clone,
+                            decoder: Arc::clone(&decoder),
+                        };
+                        let scene_ref = SceneRef {
+                            graph: Box::new(child_hierarchy),
+                            loader: Box::new(child_loader),
+                            byte_size,
+                        };
+                        return orkester::resolved(Ok(NodeContent::scene_ref(scene_ref)));
+                    }
+
+                    // Normal tile: decode on worker, upload on main thread.
+                    let out = match decoder.worker(node_id, &url, response) {
+                        Ok(o) => o,
+                        Err(e) => return orkester::resolved(Err(e)),
+                    };
+                    orkester::resolved(Ok(out))
+                        .then(&main_context, move |worker_out: Result<TileDecoded<R::WorkerResult>, Tiles3dError>| {
+                            decoder.main(worker_out?)
+                        })
                 },
             )
     }

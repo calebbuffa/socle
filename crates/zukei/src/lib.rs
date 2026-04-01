@@ -19,11 +19,11 @@ pub use intersection::{
     obb_distance_half_axes, point_in_triangle_2d, point_in_triangle_3d, ray_aabb, ray_ellipsoid,
     ray_obb, ray_plane, ray_sphere, ray_triangle,
 };
+pub use obb::OrientedBoundingBox;
+pub use plane::Plane;
 pub use polygon::{
     cross2, point_in_polygon_2d, point_to_segment_dist_2d, polygon_boundary_distance_2d,
 };
-pub use obb::OrientedBoundingBox;
-pub use plane::Plane;
 pub use ray::Ray;
 pub use rectangle::Rectangle;
 pub use sphere::BoundingSphere;

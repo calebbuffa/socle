@@ -88,6 +88,10 @@ impl ThreadPool {
 }
 
 impl Default for ThreadPool {
+    /// Creates a thread pool with `max(available_cpus - 1, 1)` threads.
+    ///
+    /// Reserves one CPU for the main/UI thread. Falls back to 4 CPUs if
+    /// `available_parallelism()` is unavailable.
     fn default() -> Self {
         let cpus = thread::available_parallelism()
             .map(|v| v.get())

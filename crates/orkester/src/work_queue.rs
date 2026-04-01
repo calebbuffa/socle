@@ -133,11 +133,7 @@ impl WorkQueue {
     /// else to do while waiting for results dispatched to this queue.
     pub fn wait_and_pump(&mut self) -> usize {
         {
-            let mut guard = self
-                .inner
-                .queue
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut guard = self.inner.queue.lock().unwrap_or_else(|p| p.into_inner());
             while guard.is_empty() {
                 guard = self
                     .inner

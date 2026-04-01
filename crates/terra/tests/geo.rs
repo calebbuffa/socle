@@ -2,7 +2,7 @@
 
 use glam::DVec3;
 use terra::{
-    BoundingRegion, Cartographic, CrsRegistry, Crs, EcefCrs, Ellipsoid, GeographicCrs,
+    BoundingRegion, Cartographic, Crs, CrsRegistry, EcefCrs, Ellipsoid, GeographicCrs,
     GlobeRectangle, SpatialReference, WebMercatorCrs,
 };
 

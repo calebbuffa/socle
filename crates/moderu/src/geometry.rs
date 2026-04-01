@@ -90,9 +90,8 @@ pub fn apply_gltf_up_axis_transform(model: &GltfModel, root_transform: DMat4) ->
     }
 }
 
-// ── Ray intersection ──────────────────────────────────────────────────────────
-
 /// Data about a ray / glTF hit.
+#[derive(Debug, Clone, Copy)]
 pub struct RayGltfHit {
     pub primitive_point: DVec3,
     pub world_point: DVec3,
@@ -129,8 +128,7 @@ pub fn intersect_ray_gltf(
 
             for tri in 0..num_tris {
                 let (i0, i1, i2) = (tri * 3, tri * 3 + 1, tri * 3 + 2);
-                let (v0, v1, v2) = match (positions.get(i0), positions.get(i1), positions.get(i2))
-                {
+                let (v0, v1, v2) = match (positions.get(i0), positions.get(i1), positions.get(i2)) {
                     (Some(a), Some(b), Some(c)) => (a, b, c),
                     _ => continue,
                 };
@@ -153,8 +151,6 @@ pub fn intersect_ray_gltf(
     }
     best_hit
 }
-
-// ── Bounding box ─────────────────────────────────────────────────────────────
 
 /// Axis-aligned bounding box in ECEF / world-space coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -204,8 +200,8 @@ pub fn compute_bounding_box(model: &GltfModel, model_to_world: DMat4) -> Option<
             };
             for i in 0..positions.len() {
                 if let Some(p) = positions.get(i) {
-                    let wp = node_world
-                        .transform_point3(DVec3::new(p.x as f64, p.y as f64, p.z as f64));
+                    let wp =
+                        node_world.transform_point3(DVec3::new(p.x as f64, p.y as f64, p.z as f64));
                     bbox.expand(wp);
                 }
             }
@@ -214,8 +210,6 @@ pub fn compute_bounding_box(model: &GltfModel, model_to_world: DMat4) -> Option<
 
     if bbox.is_empty() { None } else { Some(bbox) }
 }
-
-// ── Skirt mesh metadata ───────────────────────────────────────────────────────
 
 /// Terrain-mesh skirt metadata stored in a glTF mesh's `extras` field.
 ///
