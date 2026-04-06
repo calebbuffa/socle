@@ -5,85 +5,35 @@
 
 #![allow(clippy::all)]
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 
-/// Accessor type: specifies whether data is scalars, vectors, or matrices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AccessorType {
-    #[serde(rename = "SCALAR")]
-    Scalar,
-    #[serde(rename = "VEC2")]
-    Vec2,
-    #[serde(rename = "VEC3")]
-    Vec3,
-    #[serde(rename = "VEC4")]
-    Vec4,
-    #[serde(rename = "MAT2")]
-    Mat2,
-    #[serde(rename = "MAT3")]
-    Mat3,
-    #[serde(rename = "MAT4")]
-    Mat4,
-}
-
-impl Default for AccessorType {
-    fn default() -> Self {
-        Self::Scalar
-    }
-}
-
-/// Interpolation algorithm for animation samplers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AnimationInterpolation {
-    #[serde(rename = "LINEAR")]
-    Linear,
-    #[serde(rename = "STEP")]
-    Step,
-    #[serde(rename = "CUBICSPLINE")]
-    Cubicspline,
-}
-
-impl Default for AnimationInterpolation {
-    fn default() -> Self {
-        Self::Linear
-    }
-}
-
-/// Animated property name (translation, rotation, scale, or weights).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AnimationPath {
-    #[serde(rename = "translation")]
-    Translation,
-    #[serde(rename = "rotation")]
-    Rotation,
-    #[serde(rename = "scale")]
-    Scale,
-    #[serde(rename = "weights")]
-    Weights,
-}
-
-impl Default for AnimationPath {
-    fn default() -> Self {
-        Self::Translation
-    }
-}
-
 /// Data type of accessor components (5120: BYTE, 5121: UNSIGNED_BYTE, 5122: SHORT, 5123: UNSIGNED_SHORT, 5125: UNSIGNED_INT, 5126: FLOAT).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessorComponentType {
-    #[serde(rename = "0")]
     Byte,
-    #[serde(rename = "1")]
     UnsignedByte,
-    #[serde(rename = "2")]
     Short,
-    #[serde(rename = "3")]
     UnsignedShort,
-    #[serde(rename = "4")]
     UnsignedInt,
-    #[serde(rename = "5")]
     Float,
+}
+
+impl Serialize for AccessorComponentType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value: u32 = match self {
+            Self::Byte => 5120,
+            Self::UnsignedByte => 5121,
+            Self::Short => 5122,
+            Self::UnsignedShort => 5123,
+            Self::UnsignedInt => 5125,
+            Self::Float => 5126,
+        };
+        serializer.serialize_u32(value)
+    }
 }
 
 impl<'de> Deserialize<'de> for AccessorComponentType {
@@ -113,40 +63,49 @@ impl Default for AccessorComponentType {
     }
 }
 
-/// Alpha blending mode for materials.
+/// Camera projection type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AlphaMode {
-    #[serde(rename = "OPAQUE")]
-    Opaque,
-    #[serde(rename = "MASK")]
-    Mask,
-    #[serde(rename = "BLEND")]
-    Blend,
+pub enum CameraType {
+    #[serde(rename = "perspective")]
+    Perspective,
+    #[serde(rename = "orthographic")]
+    Orthographic,
 }
 
-impl Default for AlphaMode {
+impl Default for CameraType {
     fn default() -> Self {
-        Self::Opaque
+        Self::Perspective
     }
 }
 
 /// Primitive rendering mode (0: POINTS, 1: LINES, 2: LINE_LOOP, 3: LINE_STRIP, 4: TRIANGLES, 5: TRIANGLE_STRIP, 6: TRIANGLE_FAN).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimitiveMode {
-    #[serde(rename = "0")]
     Points,
-    #[serde(rename = "1")]
     Lines,
-    #[serde(rename = "2")]
     LineLoop,
-    #[serde(rename = "3")]
     LineStrip,
-    #[serde(rename = "4")]
     Triangles,
-    #[serde(rename = "5")]
     TriangleStrip,
-    #[serde(rename = "6")]
     TriangleFan,
+}
+
+impl Serialize for PrimitiveMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value: u32 = match self {
+            Self::Points => 0,
+            Self::Lines => 1,
+            Self::LineLoop => 2,
+            Self::LineStrip => 3,
+            Self::Triangles => 4,
+            Self::TriangleStrip => 5,
+            Self::TriangleFan => 6,
+        };
+        serializer.serialize_u32(value)
+    }
 }
 
 impl<'de> Deserialize<'de> for PrimitiveMode {
@@ -177,18 +136,81 @@ impl Default for PrimitiveMode {
     }
 }
 
-/// Camera projection type.
+/// Accessor type: specifies whether data is scalars, vectors, or matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CameraType {
-    #[serde(rename = "perspective")]
-    Perspective,
-    #[serde(rename = "orthographic")]
-    Orthographic,
+pub enum AccessorType {
+    #[serde(rename = "SCALAR")]
+    Scalar,
+    #[serde(rename = "VEC2")]
+    Vec2,
+    #[serde(rename = "VEC3")]
+    Vec3,
+    #[serde(rename = "VEC4")]
+    Vec4,
+    #[serde(rename = "MAT2")]
+    Mat2,
+    #[serde(rename = "MAT3")]
+    Mat3,
+    #[serde(rename = "MAT4")]
+    Mat4,
 }
 
-impl Default for CameraType {
+impl Default for AccessorType {
     fn default() -> Self {
-        Self::Perspective
+        Self::Scalar
+    }
+}
+
+/// Animated property name (translation, rotation, scale, or weights).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnimationPath {
+    #[serde(rename = "translation")]
+    Translation,
+    #[serde(rename = "rotation")]
+    Rotation,
+    #[serde(rename = "scale")]
+    Scale,
+    #[serde(rename = "weights")]
+    Weights,
+}
+
+impl Default for AnimationPath {
+    fn default() -> Self {
+        Self::Translation
+    }
+}
+
+/// Interpolation algorithm for animation samplers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnimationInterpolation {
+    #[serde(rename = "LINEAR")]
+    Linear,
+    #[serde(rename = "STEP")]
+    Step,
+    #[serde(rename = "CUBICSPLINE")]
+    Cubicspline,
+}
+
+impl Default for AnimationInterpolation {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+/// Alpha blending mode for materials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlphaMode {
+    #[serde(rename = "OPAQUE")]
+    Opaque,
+    #[serde(rename = "MASK")]
+    Mask,
+    #[serde(rename = "BLEND")]
+    Blend,
+}
+
+impl Default for AlphaMode {
+    fn default() -> Self {
+        Self::Opaque
     }
 }
 
@@ -687,7 +709,7 @@ pub struct Image {
 
     /// Decoded pixel data. Populated by the reader pipeline; not serialized.
     #[serde(skip)]
-    pub pixels: crate::image::Image,
+    pub pixels: crate::image::ImageData,
 
     /// Extension-specific data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

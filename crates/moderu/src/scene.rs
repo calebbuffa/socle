@@ -1,12 +1,11 @@
-//! Scene graph traversal with transform matrices and caching.
+//! Scene graph traversal with transform matrices.
 //!
 //! Provides efficient traversal of scene nodes with automatic transform
-//! accumulation, matrix computations, and optional caching for repeated queries.
+//! accumulation and matrix computations.
 //!
-//! **Performance optimizations:**
-//! - `TransformCache`: Caches computed world matrices to avoid recomputation (10-50x speedup)
-//! - `TransformSOA`: Batch-optimized layout for bulk transform operations
-//! - Inline hints for hot paths (matrix mult, transform composition)
+//! - [`SceneGraph`]: depth-first traversal of a glTF scene with world transforms.
+//! - [`TransformCache`]: standalone cache for world matrices; compute once, reuse across frames.
+//! - [`TransformSOA`]: batch-optimized Structure-of-Arrays layout for bulk GPU uploads.
 
 use crate::GltfModel;
 use glam::{Mat4, Quat, Vec3};
@@ -14,13 +13,16 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// Error type for scene operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SceneError {
     /// Scene index out of bounds.
+    #[error("scene index {0} not found")]
     SceneNotFound(usize),
     /// Node index out of bounds.
+    #[error("node index {0} not found")]
     NodeNotFound(usize),
     /// Invalid node reference in hierarchy.
+    #[error("invalid node reference {0}")]
     InvalidNodeReference(i32),
 }
 
@@ -128,6 +130,7 @@ impl TransformSOA {
 }
 
 /// Cached transform state for a node.
+#[derive(Debug, Clone)]
 pub struct NodeTransform {
     /// Local transform (from glTF node data).
     pub local: Transform,
@@ -240,6 +243,12 @@ impl TransformCache {
     pub fn clear(&self) {
         self.cache.write().clear();
         self.dirty_scenes.write().clear();
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::identity()
     }
 }
 
@@ -369,8 +378,6 @@ impl<'a> Iterator for SceneNodeIterator<'a> {
 pub struct SceneGraph<'a> {
     model: &'a GltfModel,
     scene_index: usize,
-    #[allow(dead_code)]
-    cache: Option<&'a TransformCache>,
 }
 
 impl<'a> SceneGraph<'a> {
@@ -384,28 +391,6 @@ impl<'a> SceneGraph<'a> {
         Ok(SceneGraph {
             model,
             scene_index,
-            cache: None,
-        })
-    }
-
-    /// Create a view with optional transform caching for repeated queries.
-    ///
-    /// This provides massive speedup (10-50x) if you're traversing the same scene multiple times.
-    #[inline]
-    pub fn with_cache(
-        model: &'a GltfModel,
-        scene_index: usize,
-        cache: &'a TransformCache,
-    ) -> Result<Self, SceneError> {
-        cache.init_for_model(model);
-        if scene_index >= model.scenes.len() {
-            return Err(SceneError::SceneNotFound(scene_index));
-        }
-
-        Ok(SceneGraph {
-            model,
-            scene_index,
-            cache: Some(cache),
         })
     }
 
@@ -430,8 +415,8 @@ impl<'a> SceneGraph<'a> {
     where
         F: FnMut(&SceneNode, usize),
     {
-        for (depth, node) in self.root_nodes().enumerate() {
-            self.traverse_node(&node, depth, &mut callback);
+        for node in self.root_nodes() {
+            self.traverse_node(&node, 0, &mut callback);
         }
         Ok(())
     }
@@ -441,8 +426,8 @@ impl<'a> SceneGraph<'a> {
     where
         F: FnMut(&SceneNode, usize) -> bool,
     {
-        for (depth, node) in self.root_nodes().enumerate() {
-            if !self.traverse_node_early(&node, depth, &mut callback) {
+        for node in self.root_nodes() {
+            if !self.traverse_node_early(&node, 0, &mut callback) {
                 return Ok(false);
             }
         }

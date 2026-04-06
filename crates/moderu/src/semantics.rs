@@ -22,7 +22,10 @@ pub enum VertexAttribute {
 
 impl VertexAttribute {
     /// Converts enum to glTF semantic name string.
-    pub const fn as_str(&self) -> &'static str {
+    ///
+    /// Returns `"UNKNOWN"` for indexed variants with an index ≥ 8 (which are unreachable
+    /// through the public API but can be constructed via the public inner `u8` field).
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Position => "POSITION",
             Self::Normal => "NORMAL",
@@ -38,21 +41,21 @@ impl VertexAttribute {
                     "TEXCOORD_6",
                     "TEXCOORD_7",
                 ];
-                TEXCOORD[*i as usize]
+                TEXCOORD.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
             Self::Color(i) => {
                 const COLOR: [&str; 8] = [
                     "COLOR_0", "COLOR_1", "COLOR_2", "COLOR_3", "COLOR_4", "COLOR_5", "COLOR_6",
                     "COLOR_7",
                 ];
-                COLOR[*i as usize]
+                COLOR.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
             Self::Joints(i) => {
                 const JOINTS: [&str; 8] = [
                     "JOINTS_0", "JOINTS_1", "JOINTS_2", "JOINTS_3", "JOINTS_4", "JOINTS_5",
                     "JOINTS_6", "JOINTS_7",
                 ];
-                JOINTS[*i as usize]
+                JOINTS.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
             Self::Weights(i) => {
                 const WEIGHTS: [&str; 8] = [
@@ -65,7 +68,7 @@ impl VertexAttribute {
                     "WEIGHTS_6",
                     "WEIGHTS_7",
                 ];
-                WEIGHTS[*i as usize]
+                WEIGHTS.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
             Self::FeatureId(i) => {
                 const FEATURE_ID: [&str; 8] = [
@@ -78,7 +81,7 @@ impl VertexAttribute {
                     "_FEATURE_ID_6",
                     "_FEATURE_ID_7",
                 ];
-                FEATURE_ID[*i as usize]
+                FEATURE_ID.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
         }
     }
@@ -126,6 +129,19 @@ impl AsRef<str> for VertexAttribute {
     }
 }
 
+impl From<VertexAttribute> for String {
+    fn from(a: VertexAttribute) -> Self {
+        a.as_str().to_owned()
+    }
+}
+
+impl std::str::FromStr for VertexAttribute {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        VertexAttribute::from_str(s).ok_or(())
+    }
+}
+
 /// Standard instance attribute semantics for `EXT_mesh_gpu_instancing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstanceAttribute {
@@ -141,7 +157,9 @@ pub enum InstanceAttribute {
 
 impl InstanceAttribute {
     /// Converts enum to glTF semantic name string.
-    pub const fn as_str(&self) -> &'static str {
+    ///
+    /// Returns `"UNKNOWN"` for `FeatureId` variants with an index ≥ 8.
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::Translation => "TRANSLATION",
             Self::Rotation => "ROTATION",
@@ -157,7 +175,7 @@ impl InstanceAttribute {
                     "_FEATURE_ID_6",
                     "_FEATURE_ID_7",
                 ];
-                FEATURE_ID[*i as usize]
+                FEATURE_ID.get(*i as usize).copied().unwrap_or("UNKNOWN")
             }
         }
     }
@@ -198,6 +216,19 @@ impl std::fmt::Display for InstanceAttribute {
 impl AsRef<str> for InstanceAttribute {
     fn as_ref(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl From<InstanceAttribute> for String {
+    fn from(a: InstanceAttribute) -> Self {
+        a.as_str().to_owned()
+    }
+}
+
+impl std::str::FromStr for InstanceAttribute {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        InstanceAttribute::from_str(s).ok_or(())
     }
 }
 

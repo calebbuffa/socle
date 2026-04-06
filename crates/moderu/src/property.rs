@@ -1,6 +1,5 @@
 use std::fmt;
 use std::marker::PhantomData;
-use std::ops::{Add, Mul};
 
 /// The possible types of a property in a property table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -417,53 +416,6 @@ impl PropertyElement for PropertyMat4 {
     }
 }
 
-#[inline]
-pub fn normalize_i8(v: i8) -> f64 {
-    (v as f64 / i8::MAX as f64).max(-1.0)
-}
-#[inline]
-pub fn normalize_i16(v: i16) -> f64 {
-    (v as f64 / i16::MAX as f64).max(-1.0)
-}
-#[inline]
-pub fn normalize_i32(v: i32) -> f64 {
-    (v as f64 / i32::MAX as f64).max(-1.0)
-}
-#[inline]
-pub fn normalize_i64(v: i64) -> f64 {
-    (v as f64 / i64::MAX as f64).max(-1.0)
-}
-#[inline]
-pub fn normalize_u8(v: u8) -> f64 {
-    v as f64 / u8::MAX as f64
-}
-#[inline]
-pub fn normalize_u16(v: u16) -> f64 {
-    v as f64 / u16::MAX as f64
-}
-#[inline]
-pub fn normalize_u32(v: u32) -> f64 {
-    v as f64 / u32::MAX as f64
-}
-#[inline]
-pub fn normalize_u64(v: u64) -> f64 {
-    v as f64 / u64::MAX as f64
-}
-
-#[inline]
-pub fn apply_scale<T: Mul<Output = T> + Copy>(value: T, scale: T) -> T {
-    value * scale
-}
-
-pub fn transform_value<T: Add<Output = T> + Mul<Output = T> + Copy>(
-    value: T,
-    offset: Option<T>,
-    scale: Option<T>,
-) -> T {
-    let scaled = scale.map_or(value, |s| value * s);
-    offset.map_or(scaled, |o| scaled + o)
-}
-
 pub trait IntoF64: Copy {
     fn into_f64(self) -> f64;
 }
@@ -669,7 +621,7 @@ impl<'a, T: PropertyElement> PropertyArrayView<'a, T> {
         if index >= self.count {
             return None;
         }
-        T::from_le_bytes(&self.data[index * T::byte_size()..])
+        T::from_le_bytes(self.data.get(index * T::byte_size()..).unwrap_or(&[]))
     }
     pub fn iter(&self) -> PropertyArrayIter<'a, T> {
         PropertyArrayIter {
@@ -747,123 +699,88 @@ impl<T: PropertyElement> PropertyArrayCopy<T> {
     }
 }
 
-/// All possible states when constructing a property view — success, empty-with-default,
-/// and every error condition across table, attribute, and texture views.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PropertyViewStatus {
-    Valid,
-    /// Property has no buffer data but the schema provides a default value.
-    EmptyPropertyWithDefault,
+/// Error returned when constructing a property view fails.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PropertyViewError {
+    #[error("property does not exist in the schema")]
     NonexistentProperty,
+    #[error("property type mismatch")]
     TypeMismatch,
+    #[error("property component type mismatch")]
     ComponentTypeMismatch,
+    #[error("property array type mismatch")]
     ArrayTypeMismatch,
+    #[error("invalid normalization")]
     InvalidNormalization,
+    #[error("normalization mismatch")]
     NormalizationMismatch,
+    #[error("invalid offset")]
     InvalidOffset,
+    #[error("invalid scale")]
     InvalidScale,
+    #[error("invalid max")]
     InvalidMax,
+    #[error("invalid min")]
     InvalidMin,
+    #[error("invalid noData value")]
     InvalidNoDataValue,
+    #[error("invalid default value")]
     InvalidDefaultValue,
+    #[error("invalid property table")]
     InvalidPropertyTable,
+    #[error("invalid value buffer view")]
     InvalidValueBufferView,
+    #[error("invalid array-offset buffer view")]
     InvalidArrayOffsetBufferView,
+    #[error("invalid string-offset buffer view")]
     InvalidStringOffsetBufferView,
+    #[error("invalid value buffer")]
     InvalidValueBuffer,
+    #[error("invalid array-offset buffer")]
     InvalidArrayOffsetBuffer,
+    #[error("invalid string-offset buffer")]
     InvalidStringOffsetBuffer,
+    #[error("buffer view out of bounds")]
     BufferViewOutOfBounds,
+    #[error("buffer view byte length is not divisible by the element type size")]
     BufferViewSizeNotDivisibleByTypeSize,
+    #[error("buffer view size does not match property table count")]
     BufferViewSizeDoesNotMatchPropertyTableCount,
+    #[error("array count and offset buffer cannot both be present")]
     ArrayCountAndOffsetBufferCoexist,
+    #[error("variable-length array requires either a fixed count or an offset buffer")]
     ArrayCountAndOffsetBufferDontExist,
+    #[error("invalid array offset type")]
     InvalidArrayOffsetType,
+    #[error("invalid string offset type")]
     InvalidStringOffsetType,
+    #[error("array offsets are not sorted")]
     ArrayOffsetsNotSorted,
+    #[error("string offsets are not sorted")]
     StringOffsetsNotSorted,
+    #[error("array offset out of bounds")]
     ArrayOffsetOutOfBounds,
+    #[error("string offset out of bounds")]
     StringOffsetOutOfBounds,
+    #[error("invalid property attribute")]
     InvalidPropertyAttribute,
+    #[error("invalid accessor")]
     InvalidAccessor,
+    #[error("invalid property texture")]
     InvalidPropertyTexture,
+    #[error("invalid texture")]
     InvalidTexture,
+    #[error("invalid image index")]
     InvalidImageIndex,
+    #[error("invalid sampler index")]
     InvalidSamplerIndex,
+    #[error("image is empty")]
     EmptyImage,
+    #[error("invalid bytes per channel")]
     InvalidBytesPerChannel,
+    #[error("invalid channel count")]
     InvalidChannelCount,
 }
-
-impl PropertyViewStatus {
-    /// Returns `true` for `Valid` and `EmptyPropertyWithDefault`.
-    pub fn is_valid(&self) -> bool {
-        matches!(self, Self::Valid | Self::EmptyPropertyWithDefault)
-    }
-    /// Returns `true` only for `Valid` (data is present and correct).
-    pub fn is_ready(&self) -> bool {
-        *self == Self::Valid
-    }
-}
-
-impl fmt::Display for PropertyViewStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let msg = match self {
-            Self::Valid => "valid",
-            Self::EmptyPropertyWithDefault => "empty property with default value",
-            Self::NonexistentProperty => "property does not exist in the schema",
-            Self::TypeMismatch => "property type mismatch",
-            Self::ComponentTypeMismatch => "property component type mismatch",
-            Self::ArrayTypeMismatch => "property array type mismatch",
-            Self::InvalidNormalization => "invalid normalization",
-            Self::NormalizationMismatch => "normalization mismatch",
-            Self::InvalidOffset => "invalid offset",
-            Self::InvalidScale => "invalid scale",
-            Self::InvalidMax => "invalid max",
-            Self::InvalidMin => "invalid min",
-            Self::InvalidNoDataValue => "invalid noData value",
-            Self::InvalidDefaultValue => "invalid default value",
-            Self::InvalidPropertyTable => "invalid property table",
-            Self::InvalidValueBufferView => "invalid value buffer view",
-            Self::InvalidArrayOffsetBufferView => "invalid array-offset buffer view",
-            Self::InvalidStringOffsetBufferView => "invalid string-offset buffer view",
-            Self::InvalidValueBuffer => "invalid value buffer",
-            Self::InvalidArrayOffsetBuffer => "invalid array-offset buffer",
-            Self::InvalidStringOffsetBuffer => "invalid string-offset buffer",
-            Self::BufferViewOutOfBounds => "buffer view out of bounds",
-            Self::BufferViewSizeNotDivisibleByTypeSize => {
-                "buffer view byte length is not divisible by the element type size"
-            }
-            Self::BufferViewSizeDoesNotMatchPropertyTableCount => {
-                "buffer view size does not match property table count"
-            }
-            Self::ArrayCountAndOffsetBufferCoexist => {
-                "array count and offset buffer cannot both be present"
-            }
-            Self::ArrayCountAndOffsetBufferDontExist => {
-                "variable-length array requires either a fixed count or an offset buffer"
-            }
-            Self::InvalidArrayOffsetType => "invalid array offset type",
-            Self::InvalidStringOffsetType => "invalid string offset type",
-            Self::ArrayOffsetsNotSorted => "array offsets are not sorted",
-            Self::StringOffsetsNotSorted => "string offsets are not sorted",
-            Self::ArrayOffsetOutOfBounds => "array offset out of bounds",
-            Self::StringOffsetOutOfBounds => "string offset out of bounds",
-            Self::InvalidPropertyAttribute => "invalid property attribute",
-            Self::InvalidAccessor => "invalid accessor",
-            Self::InvalidPropertyTexture => "invalid property texture",
-            Self::InvalidTexture => "invalid texture",
-            Self::InvalidImageIndex => "invalid image index",
-            Self::InvalidSamplerIndex => "invalid sampler index",
-            Self::EmptyImage => "image is empty",
-            Self::InvalidBytesPerChannel => "invalid bytes per channel",
-            Self::InvalidChannelCount => "invalid channel count",
-        };
-        f.write_str(msg)
-    }
-}
-
-impl std::error::Error for PropertyViewStatus {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetadataValue {

@@ -2,61 +2,15 @@
 
 use crate::GltfModel;
 
-/// Merge all buffers into the first buffer (index 0).
-pub fn collapse_to_single_buffer(model: &mut GltfModel) {
-    if model.buffers.len() <= 1 {
-        return;
-    }
-    let mut combined = std::mem::take(&mut model.buffers[0].data);
-    let mut offsets = vec![0usize];
-    for i in 1..model.buffers.len() {
-        let aligned = combined.len().next_multiple_of(4);
-        combined.resize(aligned, 0);
-        offsets.push(combined.len());
-        combined.extend_from_slice(&model.buffers[i].data);
-    }
-    if let Some(b) = model.buffers.get_mut(0) {
-        b.byte_length = combined.len();
-        b.data = combined;
-    }
-    model.buffers.truncate(1);
-    for bv in &mut model.buffer_views {
-        if bv.buffer < offsets.len() {
-            bv.byte_offset += offsets[bv.buffer];
-        }
-        bv.buffer = 0;
-    }
-}
-
-/// Move content from source buffer into destination buffer.
-pub fn move_buffer_content(model: &mut GltfModel, destination: usize, source: usize) {
-    if destination == source || source >= model.buffers.len() || destination >= model.buffers.len()
-    {
-        return;
-    }
-    let dst_offset = model.buffers[destination].data.len().next_multiple_of(4);
-    model.buffers[destination].data.resize(dst_offset, 0);
-    let src_data = std::mem::take(&mut model.buffers[source].data);
-    model.buffers[destination].data.extend_from_slice(&src_data);
-    model.buffers[destination].byte_length = model.buffers[destination].data.len();
-    model.buffers[source].byte_length = 0;
-    for bv in &mut model.buffer_views {
-        if bv.buffer == source {
-            bv.buffer = destination;
-            bv.byte_offset += dst_offset;
-        }
-    }
-}
-
 /// Shrink all buffers by removing unreferenced byte ranges.
-pub fn compact_buffers(model: &mut GltfModel) {
+pub(crate) fn compact_buffers(model: &mut GltfModel) {
     for i in 0..model.buffers.len() {
         compact_buffer(model, i);
     }
 }
 
 /// Shrink a single buffer by removing unreferenced byte ranges.
-pub fn compact_buffer(model: &mut GltfModel, buffer_index: usize) {
+pub(crate) fn compact_buffer(model: &mut GltfModel, buffer_index: usize) {
     let buf_len = match model.buffers.get(buffer_index) {
         Some(b) => b.data.len(),
         None => return,
@@ -120,7 +74,7 @@ fn build_remap(item_count: usize, used: &[usize]) -> Vec<Option<usize>> {
     remap
 }
 
-pub fn remove_unused_textures(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_textures(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model
         .materials
         .iter()
@@ -176,7 +130,7 @@ pub fn remove_unused_textures(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_samplers(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_samplers(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model.textures.iter().filter_map(|t| t.sampler).collect();
     used.extend_from_slice(extra_used);
     used.sort_unstable();
@@ -193,7 +147,7 @@ pub fn remove_unused_samplers(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_images(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_images(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model.textures.iter().filter_map(|t| t.source).collect();
     used.extend_from_slice(extra_used);
     used.sort_unstable();
@@ -210,7 +164,7 @@ pub fn remove_unused_images(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_accessors(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_accessors(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model
         .meshes
         .iter()
@@ -267,11 +221,20 @@ pub fn remove_unused_accessors(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_buffer_views(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_buffer_views(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model
         .accessors
         .iter()
-        .filter_map(|a| a.buffer_view)
+        .flat_map(|a| {
+            // Dense buffer view.
+            let mut bvs: Vec<usize> = a.buffer_view.into_iter().collect();
+            // Sparse accessor buffer views (indices + values).
+            if let Some(sparse) = &a.sparse {
+                bvs.push(sparse.indices.buffer_view);
+                bvs.push(sparse.values.buffer_view);
+            }
+            bvs
+        })
         .chain(model.images.iter().filter_map(|i| i.buffer_view))
         .collect();
     used.extend_from_slice(extra_used);
@@ -295,22 +258,7 @@ pub fn remove_unused_buffer_views(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_buffers(model: &mut GltfModel, extra_used: &[usize]) {
-    let mut used: Vec<usize> = model.buffer_views.iter().map(|bv| bv.buffer).collect();
-    used.extend_from_slice(extra_used);
-    used.sort_unstable();
-    used.dedup();
-    let remap = build_remap(model.buffers.len(), &used);
-    model.buffers = used
-        .iter()
-        .filter_map(|&i| model.buffers.get(i).cloned())
-        .collect();
-    for bv in &mut model.buffer_views {
-        bv.buffer = remap.get(bv.buffer).and_then(|o| *o).unwrap_or(bv.buffer);
-    }
-}
-
-pub fn remove_unused_meshes(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_meshes(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model.nodes.iter().filter_map(|n| n.mesh).collect();
     used.extend_from_slice(extra_used);
     used.sort_unstable();
@@ -327,7 +275,7 @@ pub fn remove_unused_meshes(model: &mut GltfModel, extra_used: &[usize]) {
     }
 }
 
-pub fn remove_unused_materials(model: &mut GltfModel, extra_used: &[usize]) {
+pub(crate) fn remove_unused_materials(model: &mut GltfModel, extra_used: &[usize]) {
     let mut used: Vec<usize> = model
         .meshes
         .iter()
@@ -347,5 +295,23 @@ pub fn remove_unused_materials(model: &mut GltfModel, extra_used: &[usize]) {
                 p.material = remap.get(mat).and_then(|o| *o);
             }
         }
+    }
+}
+
+impl GltfModel {
+    /// Remove all unreferenced accessors, buffer views, buffers, images,
+    /// samplers, textures, meshes, and materials, then compact all buffers.
+    ///
+    /// Equivalent to calling each `remove_unused_*` function in order followed
+    /// by [`compact_buffers`].
+    pub fn compact(&mut self) {
+        remove_unused_accessors(self, &[]);
+        remove_unused_buffer_views(self, &[]);
+        remove_unused_images(self, &[]);
+        remove_unused_samplers(self, &[]);
+        remove_unused_textures(self, &[]);
+        remove_unused_meshes(self, &[]);
+        remove_unused_materials(self, &[]);
+        compact_buffers(self);
     }
 }

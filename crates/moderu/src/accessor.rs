@@ -1,6 +1,90 @@
 use crate::{Accessor, AccessorType, GltfModel, MeshPrimitive};
 use std::marker::PhantomData;
 
+impl MeshPrimitive {
+    /// Zero-copy view over the `POSITION` (Vec3 f32) accessor.
+    pub fn positions<'a>(
+        &self,
+        model: &'a GltfModel,
+    ) -> Result<AccessorView<'a, glam::Vec3>, AccessorViewError> {
+        get_position_accessor(model, self)
+    }
+
+    /// Zero-copy view over the `NORMAL` (Vec3 f32) accessor.
+    pub fn normals<'a>(
+        &self,
+        model: &'a GltfModel,
+    ) -> Result<AccessorView<'a, glam::Vec3>, AccessorViewError> {
+        get_normal_accessor(model, self)
+    }
+
+    /// Zero-copy view over the `TEXCOORD_<set>` (Vec2 f32) accessor.
+    pub fn tex_coords<'a>(
+        &self,
+        model: &'a GltfModel,
+        set: u8,
+    ) -> Result<AccessorView<'a, [f32; 2]>, AccessorViewError> {
+        get_texcoord_accessor(model, self, set)
+    }
+
+    /// Zero-copy view over the index accessor typed as `u32`.
+    ///
+    /// Returns [`AccessorViewError::MissingAttribute`] if the primitive has no
+    /// index buffer.
+    pub fn indices_u32<'a>(
+        &self,
+        model: &'a GltfModel,
+    ) -> Result<AccessorView<'a, u32>, AccessorViewError> {
+        let idx = self
+            .indices
+            .ok_or_else(|| AccessorViewError::MissingAttribute("indices".into()))?;
+        resolve_accessor(model, idx)
+    }
+
+    /// Zero-copy view over the index accessor typed as `u16`.
+    pub fn indices_u16<'a>(
+        &self,
+        model: &'a GltfModel,
+    ) -> Result<AccessorView<'a, u16>, AccessorViewError> {
+        let idx = self
+            .indices
+            .ok_or_else(|| AccessorViewError::MissingAttribute("indices".into()))?;
+        resolve_accessor(model, idx)
+    }
+
+    /// Zero-copy view over a named attribute accessor.
+    ///
+    /// `semantic` is anything that converts to a string — a `&str`, a
+    /// [`crate::VertexAttribute`], or an [`crate::InstanceAttribute`].
+    ///
+    /// ```ignore
+    /// let positions = prim.attribute::<glam::Vec3>(model, VertexAttribute::Position)?;
+    /// let uvs       = prim.attribute::<[f32; 2]>(model, VertexAttribute::TexCoord(0))?;
+    /// ```
+    pub fn attribute<'a, T: bytemuck::Pod>(
+        &self,
+        model: &'a GltfModel,
+        semantic: impl AsRef<str>,
+    ) -> Result<AccessorView<'a, T>, AccessorViewError> {
+        let key = semantic.as_ref();
+        let &idx = self
+            .attributes
+            .get(key)
+            .ok_or_else(|| AccessorViewError::MissingAttribute(key.to_owned()))?;
+        resolve_accessor(model, idx)
+    }
+    /// Reads feature IDs as `u64`, widening from whatever integer type the accessor stores.
+    ///
+    /// `feature_id_index` selects which `_FEATURE_ID_<N>` attribute to read.
+    pub fn feature_ids_as_u64(
+        &self,
+        model: &GltfModel,
+        feature_id_index: usize,
+    ) -> Result<Vec<u64>, AccessorViewError> {
+        get_feature_id_as_u64(model, self, feature_id_index)
+    }
+}
+
 impl AccessorType {
     /// The glTF string for this type (e.g. `"VEC3"`).
     #[inline]
@@ -255,64 +339,41 @@ impl<'a, T: bytemuck::Pod> AccessorWriter<'a, T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum AccessorViewError {
+    #[error("accessor {0} not found")]
     AccessorNotFound(usize),
+    #[error("buffer view {0} not found")]
     BufferViewNotFound(usize),
+    #[error("buffer {0} not found")]
     BufferNotFound(usize),
-    BufferTooSmall {
-        required: usize,
-        available: usize,
-    },
+    #[error("buffer too small: required {required} bytes, available {available}")]
+    BufferTooSmall { required: usize, available: usize },
+    #[error("missing attribute or field: '{0}'")]
     MissingAttribute(String),
     /// Sparse accessors are not supported in this context.
+    #[error("sparse accessors are not supported")]
     SparseNotSupported,
     /// Expected accessor to have sparse data, but `sparse` field was `None`.
+    #[error("expected sparse data but field was None")]
     NoSparseData,
     /// Accessor component type is not compatible with the requested type.
+    #[error("incompatible component type id: {0}")]
     IncompatibleComponentType(i64),
     /// Accessor type (SCALAR/VEC2/…) does not match the expected type.
+    #[error("incompatible accessor type: {0}")]
     IncompatibleType(String),
-    /// Sparse accessor not supported in typed views.
-    SparseAccessorNotSupported,
     /// General invalid accessor error.
+    #[error("invalid accessor: {0}")]
     InvalidAccessor(String),
     /// Arithmetic overflow computing buffer offsets.
+    #[error("arithmetic overflow computing buffer offsets")]
     Overflow,
 }
 
-impl std::fmt::Display for AccessorViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AccessorNotFound(i) => write!(f, "accessor {i} not found"),
-            Self::BufferViewNotFound(i) => write!(f, "buffer view {i} not found"),
-            Self::BufferNotFound(i) => write!(f, "buffer {i} not found"),
-            Self::BufferTooSmall {
-                required,
-                available,
-            } => write!(
-                f,
-                "buffer too small: required {required} bytes, available {available}"
-            ),
-            Self::MissingAttribute(key) => write!(f, "missing attribute or field: '{key}'"),
-            Self::SparseNotSupported => write!(f, "sparse accessors are not supported"),
-            Self::NoSparseData => write!(f, "expected sparse data but field was None"),
-            Self::IncompatibleComponentType(id) => {
-                write!(f, "incompatible component type id: {id}")
-            }
-            Self::IncompatibleType(msg) => write!(f, "incompatible accessor type: {msg}"),
-            Self::SparseAccessorNotSupported => {
-                write!(f, "sparse accessors are not supported in typed views")
-            }
-            Self::InvalidAccessor(msg) => write!(f, "invalid accessor: {msg}"),
-            Self::Overflow => write!(f, "arithmetic overflow computing buffer offsets"),
-        }
-    }
-}
-impl std::error::Error for AccessorViewError {}
-
 /// Zero-copy typed view over a strided accessor buffer slice.
-pub struct AccessorTypedView<'a, T: bytemuck::Pod> {
+#[derive(Clone, Copy)]
+pub struct AccessorView<'a, T: bytemuck::Pod> {
     data: &'a [u8],
     count: usize,
     stride: usize,
@@ -320,7 +381,7 @@ pub struct AccessorTypedView<'a, T: bytemuck::Pod> {
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: bytemuck::Pod> AccessorTypedView<'a, T> {
+impl<'a, T: bytemuck::Pod> AccessorView<'a, T> {
     pub fn new(data: &'a [u8], count: usize, stride: usize, byte_offset: usize) -> Self {
         Self {
             data,
@@ -344,8 +405,8 @@ impl<'a, T: bytemuck::Pod> AccessorTypedView<'a, T> {
         let bytes = self.data.get(start..start + std::mem::size_of::<T>())?;
         Some(bytemuck::pod_read_unaligned(bytes))
     }
-    pub fn iter(&self) -> AccessorViewIter<'a, T> {
-        AccessorViewIter {
+    pub fn iter(&self) -> AccessorIter<'a, T> {
+        AccessorIter {
             data: self.data,
             count: self.count,
             stride: self.stride,
@@ -356,16 +417,24 @@ impl<'a, T: bytemuck::Pod> AccessorTypedView<'a, T> {
     }
 }
 
-impl<'a, T: bytemuck::Pod> IntoIterator for &'_ AccessorTypedView<'a, T> {
+impl<'a, T: bytemuck::Pod> IntoIterator for AccessorView<'a, T> {
     type Item = T;
-    type IntoIter = AccessorViewIter<'a, T>;
-    fn into_iter(self) -> AccessorViewIter<'a, T> {
+    type IntoIter = AccessorIter<'a, T>;
+    fn into_iter(self) -> AccessorIter<'a, T> {
         self.iter()
     }
 }
 
-/// Iterator for [`AccessorTypedView`]. Stores data directly — no borrow of the view needed.
-pub struct AccessorViewIter<'a, T: bytemuck::Pod> {
+impl<'a, T: bytemuck::Pod> IntoIterator for &'_ AccessorView<'a, T> {
+    type Item = T;
+    type IntoIter = AccessorIter<'a, T>;
+    fn into_iter(self) -> AccessorIter<'a, T> {
+        self.iter()
+    }
+}
+
+/// Iterator for [`AccessorView`]. Stores data directly — no borrow of the view needed.
+pub struct AccessorIter<'a, T: bytemuck::Pod> {
     data: &'a [u8],
     count: usize,
     stride: usize,
@@ -374,7 +443,7 @@ pub struct AccessorViewIter<'a, T: bytemuck::Pod> {
     _marker: PhantomData<T>,
 }
 
-impl<'a, T: bytemuck::Pod> Iterator for AccessorViewIter<'a, T> {
+impl<'a, T: bytemuck::Pod> Iterator for AccessorIter<'a, T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
         if self.idx >= self.count {
@@ -390,21 +459,21 @@ impl<'a, T: bytemuck::Pod> Iterator for AccessorViewIter<'a, T> {
         (r, Some(r))
     }
 }
-impl<'a, T: bytemuck::Pod> ExactSizeIterator for AccessorViewIter<'a, T> {}
+impl<'a, T: bytemuck::Pod> ExactSizeIterator for AccessorIter<'a, T> {}
 
-/// Like [`resolve_accessor`] but also verifies that `T`'s byte size matches the
-/// accessor's element size (`component_byte_size × num_components`).
-///
-/// This catches mismatches like calling `resolve_accessor::<f32>` on a `u16` accessor
-/// at compile time would be impossible but at runtime is trivially detectable.
-pub fn resolve_accessor_checked<'a, T: bytemuck::Pod>(
+#[must_use = "ignoring this view is likely a bug"]
+pub fn resolve_accessor<'a, T: bytemuck::Pod>(
     model: &'a GltfModel,
     accessor_index: usize,
-) -> Result<AccessorTypedView<'a, T>, AccessorViewError> {
+) -> Result<AccessorView<'a, T>, AccessorViewError> {
     let acc = model
         .accessors
         .get(accessor_index)
         .ok_or(AccessorViewError::AccessorNotFound(accessor_index))?;
+    if acc.sparse.is_some() {
+        return Err(AccessorViewError::SparseNotSupported);
+    }
+    // Verify T's byte size matches the accessor element size.
     let expected = acc.component_type().byte_size() as usize * acc.num_components() as usize;
     let actual = std::mem::size_of::<T>();
     if actual != expected {
@@ -412,13 +481,35 @@ pub fn resolve_accessor_checked<'a, T: bytemuck::Pod>(
             ComponentType::from(acc.component_type).id(),
         ));
     }
-    resolve_accessor(model, accessor_index)
+    let bv_idx = acc
+        .buffer_view
+        .ok_or_else(|| AccessorViewError::MissingAttribute("no bufferView".into()))?;
+    let bv = model
+        .buffer_views
+        .get(bv_idx)
+        .ok_or(AccessorViewError::BufferViewNotFound(bv_idx))?;
+    let buf: &[u8] = &model
+        .buffers
+        .get(bv.buffer)
+        .ok_or(AccessorViewError::BufferNotFound(bv.buffer))?
+        .data;
+    let stride = bv.byte_stride.unwrap_or(std::mem::size_of::<T>());
+    let needed = bv.byte_offset + acc.byte_offset + acc.count * stride;
+    if needed > buf.len() {
+        return Err(AccessorViewError::BufferTooSmall {
+            required: needed,
+            available: buf.len(),
+        });
+    }
+    Ok(AccessorView::new(
+        &buf[bv.byte_offset..],
+        acc.count,
+        stride,
+        acc.byte_offset,
+    ))
 }
 
-/// Mutable counterpart of [`resolve_accessor`]: borrows the underlying buffer slice
-/// directly and returns an [`AccessorWriter`] for in-place element mutation.
-///
-/// Sparse accessors are not supported (returns [`AccessorViewError::SparseNotSupported`]).
+#[must_use = "ignoring this view is likely a bug"]
 pub fn resolve_accessor_mut<'a, T: bytemuck::Pod>(
     model: &'a mut GltfModel,
     accessor_index: usize,
@@ -472,49 +563,10 @@ pub fn resolve_accessor_mut<'a, T: bytemuck::Pod>(
     ))
 }
 
-pub fn resolve_accessor<'a, T: bytemuck::Pod>(
-    model: &'a GltfModel,
-    accessor_index: usize,
-) -> Result<AccessorTypedView<'a, T>, AccessorViewError> {
-    let acc = model
-        .accessors
-        .get(accessor_index)
-        .ok_or(AccessorViewError::AccessorNotFound(accessor_index))?;
-    if acc.sparse.is_some() {
-        return Err(AccessorViewError::SparseNotSupported);
-    }
-    let bv_idx = acc
-        .buffer_view
-        .ok_or_else(|| AccessorViewError::MissingAttribute("no bufferView".into()))?;
-    let bv = model
-        .buffer_views
-        .get(bv_idx)
-        .ok_or(AccessorViewError::BufferViewNotFound(bv_idx))?;
-    let buf: &[u8] = &model
-        .buffers
-        .get(bv.buffer)
-        .ok_or(AccessorViewError::BufferNotFound(bv.buffer))?
-        .data;
-    let stride = bv.byte_stride.unwrap_or(std::mem::size_of::<T>());
-    let needed = bv.byte_offset + acc.byte_offset + acc.count * stride;
-    if needed > buf.len() {
-        return Err(AccessorViewError::BufferTooSmall {
-            required: needed,
-            available: buf.len(),
-        });
-    }
-    Ok(AccessorTypedView::new(
-        &buf[bv.byte_offset..],
-        acc.count,
-        stride,
-        acc.byte_offset,
-    ))
-}
-
-pub fn get_position_accessor<'a>(
+pub(crate) fn get_position_accessor<'a>(
     model: &'a GltfModel,
     primitive: &MeshPrimitive,
-) -> Result<AccessorTypedView<'a, glam::Vec3>, AccessorViewError> {
+) -> Result<AccessorView<'a, glam::Vec3>, AccessorViewError> {
     let idx = *primitive
         .attributes
         .get("POSITION")
@@ -522,10 +574,10 @@ pub fn get_position_accessor<'a>(
     resolve_accessor(model, idx)
 }
 
-pub fn get_normal_accessor<'a>(
+pub(crate) fn get_normal_accessor<'a>(
     model: &'a GltfModel,
     primitive: &MeshPrimitive,
-) -> Result<AccessorTypedView<'a, glam::Vec3>, AccessorViewError> {
+) -> Result<AccessorView<'a, glam::Vec3>, AccessorViewError> {
     let idx = *primitive
         .attributes
         .get("NORMAL")
@@ -533,11 +585,11 @@ pub fn get_normal_accessor<'a>(
     resolve_accessor(model, idx)
 }
 
-pub fn get_texcoord_accessor<'a>(
+pub(crate) fn get_texcoord_accessor<'a>(
     model: &'a GltfModel,
     primitive: &MeshPrimitive,
     set: u8,
-) -> Result<AccessorTypedView<'a, [f32; 2]>, AccessorViewError> {
+) -> Result<AccessorView<'a, [f32; 2]>, AccessorViewError> {
     // Avoid a heap allocation for the common sets (0–7).
     const NAMES: [&str; 8] = [
         "TEXCOORD_0",
@@ -564,7 +616,7 @@ pub fn get_texcoord_accessor<'a>(
 }
 
 /// Reads feature IDs as `u64`, widening from whatever integer type the accessor stores.
-pub fn get_feature_id_as_u64(
+pub(crate) fn get_feature_id_as_u64(
     model: &GltfModel,
     primitive: &MeshPrimitive,
     feature_id_index: usize,
@@ -602,7 +654,15 @@ pub fn get_feature_id_as_u64(
             available: data.len(),
         };
         let val: u64 = match ct {
-            ComponentType::Byte => i8::from_le_bytes([*data.get(s).ok_or_else(|| err(1))?]) as u64,
+            ComponentType::Byte => {
+                let v = i8::from_le_bytes([*data.get(s).ok_or_else(|| err(1))?]);
+                if v < 0 {
+                    return Err(AccessorViewError::InvalidAccessor(format!(
+                        "negative signed feature ID {v} at index {i}"
+                    )));
+                }
+                v as u64
+            }
             ComponentType::UnsignedByte => *data.get(s).ok_or_else(|| err(1))? as u64,
             ComponentType::Short => i16::from_le_bytes(
                 data.get(s..s + 2)
@@ -662,10 +722,7 @@ fn decode_sparse(
     use crate::AccessorComponentType;
 
     let count = acc.count;
-    let sparse = acc
-        .sparse
-        .as_ref()
-        .ok_or(AccessorViewError::NoSparseData)?;
+    let sparse = acc.sparse.as_ref().ok_or(AccessorViewError::NoSparseData)?;
 
     // --- base data (may be absent for pure-sparse accessors) ---
     let mut out = if let Some(bv_idx) = acc.buffer_view {
@@ -778,6 +835,7 @@ fn decode_sparse(
 /// needs data that outlives the borrow of `buffers`.
 ///
 /// For non-sparse, dense accessors this copies the relevant bytes once.
+#[must_use = "ignoring this view is likely a bug"]
 pub fn resolve_accessor_owned<T: bytemuck::Pod>(
     model: &GltfModel,
     accessor_index: usize,
@@ -826,287 +884,44 @@ pub fn resolve_accessor_owned<T: bytemuck::Pod>(
     Ok(result)
 }
 
-pub fn get_instancing_translation<'a>(
-    model: &'a GltfModel,
-    node_index: usize,
-) -> Result<AccessorTypedView<'a, glam::Vec3>, AccessorViewError> {
-    let node = model
-        .nodes
-        .get(node_index)
-        .ok_or_else(|| AccessorViewError::MissingAttribute("node not found".into()))?;
-    let ext = node
-        .extensions
-        .get("EXT_mesh_gpu_instancing")
-        .ok_or_else(|| {
-            AccessorViewError::MissingAttribute("EXT_mesh_gpu_instancing not present".into())
-        })?;
-    let acc_idx = ext
-        .get("attributes")
-        .and_then(|a| a.get("TRANSLATION"))
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| {
-            AccessorViewError::MissingAttribute("no TRANSLATION in EXT_mesh_gpu_instancing".into())
-        })? as usize;
-    resolve_accessor(model, acc_idx)
-}
-
-// ── Data-trait-based accessor view ───────────────────────────────────────────
-
-/// Trait for types that can be read element-by-element from a glTF accessor.
-///
-/// Implement this for custom types. The built-in impls cover `f32`, `u32`,
-/// `u16`, `u8`, `glam::Vec2`, and `glam::Vec3`.
-pub trait AccessorData: Sized {
-    /// glTF component type integer (e.g. `5126` for `FLOAT`).
-    const COMPONENT_TYPE: i64;
-    /// glTF accessor type string (e.g. `"VEC3"`).
-    const TYPE: &'static str;
-    /// Number of scalar components (1 for SCALAR, 3 for VEC3, …).
-    const COMPONENTS: usize;
-
-    /// Read one element from `bytes` at the given byte `offset`.
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self>;
-
-    /// Returns `true` if `component_type` and `accessor_type` match this impl.
-    fn is_compatible(component_type: i64, accessor_type: &str) -> bool {
-        Self::COMPONENT_TYPE == component_type && Self::TYPE == accessor_type
-    }
-}
-
-impl AccessorData for f32 {
-    const COMPONENT_TYPE: i64 = 5126;
-    const TYPE: &'static str = "SCALAR";
-    const COMPONENTS: usize = 1;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        bytes
-            .get(offset..offset + 4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-}
-impl AccessorData for u32 {
-    const COMPONENT_TYPE: i64 = 5125;
-    const TYPE: &'static str = "SCALAR";
-    const COMPONENTS: usize = 1;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        bytes
-            .get(offset..offset + 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-}
-impl AccessorData for u16 {
-    const COMPONENT_TYPE: i64 = 5123;
-    const TYPE: &'static str = "SCALAR";
-    const COMPONENTS: usize = 1;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        bytes
-            .get(offset..offset + 2)
-            .map(|b| u16::from_le_bytes([b[0], b[1]]))
-    }
-}
-impl AccessorData for u8 {
-    const COMPONENT_TYPE: i64 = 5121;
-    const TYPE: &'static str = "SCALAR";
-    const COMPONENTS: usize = 1;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        bytes.get(offset).copied()
-    }
-}
-impl AccessorData for glam::Vec3 {
-    const COMPONENT_TYPE: i64 = 5126;
-    const TYPE: &'static str = "VEC3";
-    const COMPONENTS: usize = 3;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        let x = f32::read_from_bytes(bytes, offset)?;
-        let y = f32::read_from_bytes(bytes, offset + 4)?;
-        let z = f32::read_from_bytes(bytes, offset + 8)?;
-        Some(glam::Vec3::new(x, y, z))
-    }
-}
-impl AccessorData for glam::Vec2 {
-    const COMPONENT_TYPE: i64 = 5126;
-    const TYPE: &'static str = "VEC2";
-    const COMPONENTS: usize = 2;
-    fn read_from_bytes(bytes: &[u8], offset: usize) -> Option<Self> {
-        let x = f32::read_from_bytes(bytes, offset)?;
-        let y = f32::read_from_bytes(bytes, offset + 4)?;
-        Some(glam::Vec2::new(x, y))
-    }
-}
-
-/// Zero-copy, bounds-checked view over a typed glTF accessor.
-///
-/// Created via [`AccessorDataView::new`]. Iterate with [`into_iter`] or
-/// index with [`get`].
-pub struct AccessorDataView<'a, T: AccessorData> {
-    accessor: &'a Accessor,
-    buffer_data: &'a [u8],
-    element_size: usize,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<'a, T: AccessorData> AccessorDataView<'a, T> {
-    /// Construct a view for `accessor_index` in `model`.
+impl GltfModel {
+    /// Append typed data to the model's last buffer, registering a new
+    /// `BufferView` and `Accessor`. Creates an empty buffer if none exist.
     ///
-    /// Validates that the accessor exists, has a buffer view, and the
-    /// component/type match `T`. Returns an error otherwise.
-    pub fn new(model: &'a GltfModel, accessor_index: usize) -> Result<Self, AccessorViewError> {
-        let accessor = model
-            .accessors
-            .get(accessor_index)
-            .ok_or(AccessorViewError::AccessorNotFound(accessor_index))?;
-
-        if accessor.sparse.is_some() {
-            return Err(AccessorViewError::SparseAccessorNotSupported);
+    /// Both the glTF component type and accessor shape are derived from `T`
+    /// via [`crate::GltfData`] — no extra parameters needed.
+    ///
+    /// Returns the index of the newly added accessor.
+    pub fn append_accessor<T: crate::GltfData>(&mut self, data: &[T]) -> usize {
+        if self.buffers.is_empty() {
+            self.buffers.push(crate::Buffer::default());
         }
 
-        let bv_idx = accessor
-            .buffer_view
-            .ok_or_else(|| AccessorViewError::InvalidAccessor("no buffer_view".into()))?;
-        let buffer_view = model
-            .buffer_views
-            .get(bv_idx)
-            .ok_or(AccessorViewError::BufferViewNotFound(bv_idx))?;
-        let buffer: &'a [u8] = &model
-            .buffers
-            .get(buffer_view.buffer)
-            .ok_or(AccessorViewError::BufferNotFound(buffer_view.buffer))?
-            .data;
+        let buf_idx = self.buffers.len() - 1;
+        let byte_offset = self.buffers[buf_idx].data.len();
+        let raw: &[u8] = bytemuck::cast_slice(data);
+        self.buffers[buf_idx].data.extend_from_slice(raw);
+        self.buffers[buf_idx].byte_length = self.buffers[buf_idx].data.len();
 
-        let accessor_type = accessor.r#type.as_str();
-        let component_type = ComponentType::from(accessor.component_type).id();
+        let bv_idx = self.buffer_views.len();
+        self.buffer_views.push(crate::BufferView {
+            buffer: buf_idx,
+            byte_offset,
+            byte_length: raw.len(),
+            byte_stride: None,
+            ..Default::default()
+        });
 
-        if !T::is_compatible(component_type, accessor_type) {
-            return Err(AccessorViewError::IncompatibleType(format!(
-                "expected {}/{}, got {}/{}",
-                T::COMPONENT_TYPE,
-                T::TYPE,
-                component_type,
-                accessor_type
-            )));
-        }
+        let acc_idx = self.accessors.len();
+        self.accessors.push(crate::Accessor {
+            buffer_view: Some(bv_idx),
+            byte_offset: 0,
+            component_type: T::COMPONENT_TYPE,
+            count: data.len(),
+            r#type: T::ACCESSOR_TYPE,
+            ..Default::default()
+        });
 
-        let stride = buffer_view.byte_stride.unwrap_or(T::COMPONENTS * 4);
-        let required = accessor.byte_offset + accessor.count * stride;
-        if required > buffer.len() {
-            return Err(AccessorViewError::BufferTooSmall {
-                required,
-                available: buffer.len(),
-            });
-        }
-
-        Ok(Self {
-            accessor,
-            buffer_data: buffer,
-            element_size: stride,
-            _phantom: std::marker::PhantomData,
-        })
+        acc_idx
     }
-
-    /// Number of elements.
-    #[inline]
-    pub fn count(&self) -> usize {
-        self.accessor.count
-    }
-
-    /// Get element at `index` (bounds-checked).
-    #[inline]
-    pub fn get(&self, index: usize) -> Result<T, AccessorViewError> {
-        if index >= self.count() {
-            return Err(AccessorViewError::BufferTooSmall {
-                required: index + 1,
-                available: self.count(),
-            });
-        }
-        let offset = self.accessor.byte_offset + index * self.element_size;
-        T::read_from_bytes(self.buffer_data, offset)
-            .ok_or_else(|| AccessorViewError::InvalidAccessor("read_from_bytes failed".into()))
-    }
-
-    /// Consume the view and return an iterator over all elements.
-    #[inline]
-    pub fn into_iter(self) -> AccessorDataIter<'a, T> {
-        AccessorDataIter {
-            buffer_data: self.buffer_data,
-            element_size: self.element_size,
-            byte_offset: self.accessor.byte_offset,
-            count: self.accessor.count,
-            index: 0,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Iterator produced by [`AccessorDataView::into_iter`].
-pub struct AccessorDataIter<'a, T: AccessorData> {
-    buffer_data: &'a [u8],
-    element_size: usize,
-    byte_offset: usize,
-    count: usize,
-    index: usize,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<'a, T: AccessorData> Iterator for AccessorDataIter<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.count {
-            return None;
-        }
-        let offset = self.byte_offset + self.index * self.element_size;
-        let result = T::read_from_bytes(self.buffer_data, offset)?;
-        self.index += 1;
-        Some(result)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.count - self.index;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<T: AccessorData> ExactSizeIterator for AccessorDataIter<'_, T> {}
-
-// ── Accessor builder helper ───────────────────────────────────────────────────
-
-/// Append typed data to the model's last buffer, registering a new
-/// `BufferView` and `Accessor`. Creates an empty buffer if none exist.
-///
-/// Returns the index of the newly added accessor.
-pub fn append_accessor<T: bytemuck::NoUninit>(
-    model: &mut GltfModel,
-    data: &[T],
-    accessor_type: crate::AccessorType,
-    component_type: crate::AccessorComponentType,
-) -> usize {
-    if model.buffers.is_empty() {
-        model.buffers.push(crate::Buffer::default());
-    }
-
-    let buf_idx = model.buffers.len() - 1;
-    let byte_offset = model.buffers[buf_idx].data.len();
-    let raw: &[u8] = bytemuck::cast_slice(data);
-    model.buffers[buf_idx].data.extend_from_slice(raw);
-    model.buffers[buf_idx].byte_length = model.buffers[buf_idx].data.len();
-
-    let bv_idx = model.buffer_views.len();
-    model.buffer_views.push(crate::BufferView {
-        buffer: buf_idx,
-        byte_offset,
-        byte_length: raw.len(),
-        byte_stride: None,
-        ..Default::default()
-    });
-
-    let acc_idx = model.accessors.len();
-    model.accessors.push(crate::Accessor {
-        buffer_view: Some(bv_idx),
-        byte_offset: 0,
-        component_type,
-        count: data.len(),
-        r#type: accessor_type,
-        ..Default::default()
-    });
-
-    acc_idx
 }

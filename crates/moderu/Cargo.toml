@@ -2,15 +2,19 @@
 name = "moderu"
 description = "glTF 2.0 data model with vendor extension support"
 edition = "2024"
-version.workspace = true
-license.workspace = true
+version = "0.1.0"
+license = "Apache-2.0"
 repository.workspace = true
+keywords = ["gltf", "3d", "graphics", "scene", "mesh"]
+categories = ["graphics", "game-development", "rendering::data-formats", "encoding"]
+readme = "README.md"
+rust-version = "1.85"
 
 [dependencies]
 bitflags = "2"
 bytemuck = { version = "1", features = ["derive"] }
+thiserror = "2"
 glam = { version = "0.32", features = ["std", "bytemuck"] }
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-zukei = { path = "../zukei" }

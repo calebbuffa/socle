@@ -1,10 +1,10 @@
 //! EXT_structural_metadata support — schema types, typed property views.
 
-// use crate::property::{PropertyComponentType, PropertyElement, PropertyType, PropertyViewStatus};
+// use crate::property::{PropertyComponentType, PropertyElement, PropertyType, PropertyViewError};
 
 use crate::{
     GltfModel, MetadataValue, PropertyComponentType, PropertyElement, PropertyType,
-    PropertyViewStatus,
+    PropertyViewError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -236,7 +236,7 @@ impl ExtStructuralMetadata {
 /// Typed view over a column in a `PropertyTable`.
 ///
 /// Constructed via [`PropertyTablePropertyView::new`] which returns
-/// `Result<Self, PropertyViewStatus>`.
+/// `Result<Self, PropertyViewError>`.
 pub struct PropertyTablePropertyView<'a, T: PropertyElement> {
     data: &'a [u8],
     count: usize,
@@ -251,8 +251,8 @@ impl<'a, T: PropertyElement> PropertyTablePropertyView<'a, T> {
         property_table: &PropertyTable,
         property_id: &str,
         class_property: Option<ClassProperty>,
-    ) -> Result<Self, PropertyViewStatus> {
-        let cp = class_property.ok_or(PropertyViewStatus::NonexistentProperty)?;
+    ) -> Result<Self, PropertyViewError> {
+        let cp = class_property.ok_or(PropertyViewError::NonexistentProperty)?;
         let prop = match property_table.properties.get(property_id) {
             Some(p) => p,
             None => {
@@ -265,32 +265,32 @@ impl<'a, T: PropertyElement> PropertyTablePropertyView<'a, T> {
                         _marker: PhantomData,
                     });
                 }
-                return Err(PropertyViewStatus::NonexistentProperty);
+                return Err(PropertyViewError::NonexistentProperty);
             }
         };
         let bv_idx = prop
             .values
-            .ok_or(PropertyViewStatus::InvalidValueBufferView)?;
+            .ok_or(PropertyViewError::InvalidValueBufferView)?;
         let bv = model
             .buffer_views
             .get(bv_idx)
-            .ok_or(PropertyViewStatus::InvalidValueBufferView)?;
+            .ok_or(PropertyViewError::InvalidValueBufferView)?;
         let buf: &[u8] = &model
             .buffers
             .get(bv.buffer)
-            .ok_or(PropertyViewStatus::InvalidValueBuffer)?
+            .ok_or(PropertyViewError::InvalidValueBuffer)?
             .data;
         let end = bv.byte_offset + bv.byte_length;
         if end > buf.len() {
-            return Err(PropertyViewStatus::BufferViewOutOfBounds);
+            return Err(PropertyViewError::BufferViewOutOfBounds);
         }
         let count = property_table.count as usize;
         let elem = T::byte_size();
         if bv.byte_length % elem != 0 {
-            return Err(PropertyViewStatus::BufferViewSizeNotDivisibleByTypeSize);
+            return Err(PropertyViewError::BufferViewSizeNotDivisibleByTypeSize);
         }
         if bv.byte_length / elem < count {
-            return Err(PropertyViewStatus::BufferViewSizeDoesNotMatchPropertyTableCount);
+            return Err(PropertyViewError::BufferViewSizeDoesNotMatchPropertyTableCount);
         }
         Ok(Self {
             data: &buf[bv.byte_offset..end],
@@ -391,40 +391,40 @@ impl<'a, T: PropertyElement> PropertyAttributePropertyView<'a, T> {
         class_property: Option<ClassProperty>,
         mesh_index: usize,
         primitive_index: usize,
-    ) -> Result<Self, PropertyViewStatus> {
+    ) -> Result<Self, PropertyViewError> {
         if class_property.is_none() {
-            return Err(PropertyViewStatus::NonexistentProperty);
+            return Err(PropertyViewError::NonexistentProperty);
         }
         let attr_prop = property_attribute
             .properties
             .get(property_id)
-            .ok_or(PropertyViewStatus::NonexistentProperty)?;
+            .ok_or(PropertyViewError::NonexistentProperty)?;
         let prim = model
             .meshes
             .get(mesh_index)
             .and_then(|m| m.primitives.get(primitive_index))
-            .ok_or(PropertyViewStatus::InvalidPropertyAttribute)?;
+            .ok_or(PropertyViewError::InvalidPropertyAttribute)?;
         let &acc_idx = prim
             .attributes
             .get(&attr_prop.attribute)
-            .ok_or(PropertyViewStatus::InvalidAccessor)?;
+            .ok_or(PropertyViewError::InvalidAccessor)?;
         let acc = model
             .accessors
             .get(acc_idx)
-            .ok_or(PropertyViewStatus::InvalidAccessor)?;
-        let bv_idx = acc.buffer_view.ok_or(PropertyViewStatus::InvalidAccessor)?;
+            .ok_or(PropertyViewError::InvalidAccessor)?;
+        let bv_idx = acc.buffer_view.ok_or(PropertyViewError::InvalidAccessor)?;
         let bv = model
             .buffer_views
             .get(bv_idx)
-            .ok_or(PropertyViewStatus::InvalidAccessor)?;
+            .ok_or(PropertyViewError::InvalidAccessor)?;
         let buf: &[u8] = &model
             .buffers
             .get(bv.buffer)
-            .ok_or(PropertyViewStatus::InvalidAccessor)?
+            .ok_or(PropertyViewError::InvalidAccessor)?
             .data;
         let end = bv.byte_offset + bv.byte_length;
         if end > buf.len() {
-            return Err(PropertyViewStatus::InvalidAccessor);
+            return Err(PropertyViewError::InvalidAccessor);
         }
         let stride = bv.byte_stride.unwrap_or_else(|| T::byte_size());
         Ok(Self {
@@ -498,7 +498,7 @@ impl<'a, T: PropertyElement> Iterator for PropertyAttributeIter<'a, T> {
 impl<'a, T: PropertyElement> ExactSizeIterator for PropertyAttributeIter<'a, T> {}
 
 pub struct PropertyTexturePropertyView<'a, T: PropertyElement> {
-    image: &'a crate::image::Image,
+    image: &'a crate::image::ImageData,
     channels: Vec<u8>,
     tex_coord_set: usize,
     _marker: PhantomData<T>,
@@ -510,32 +510,32 @@ impl<'a, T: PropertyElement> PropertyTexturePropertyView<'a, T> {
         property_texture: &PropertyTexture,
         property_id: &str,
         class_property: Option<ClassProperty>,
-    ) -> Result<Self, PropertyViewStatus> {
+    ) -> Result<Self, PropertyViewError> {
         if class_property.is_none() {
-            return Err(PropertyViewStatus::NonexistentProperty);
+            return Err(PropertyViewError::NonexistentProperty);
         }
         let prop = property_texture
             .properties
             .get(property_id)
-            .ok_or(PropertyViewStatus::NonexistentProperty)?;
+            .ok_or(PropertyViewError::NonexistentProperty)?;
         if prop.channels.is_empty() || prop.channels.len() > 4 {
-            return Err(PropertyViewStatus::InvalidChannelCount);
+            return Err(PropertyViewError::InvalidChannelCount);
         }
         let tex = model
             .textures
             .get(prop.index)
-            .ok_or(PropertyViewStatus::InvalidTexture)?;
-        let img_idx = tex.source.ok_or(PropertyViewStatus::InvalidImageIndex)?;
+            .ok_or(PropertyViewError::InvalidTexture)?;
+        let img_idx = tex.source.ok_or(PropertyViewError::InvalidImageIndex)?;
         let img = &model
             .images
             .get(img_idx)
-            .ok_or(PropertyViewStatus::InvalidImageIndex)?
+            .ok_or(PropertyViewError::InvalidImageIndex)?
             .pixels;
         if img.data.is_empty() {
-            return Err(PropertyViewStatus::EmptyImage);
+            return Err(PropertyViewError::EmptyImage);
         }
         if img.bytes_per_channel != 1 {
-            return Err(PropertyViewStatus::InvalidBytesPerChannel);
+            return Err(PropertyViewError::InvalidBytesPerChannel);
         }
         Ok(Self {
             image: img,
@@ -562,45 +562,30 @@ impl<'a, T: PropertyElement> PropertyTexturePropertyView<'a, T> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum MetadataViewError {
     /// Model carries no `EXT_structural_metadata` extension.
+    #[error("EXT_structural_metadata not present in model")]
     SchemaNotFound,
     /// Property table index out of range.
+    #[error("property table {0} not found")]
     PropertyTableNotFound(usize),
     /// Property attribute index out of range.
+    #[error("property attribute {0} not found")]
     PropertyAttributeNotFound(usize),
     /// Property texture index out of range.
+    #[error("property texture {0} not found")]
     PropertyTextureNotFound(usize),
     /// Named property not found in the class schema.
+    #[error("property '{0}' not found in schema")]
     PropertyNotFound(String),
     /// Schema class referenced by this table/attribute/texture not found.
+    #[error("schema class '{0}' not found")]
     ClassNotFound(String),
     /// Low-level property view construction failed.
-    InvalidProperty(PropertyViewStatus),
+    #[error("property view error: {0}")]
+    InvalidProperty(#[from] PropertyViewError),
 }
-
-impl From<PropertyViewStatus> for MetadataViewError {
-    fn from(s: PropertyViewStatus) -> Self {
-        Self::InvalidProperty(s)
-    }
-}
-
-impl std::fmt::Display for MetadataViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SchemaNotFound => write!(f, "EXT_structural_metadata not present in model"),
-            Self::PropertyTableNotFound(i) => write!(f, "property table {i} not found"),
-            Self::PropertyAttributeNotFound(i) => write!(f, "property attribute {i} not found"),
-            Self::PropertyTextureNotFound(i) => write!(f, "property texture {i} not found"),
-            Self::PropertyNotFound(n) => write!(f, "property '{n}' not found in schema"),
-            Self::ClassNotFound(c) => write!(f, "schema class '{c}' not found"),
-            Self::InvalidProperty(s) => write!(f, "property view error: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for MetadataViewError {}
 
 fn parse_meta(model: &GltfModel) -> Result<ExtStructuralMetadata, MetadataViewError> {
     ExtStructuralMetadata::from_model(model).ok_or(MetadataViewError::SchemaNotFound)
@@ -696,8 +681,8 @@ impl<'a> PropertyTableView<'a> {
         &self.meta.property_tables[self.table_index]
     }
 
-    pub fn size(&self) -> i64 {
-        self.table().count
+    pub fn size(&self) -> usize {
+        self.table().count as usize
     }
 
     pub fn class_name(&self) -> &str {

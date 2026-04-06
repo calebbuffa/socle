@@ -1,14 +1,14 @@
 //! Texture utilities: KHR_texture_transform, TextureView, FeatureIdTextureView.
 
 use crate::sampler::WrapMode;
-use crate::{GltfModel, Material, TextureInfo};
+use crate::GltfModel;
 
 /// Parses and applies the KHR_texture_transform extension to UV coordinates.
 ///
-/// Constructed via [`KhrTextureTransform::from_json`] (infallible — bad JSON
-/// silently falls back to identity values) or [`KhrTextureTransform::identity`].
+/// Constructed via [`TextureTransform::from_json`] (infallible — bad JSON
+/// silently falls back to identity values) or [`TextureTransform::identity`].
 #[derive(Debug, Clone)]
-pub struct KhrTextureTransform {
+pub struct TextureTransform {
     offset: [f64; 2],
     rotation: f64,
     scale: [f64; 2],
@@ -16,7 +16,7 @@ pub struct KhrTextureTransform {
     tex_coord_set_index: Option<i64>,
 }
 
-impl Default for KhrTextureTransform {
+impl Default for TextureTransform {
     fn default() -> Self {
         Self {
             offset: [0.0, 0.0],
@@ -28,7 +28,7 @@ impl Default for KhrTextureTransform {
     }
 }
 
-impl KhrTextureTransform {
+impl TextureTransform {
     pub fn identity() -> Self {
         Self::default()
     }
@@ -102,37 +102,37 @@ pub struct TextureViewOptions {
 }
 
 /// Error creating a [`TextureView`] or [`FeatureIdTextureView`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TextureViewError {
+    #[error("invalid texture index")]
     InvalidTexture,
+    #[error("invalid sampler index")]
     InvalidSampler,
+    #[error("invalid image index")]
     InvalidImage,
+    #[error("image pixel data is empty")]
     EmptyImage,
+    #[error("image bytes-per-channel must be 1")]
     InvalidBytesPerChannel,
     /// Channels list is empty, too long, or has out-of-range indices (FeatureId).
+    #[error("invalid channel specification")]
     InvalidChannels,
 }
 
-impl std::fmt::Display for TextureViewError {
+enum ImageStorage<'a> {
+    Borrowed(&'a crate::image::ImageData),
+    Owned(crate::image::ImageData),
+}
+impl<'a> std::fmt::Debug for ImageStorage<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::InvalidTexture => "invalid texture index",
-            Self::InvalidSampler => "invalid sampler index",
-            Self::InvalidImage => "invalid image index",
-            Self::EmptyImage => "image pixel data is empty",
-            Self::InvalidBytesPerChannel => "image bytes-per-channel must be 1",
-            Self::InvalidChannels => "invalid channel specification",
-        })
+        match self {
+            Self::Borrowed(_) => f.write_str("Borrowed(ImageData)"),
+            Self::Owned(_) => f.write_str("Owned(ImageData)"),
+        }
     }
 }
-impl std::error::Error for TextureViewError {}
-
-enum ImageStorage<'a> {
-    Borrowed(&'a crate::image::Image),
-    Owned(crate::image::Image),
-}
 impl<'a> ImageStorage<'a> {
-    fn as_ref(&self) -> &crate::image::Image {
+    fn as_ref(&self) -> &crate::image::ImageData {
         match self {
             Self::Borrowed(r) => r,
             Self::Owned(o) => o,
@@ -143,11 +143,12 @@ impl<'a> ImageStorage<'a> {
 /// A view into one texture from a [`GltfModel`], with optional UV sampling.
 ///
 /// Always valid — construction returns `Result<Self, TextureViewError>`.
+#[derive(Debug)]
 pub struct TextureView<'a> {
     image: ImageStorage<'a>,
     tex_coord_set: usize,
     wrap: [WrapMode; 2],
-    texture_transform: Option<KhrTextureTransform>,
+    texture_transform: Option<TextureTransform>,
 }
 
 impl<'a> TextureView<'a> {
@@ -184,14 +185,14 @@ impl<'a> TextureView<'a> {
             return Err(TextureViewError::InvalidBytesPerChannel);
         }
         let texture_transform = if options.apply_khr_texture_transform {
-            KhrTextureTransform::from_texture_info_extensions(extensions)
+            TextureTransform::from_texture_info_extensions(extensions)
         } else {
             None
         };
         let effective_tc = texture_transform
             .as_ref()
             .and_then(|t| t.tex_coord_set_index())
-            .map(|i| i as usize)
+            .and_then(|i| usize::try_from(i).ok())
             .unwrap_or(tex_coord_set);
         let image = if options.make_image_copy {
             ImageStorage::Owned(img.clone())
@@ -212,10 +213,10 @@ impl<'a> TextureView<'a> {
     pub fn wrap_modes(&self) -> [WrapMode; 2] {
         self.wrap
     }
-    pub fn texture_transform(&self) -> Option<&KhrTextureTransform> {
+    pub fn texture_transform(&self) -> Option<&TextureTransform> {
         self.texture_transform.as_ref()
     }
-    pub fn image(&self) -> &crate::image::Image {
+    pub fn image(&self) -> &crate::image::ImageData {
         self.image.as_ref()
     }
 
@@ -241,30 +242,34 @@ impl<'a> TextureView<'a> {
     }
 }
 
-/// Get the TEXCOORD set index from a [`TextureInfo`].
-pub fn texcoord_index(info: &TextureInfo) -> usize {
-    info.tex_coord
+impl crate::TextureInfo {
+    /// The TEXCOORD set index this texture references.
+    pub fn tex_coord_set(&self) -> usize {
+        self.tex_coord
+    }
+
+    /// Returns `true` if this texture carries a `KHR_texture_transform` extension.
+    pub fn has_transform(&self) -> bool {
+        self.extensions.contains_key("KHR_texture_transform")
+    }
 }
 
-/// Check if a [`TextureInfo`] carries KHR_texture_transform.
-pub fn has_transform(info: &TextureInfo) -> bool {
-    info.extensions.contains_key("KHR_texture_transform")
+impl crate::Material {
+    /// Index of the base-color texture, if present.
+    pub fn base_color_index(&self) -> Option<usize> {
+        self.pbr_metallic_roughness
+            .as_ref()
+            .and_then(|pbr| pbr.base_color_texture.as_ref())
+            .map(|t| t.index)
+    }
+
+    /// Index of the normal-map texture, if present.
+    pub fn normal_map_index(&self) -> Option<usize> {
+        self.normal_texture.as_ref().map(|nt| nt.index)
+    }
 }
 
-/// Get base-color texture index from a material.
-pub fn base_color_index(material: &Material) -> Option<usize> {
-    material
-        .pbr_metallic_roughness
-        .as_ref()
-        .and_then(|pbr| pbr.base_color_texture.as_ref())
-        .map(|t| t.index)
-}
-
-/// Get normal-map texture index from a material.
-pub fn normal_map_index(material: &Material) -> Option<usize> {
-    material.normal_texture.as_ref().map(|nt| nt.index)
-}
-
+#[derive(Debug)]
 pub struct FeatureIdTextureView<'a> {
     texture_view: TextureView<'a>,
     channels: Vec<u8>,
@@ -277,6 +282,7 @@ impl<'a> FeatureIdTextureView<'a> {
         channels: Vec<u8>,
         tex_coord_set: usize,
         apply_transform: bool,
+        extensions: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<Self, TextureViewError> {
         if channels.is_empty() || channels.len() > 4 || channels.iter().any(|&c| c > 3) {
             return Err(TextureViewError::InvalidChannels);
@@ -285,13 +291,8 @@ impl<'a> FeatureIdTextureView<'a> {
             apply_khr_texture_transform: apply_transform,
             make_image_copy: false,
         };
-        let texture_view = TextureView::new(
-            model,
-            texture_index,
-            tex_coord_set,
-            &Default::default(),
-            &opts,
-        )?;
+        let texture_view =
+            TextureView::new(model, texture_index, tex_coord_set, extensions, &opts)?;
         Ok(Self {
             texture_view,
             channels,

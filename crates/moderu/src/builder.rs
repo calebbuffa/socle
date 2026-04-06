@@ -9,8 +9,8 @@
 //!
 //! let mut b = GltfModelBuilder::new();
 //!
-//! let pos  = b.push_accessor(&positions_f32, AccessorType::Vec3);
-//! let norm = b.push_accessor(&normals_f32,   AccessorType::Vec3);
+//! let pos  = b.push_accessor(&positions_vec3);
+//! let norm = b.push_accessor(&normals_vec3);
 //! let idxs = b.push_indices(&indices_u32);
 //!
 //! let prim = b.primitive()
@@ -38,33 +38,104 @@ mod private {
     impl Sealed for u8 {}
     impl Sealed for i16 {}
     impl Sealed for i8 {}
+    impl Sealed for [f32; 2] {}
+    impl Sealed for [f32; 3] {}
+    impl Sealed for [f32; 4] {}
+    impl Sealed for [f32; 9] {}
+    impl Sealed for [f32; 16] {}
+    impl Sealed for [u8; 3] {}
+    impl Sealed for [u8; 4] {}
+    impl Sealed for [u16; 4] {}
+    impl Sealed for [u32; 4] {}
+    impl Sealed for [i8; 4] {}
+    impl Sealed for [i16; 4] {}
 }
 
-/// Marker trait that associates a Rust scalar type with its glTF `AccessorComponentType`.
+/// Marker trait that associates a Rust type with its glTF accessor component type
+/// and accessor shape (SCALAR, VEC2, VEC3, …).
 ///
-/// Implemented for `f32`, `u32`, `u16`, `u8`, `i16`, `i8`.
 /// Sealed — cannot be implemented outside this crate.
 pub trait GltfData: bytemuck::Pod + private::Sealed {
     const COMPONENT_TYPE: AccessorComponentType;
+    const ACCESSOR_TYPE: AccessorType;
 }
 
+// ── Scalar types ──────────────────────────────────────────────────────────────
 impl GltfData for f32 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
 }
 impl GltfData for u32 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedInt;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
 }
 impl GltfData for u16 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedShort;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
 }
 impl GltfData for u8 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedByte;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
 }
 impl GltfData for i16 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Short;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
 }
 impl GltfData for i8 {
     const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Byte;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Scalar;
+}
+
+// ── VEC2 ──────────────────────────────────────────────────────────────────────
+impl GltfData for [f32; 2] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec2;
+}
+
+// ── VEC3 ──────────────────────────────────────────────────────────────────────
+impl GltfData for [f32; 3] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec3;
+}
+
+// ── VEC4 ──────────────────────────────────────────────────────────────────────
+impl GltfData for [f32; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+impl GltfData for [u8; 3] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedByte;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec3;
+}
+impl GltfData for [u8; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedByte;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+impl GltfData for [u16; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedShort;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+impl GltfData for [u32; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::UnsignedInt;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+impl GltfData for [i8; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Byte;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+impl GltfData for [i16; 4] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Short;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Vec4;
+}
+
+// ── MAT3 / MAT4 ──────────────────────────────────────────────────────────────
+impl GltfData for [f32; 9] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Mat3;
+}
+impl GltfData for [f32; 16] {
+    const COMPONENT_TYPE: AccessorComponentType = AccessorComponentType::Float;
+    const ACCESSOR_TYPE: AccessorType = AccessorType::Mat4;
 }
 
 /// Typed index into `GltfModel::accessors`.
@@ -114,7 +185,13 @@ macro_rules! impl_index_conversions {
     )* };
 }
 
-impl_index_conversions!(AccessorIndex, BufferViewIndex, MeshIndex, MaterialIndex, NodeIndex);
+impl_index_conversions!(
+    AccessorIndex,
+    BufferViewIndex,
+    MeshIndex,
+    MaterialIndex,
+    NodeIndex
+);
 
 /// Ergonomic builder for [`GltfModel`].
 ///
@@ -124,6 +201,7 @@ impl_index_conversions!(AccessorIndex, BufferViewIndex, MeshIndex, MaterialIndex
 /// On [`finish`](GltfModelBuilder::finish), if no scene has been created but
 /// meshes and nodes exist, a default scene referencing all root nodes is
 /// generated automatically (matching cesium-native's `Model` pattern).
+#[derive(Debug)]
 pub struct GltfModelBuilder {
     model: GltfModel,
     /// Index of the shared buffer all data is appended to.
@@ -187,36 +265,22 @@ impl GltfModelBuilder {
 
     /// Push a typed attribute array and create an accessor for it.
     ///
-    /// `T` must implement [`GltfData`] (`f32`, `u32`, `u16`, `u8`, `i16`, `i8`).
-    /// `accessor_type` specifies the element shape (`Vec3`, `Vec2`, `Scalar`, …).
+    /// Both the glTF component type and accessor shape are derived from `T`
+    /// via [`GltfData`] — no extra parameters needed.
     ///
     /// ```ignore
-    /// let pos = b.push_accessor(&positions_f32, AccessorType::Vec3);
-    /// let uvs = b.push_accessor(&uvs_f32,       AccessorType::Vec2);
+    /// let pos = b.push_accessor(&positions_vec3);
+    /// let uvs = b.push_accessor(&uvs_vec2);
     /// ```
-    pub fn push_accessor<T: GltfData>(
-        &mut self,
-        data: &[T],
-        accessor_type: AccessorType,
-    ) -> AccessorIndex {
+    pub fn push_accessor<T: GltfData>(&mut self, data: &[T]) -> AccessorIndex {
         let bytes = bytemuck::cast_slice(data);
-        let num_components = components_for_type(accessor_type);
-        debug_assert_eq!(
-            data.len() % num_components.max(1),
-            0,
-            "accessor data length ({}) is not divisible by num_components ({})",
-            data.len(),
-            num_components,
-        );
-        let count = data.len() / num_components.max(1);
-        // Each accessor gets its own buffer view — no byteStride needed (tightly packed).
         let bv = self.push_raw(bytes);
         let acc_idx = self.model.accessors.len();
         self.model.accessors.push(Accessor {
             buffer_view: Some(bv.0),
             component_type: T::COMPONENT_TYPE,
-            count,
-            r#type: accessor_type,
+            count: data.len(),
+            r#type: T::ACCESSOR_TYPE,
             ..Default::default()
         });
         AccessorIndex(acc_idx)
@@ -245,17 +309,17 @@ impl GltfModelBuilder {
 
     /// Push a `POSITION` accessor from a slice of `[f32; 3]` vertices.
     pub fn push_positions(&mut self, data: &[[f32; 3]]) -> AccessorIndex {
-        self.push_accessor(bytemuck::cast_slice::<[f32; 3], f32>(data), AccessorType::Vec3)
+        self.push_accessor(data)
     }
 
     /// Push a `TEXCOORD` accessor from a slice of `[f32; 2]` UV pairs.
     pub fn push_tex_coords(&mut self, data: &[[f32; 2]]) -> AccessorIndex {
-        self.push_accessor(bytemuck::cast_slice::<[f32; 2], f32>(data), AccessorType::Vec2)
+        self.push_accessor(data)
     }
 
     /// Push a `NORMAL` accessor from a slice of `[f32; 3]` normals.
     pub fn push_normals(&mut self, data: &[[f32; 3]]) -> AccessorIndex {
-        self.push_accessor(bytemuck::cast_slice::<[f32; 3], f32>(data), AccessorType::Vec3)
+        self.push_accessor(data)
     }
 
     // ── Materials ──────────────────────────────────────────────────────────
@@ -285,34 +349,34 @@ impl GltfModelBuilder {
 
     // ── Nodes ──────────────────────────────────────────────────────────────
 
-    /// Push a node that references a mesh. Returns the node index.
-    pub fn push_node(&mut self, mesh: MeshIndex) -> NodeIndex {
-        let idx = self.model.nodes.len();
-        self.model.nodes.push(Node {
-            mesh: Some(mesh.0),
-            ..Default::default()
-        });
-        NodeIndex(idx)
+    /// Start building a node. Call `.build()` to push it into the model.
+    ///
+    /// ```ignore
+    /// let node = b.node().mesh(mesh).build();
+    /// let node = b.node().mesh(mesh).matrix(&mat).build();
+    /// let node = b.node().mesh(mesh).name("terrain").children(&[child]).build();
+    /// ```
+    pub fn node(&mut self) -> NodeBuilder<'_> {
+        NodeBuilder {
+            builder: self,
+            mesh: None,
+            name: None,
+            matrix: None,
+            translation: None,
+            rotation: None,
+            scale: None,
+            children: Vec::new(),
+        }
     }
-
-    /// Push a node with a mesh and a column-major 4×4 transform matrix.
-    pub fn push_node_with_transform(&mut self, mesh: MeshIndex, matrix: &[f64; 16]) -> NodeIndex {
-        let idx = self.model.nodes.len();
-        self.model.nodes.push(Node {
-            mesh: Some(mesh.0),
-            matrix: matrix.to_vec(),
-            ..Default::default()
-        });
-        NodeIndex(idx)
-    }
-
-    // ── Up-axis ────────────────────────────────────────────────────────────
 
     /// Set the `gltfUpAxis` extras value (0 = X, 1 = Y, 2 = Z).
     ///
     /// Matches cesium-native's `model.extras["gltfUpAxis"]` convention.
     pub fn set_up_axis(&mut self, axis: u8) {
-        let extras = self.model.extras.get_or_insert_with(|| serde_json::json!({}));
+        let extras = self
+            .model
+            .extras
+            .get_or_insert_with(|| serde_json::json!({}));
         extras["gltfUpAxis"] = serde_json::json!(axis);
     }
 
@@ -345,10 +409,10 @@ impl GltfModelBuilder {
     /// Finalise and return the [`GltfModel`].
     ///
     /// If meshes exist but no scene has been created, a default scene
-    /// referencing all root nodes is generated automatically. If nodes
-    /// exist but no scene, a scene referencing those nodes is created.
-    /// If meshes exist but no nodes, one node per mesh is created and
-    /// wired into the scene.
+    /// referencing all **root** nodes (nodes not referenced as any other
+    /// node's child) is generated automatically. If meshes exist but no
+    /// nodes, one node per mesh is created first.
+    #[must_use]
     pub fn finish(mut self) -> GltfModel {
         let len = self.model.buffers[self.buf_idx].data.len();
         self.model.buffers[self.buf_idx].byte_length = len;
@@ -365,9 +429,22 @@ impl GltfModelBuilder {
 
         // Auto-create a default scene if none exists.
         if self.model.scenes.is_empty() && !self.model.nodes.is_empty() {
-            let node_indices: Vec<usize> = (0..self.model.nodes.len()).collect();
+            // Collect all node indices that appear as children of another node.
+            let mut child_indices: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            for node in &self.model.nodes {
+                if let Some(children) = &node.children {
+                    for &c in children {
+                        child_indices.insert(c);
+                    }
+                }
+            }
+            // Scene roots = nodes that are not anyone's child.
+            let root_indices: Vec<usize> = (0..self.model.nodes.len())
+                .filter(|i| !child_indices.contains(i))
+                .collect();
             self.model.scenes.push(Scene {
-                nodes: Some(node_indices),
+                nodes: Some(root_indices),
                 ..Default::default()
             });
             self.model.scene = Some(0);
@@ -379,6 +456,11 @@ impl GltfModelBuilder {
     /// Borrow the model being built (e.g. to inspect indices mid-build).
     pub fn model(&self) -> &GltfModel {
         &self.model
+    }
+
+    /// Mutably borrow the model being built (e.g. to set extras on meshes).
+    pub fn model_mut(&mut self) -> &mut GltfModel {
+        &mut self.model
     }
 }
 
@@ -474,14 +556,89 @@ impl<'a> MeshBuilder<'a> {
     }
 }
 
-fn components_for_type(t: AccessorType) -> usize {
-    match t {
-        AccessorType::Scalar => 1,
-        AccessorType::Vec2 => 2,
-        AccessorType::Vec3 => 3,
-        AccessorType::Vec4 => 4,
-        AccessorType::Mat2 => 4,
-        AccessorType::Mat3 => 9,
-        AccessorType::Mat4 => 16,
+/// Builder for a glTF [`Node`].
+///
+/// Obtained from [`GltfModelBuilder::node`]. Call [`build`](NodeBuilder::build) to push
+/// the node into the model and get its index back.
+pub struct NodeBuilder<'a> {
+    builder: &'a mut GltfModelBuilder,
+    mesh: Option<MeshIndex>,
+    name: Option<String>,
+    matrix: Option<[f64; 16]>,
+    translation: Option<[f64; 3]>,
+    rotation: Option<[f64; 4]>,
+    scale: Option<[f64; 3]>,
+    children: Vec<NodeIndex>,
+}
+
+impl<'a> NodeBuilder<'a> {
+    /// Attach a mesh to this node.
+    pub fn mesh(mut self, mesh: MeshIndex) -> Self {
+        self.mesh = Some(mesh);
+        self
+    }
+
+    /// Set the node name.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set a column-major 4×4 world-from-local transform matrix.
+    /// Clears any previously set TRS values.
+    pub fn matrix(mut self, m: &[f64; 16]) -> Self {
+        self.matrix = Some(*m);
+        self.translation = None;
+        self.rotation = None;
+        self.scale = None;
+        self
+    }
+
+    /// Set a translation vector `[x, y, z]`. Clears any matrix.
+    pub fn translation(mut self, t: [f64; 3]) -> Self {
+        self.translation = Some(t);
+        self.matrix = None;
+        self
+    }
+
+    /// Set a rotation quaternion `[x, y, z, w]`. Clears any matrix.
+    pub fn rotation(mut self, r: [f64; 4]) -> Self {
+        self.rotation = Some(r);
+        self.matrix = None;
+        self
+    }
+
+    /// Set a scale vector `[x, y, z]`. Clears any matrix.
+    pub fn scale(mut self, s: [f64; 3]) -> Self {
+        self.scale = Some(s);
+        self.matrix = None;
+        self
+    }
+
+    /// Add child node indices.
+    pub fn children(mut self, children: &[NodeIndex]) -> Self {
+        self.children.extend_from_slice(children);
+        self
+    }
+
+    /// Push the node into the model and return its index.
+    pub fn build(self) -> NodeIndex {
+        let idx = self.builder.model.nodes.len();
+        let children = if self.children.is_empty() {
+            None
+        } else {
+            Some(self.children.into_iter().map(|n| n.0).collect())
+        };
+        self.builder.model.nodes.push(Node {
+            mesh: self.mesh.map(|m| m.0),
+            name: self.name,
+            matrix: self.matrix.map(|m| m.to_vec()).unwrap_or_default(),
+            translation: self.translation.map(|t| t.to_vec()).unwrap_or_default(),
+            rotation: self.rotation.map(|r| r.to_vec()).unwrap_or_default(),
+            scale: self.scale.map(|s| s.to_vec()).unwrap_or_default(),
+            children,
+            ..Default::default()
+        });
+        NodeIndex(idx)
     }
 }
