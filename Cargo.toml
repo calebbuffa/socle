@@ -2,9 +2,9 @@
 members = [
     "crates/i3s",
     # "crates/i3s-content",
-    # "crates/i3s-selekt",
     "crates/kiban",
     "crates/kasane",
+    "crates/outil",
     "crates/moderu",
     "crates/moderu-codec",
     "crates/moderu-io",
@@ -19,7 +19,7 @@ members = [
     "crates/tiles3d-selekt",
     "crates/zukei",
     "crates/egaku",
-    "crates/socle-viewer",
+    "crates/socle-bridge",
 ]
 resolver = "2"
 
