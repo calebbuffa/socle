@@ -4,8 +4,21 @@
 //! - [`Context`] — scheduling token: where should this task run?
 //! - [`ThreadPool`] — self-draining background thread pool
 //! - [`WorkQueue`] — user-pumped dispatch queue (e.g. for a UI/main thread)
-//! - [`Task`] / [`Handle`] / [`Resolver`] — async value types
+//! - [`Task<T>`](Task) / [`Handle<T>`](Handle) / [`Resolver<T>`](Resolver) — async value types
+//! - [`CancellationToken`] — cooperative cancellation
+//! - [`Scope`] — structured cancellation (children cancelled when scope drops)
+//! - [`Semaphore`] / [`SemaphorePermit`] — async-aware counting semaphore
+//! - [`JoinSet<T>`](JoinSet) — track a collection of in-flight tasks
+//! - [`LoadOnce<K,V>`](LoadOnce) — deduplicate concurrent in-flight loads by key
+//! - [`Sender<T>`](Sender) / [`Receiver<T>`](Receiver) — bounded MPSC channels
 //! - [`Executor`] — trait for custom execution backends
+//!
+//! # API Stability
+//!
+//! This crate is at version `0.1`. The API may change before `1.0`. Feedback
+//! and bug reports are welcome via the [repository][repo].
+//!
+//! [repo]: https://github.com/calebbuffa/socle
 //!
 //! # Quick start
 //!
@@ -15,7 +28,7 @@
 //! let bg_ctx = bg.context();
 //!
 //! // Optional: user-pumped queue for a main/UI thread
-//! let mut wq = orkester::WorkQueue::new();
+//! let wq = orkester::WorkQueue::new();
 //! let main_ctx = wq.context();
 //!
 //! let task = bg_ctx.run(|| expensive_computation())
@@ -42,6 +55,7 @@ mod context;
 mod error;
 mod executor;
 mod join_set;
+mod load_once;
 mod scope;
 mod semaphore;
 mod shared_cell;
@@ -52,7 +66,7 @@ mod timer;
 mod work_queue;
 
 pub use cancellation::CancellationToken;
-pub use channel::{Receiver, SendError, Sender, TrySendError};
+pub use channel::{Receiver, SendError, Sender, TryRecvError, TrySendError};
 pub use combinators::{RetryConfig, join_all, join_all_settle, race, retry, timeout};
 pub use context::Context;
 pub use error::{AsyncError, ErrorCode};
@@ -62,13 +76,12 @@ pub use executor::TokioExecutor;
 #[cfg(feature = "wasm")]
 pub use executor::WasmExecutor;
 pub use join_set::JoinSet;
+pub use load_once::LoadOnce;
 pub use scope::Scope;
 pub use semaphore::{Semaphore, SemaphorePermit};
-pub use task::{Handle, Resolver, Task};
+pub use task::{Handle, ResolveOutput, Resolver, Task};
 pub use thread_pool::ThreadPool;
 pub use work_queue::WorkQueue;
-
-// ─── Free functions ──────────────────────────────────────────────────────────
 
 /// Create a `(Resolver<T>, Task<T>)` pair.
 ///

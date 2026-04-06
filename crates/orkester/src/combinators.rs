@@ -34,9 +34,7 @@ pub fn timeout<T: Send + 'static>(task: Task<T>, duration: Duration) -> Task<T> 
             }
         }
         TaskInner::Pending(cell) => {
-            let cell_ref = Arc::clone(&cell);
             TaskCell::on_complete(cell, move |result| {
-                let _ = cell_ref;
                 if !claimed1.swap(true, Ordering::AcqRel) {
                     let resolver = sp1.lock().expect("timeout lock").take();
                     if let Some(resolver) = resolver {
@@ -134,8 +132,9 @@ pub struct RetryConfig {
     pub initial_backoff: Duration,
     /// Maximum delay between retries (default: 5 s).
     pub max_backoff: Duration,
-    /// Multiplier applied to the backoff after each attempt (default: 2).
-    pub multiplier: u32,
+    /// Multiplier applied to the backoff after each attempt (default: 2.0).
+    /// Fractional values (e.g. `1.5`) are supported.
+    pub multiplier: f64,
 }
 
 impl Default for RetryConfig {
@@ -143,7 +142,7 @@ impl Default for RetryConfig {
         Self {
             initial_backoff: Duration::from_millis(50),
             max_backoff: Duration::from_secs(5),
-            multiplier: 2,
+            multiplier: 2.0,
         }
     }
 }
@@ -153,6 +152,14 @@ impl Default for RetryConfig {
 /// Calls `f()` up to `max_attempts` times on `context`. If an attempt returns
 /// `Ok(v)`, the returned task resolves with `v`. If all attempts fail, the
 /// last error is propagated.
+///
+/// # Thread parking
+///
+/// Between retry attempts this function calls `std::thread::sleep`. When
+/// `context` is a [`ThreadPool`](crate::ThreadPool), that parks one worker
+/// thread for the backoff duration. Avoid very large `max_backoff` values
+/// combined with many concurrent retries — consider using [`delay`](crate::delay)
+/// instead of retry if non-blocking backoff is critical.
 pub fn retry<T, F>(context: &Context, max_attempts: u32, config: RetryConfig, f: F) -> Task<T>
 where
     T: Send + 'static,
@@ -176,7 +183,7 @@ where
                     Err(e) => last_err = e,
                 }
                 std::thread::sleep(backoff);
-                backoff = (backoff * config.multiplier).min(config.max_backoff);
+                backoff = backoff.mul_f64(config.multiplier).min(config.max_backoff);
             }
             resolver.reject(last_err);
             return output;
@@ -201,7 +208,7 @@ where
                 }
             }
             std::thread::sleep(backoff);
-            backoff = (backoff * config.multiplier).min(config.max_backoff);
+            backoff = backoff.mul_f64(config.multiplier).min(config.max_backoff);
         }
 
         resolver.reject(last_err);

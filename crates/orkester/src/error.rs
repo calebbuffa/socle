@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 /// Classification code for async errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// Unclassified error.
     Generic,
@@ -85,6 +86,16 @@ impl Error for AsyncError {
         Some(self.inner.as_ref())
     }
 }
+
+impl PartialEq for AsyncError {
+    /// Two errors are equal when they have the same [`ErrorCode`] and the
+    /// same display message.
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code && self.inner.to_string() == other.inner.to_string()
+    }
+}
+
+impl Eq for AsyncError {}
 
 impl From<String> for AsyncError {
     fn from(value: String) -> Self {

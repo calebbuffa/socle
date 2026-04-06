@@ -61,9 +61,13 @@ impl CancellationToken {
         self.inner.signalled.load(Ordering::Acquire)
     }
 
-    /// Register a callback to fire when the token is cancelled.
+    /// Register a callback that fires when the token is cancelled.
     /// If already cancelled, the callback fires immediately.
-    fn on_cancel(&self, cb: Callback) {
+    ///
+    /// This can be used to hook into external cancellation sources — for
+    /// example, cancelling an in-flight HTTP request when the token is
+    /// signalled.
+    pub fn on_cancel(&self, cb: impl FnOnce() + Send + 'static) {
         if self.is_cancelled() {
             cb();
             return;
@@ -75,7 +79,7 @@ impl CancellationToken {
             if self.inner.signalled.load(Ordering::Acquire) {
                 true
             } else {
-                guard.push(maybe_cb.take().unwrap());
+                guard.push(Box::new(maybe_cb.take().unwrap()));
                 false
             }
         };

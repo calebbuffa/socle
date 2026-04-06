@@ -3,8 +3,7 @@
 //! `TaskCell<T>` stores the result of an async computation and notifies
 //! waiters when it becomes ready. The primary path (value write, atomic
 //! state transition, single-consumer waker) is lock-free. A mutex-guarded
-//! extension handles callbacks, extra wakers (for `SharedTask` polls),
-//! and condvar-based blocking.
+//! extension handles callbacks and condvar-based blocking.
 
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
@@ -21,11 +20,10 @@ const COMPLETE: u8 = 2;
 
 type Callback = Box<dyn FnOnce() + Send + 'static>;
 
-/// Mutex-guarded extension for callbacks, extra wakers, and blocking.
+/// Mutex-guarded extension for callbacks and blocking.
 struct Extension {
     done: bool,
     callbacks: Vec<Callback>,
-    extra_wakers: Vec<Waker>,
 }
 
 /// A lock-free, single-producer completion cell.
@@ -33,7 +31,6 @@ struct Extension {
 /// Stores a `Result<T, AsyncError>` that is written exactly once.
 /// Supports:
 /// - A single lock-free waker slot (for `Task<T>` poll)
-/// - Mutex-guarded extra wakers (for `SharedTask<T>` poll)
 /// - Mutex-guarded callbacks (for continuations)
 /// - Condvar-based blocking waits
 pub(crate) struct TaskCell<T> {
@@ -65,7 +62,6 @@ impl<T> TaskCell<T> {
             ext: Mutex::new(Extension {
                 done: false,
                 callbacks: Vec::new(),
-                extra_wakers: Vec::new(),
             }),
             condvar: Condvar::new(),
         }
@@ -100,14 +96,11 @@ impl<T> TaskCell<T> {
             }
         }
 
-        // Fire callbacks and extra wakers (under lock).
-        let (callbacks, extra_wakers) = {
+        // Fire callbacks (under lock).
+        let callbacks = {
             let mut ext = self.ext.lock().expect("task cell ext lock");
             ext.done = true;
-            (
-                std::mem::take(&mut ext.callbacks),
-                std::mem::take(&mut ext.extra_wakers),
-            )
+            std::mem::take(&mut ext.callbacks)
         };
 
         // Notify condvar waiters.
@@ -116,21 +109,15 @@ impl<T> TaskCell<T> {
         for cb in callbacks {
             cb();
         }
-        for w in extra_wakers {
-            w.wake();
-        }
     }
 
     /// Register a waker for single-consumer poll notification.
-    ///
-    /// Register a waker to be notified when the cell completes.
     ///
     /// # Safety
     ///
     /// Must not be called concurrently from multiple threads on the same
     /// `TaskCell`. Only the single designated consumer (the `Task<T>` owner)
-    /// may call this. For multi-consumer scenarios use
-    /// [`register_extra_waker`] instead.
+    /// may call this.
     pub(crate) unsafe fn register_waker(&self, waker: &Waker) {
         let current = self.state.load(Ordering::Acquire);
 
@@ -166,33 +153,6 @@ impl<T> TaskCell<T> {
         }
     }
 
-    /// Register an additional waker for multi-consumer poll notification.
-    ///
-    /// Used by `SharedTask<T>` where multiple clones may be polled
-    /// concurrently. Thread-safe (mutex-guarded).
-    pub(crate) fn register_extra_waker(&self, waker: &Waker) {
-        if self.is_ready() {
-            waker.wake_by_ref();
-            return;
-        }
-
-        let should_wake = {
-            let mut ext = self.ext.lock().expect("task cell ext lock");
-            if ext.done {
-                true
-            } else {
-                if !ext.extra_wakers.iter().any(|w| w.will_wake(waker)) {
-                    ext.extra_wakers.push(waker.clone());
-                }
-                false
-            }
-        };
-
-        if should_wake {
-            waker.wake_by_ref();
-        }
-    }
-
     /// Block the current thread until the cell is complete.
     pub(crate) fn wait_until_ready(&self) {
         if self.is_ready() {
@@ -207,9 +167,8 @@ impl<T> TaskCell<T> {
 
     /// Register a no-argument callback that fires when the cell completes.
     ///
-    /// Unlike [`on_complete`] and [`on_complete_cloned`], this does not
-    /// receive the result and does not require `T: Clone`. Useful for
-    /// notification-only use cases (e.g. waking a [`JoinSet`]).
+    /// This does not receive the result and does not require `T: Clone`.
+    /// Useful for notification-only use cases (e.g. waking a [`JoinSet`]).
     pub(crate) fn on_ready<F>(cell: &Arc<Self>, f: F)
     where
         F: FnOnce() + Send + 'static,
@@ -244,65 +203,6 @@ impl<T> TaskCell<T> {
         // SAFETY: Value was written before COMPLETE. The CAS above
         // guarantees we are the only reader.
         Some(unsafe { (*self.value.get()).assume_init_read() })
-    }
-
-    /// Clone the result without consuming it. Returns `None` if not yet
-    /// complete or if the value has already been taken by [`take_result`].
-    pub(crate) fn clone_result(&self) -> Option<Result<T, AsyncError>>
-    where
-        T: Clone,
-    {
-        if !self.is_ready() {
-            return None;
-        }
-        if self.taken.load(Ordering::Acquire) {
-            return None;
-        }
-        // SAFETY: ready == true means the value was written and is valid.
-        // We only read (clone) it — we do not move it — so taken stays false.
-        Some(unsafe { (*self.value.get()).assume_init_ref() }.clone())
-    }
-
-    /// Register a callback that receives a **cloned** copy of the result when
-    /// this cell completes. Unlike [`on_complete`], this does not set the
-    /// `taken` flag, so [`clone_result`] and additional callbacks still work
-    /// afterwards. Requires `T: Clone`.
-    pub(crate) fn on_complete_cloned<F>(cell: Arc<Self>, f: F)
-    where
-        T: Clone + Send + 'static,
-        F: FnOnce(Result<T, AsyncError>) + Send + 'static,
-    {
-        // Fast path — already complete.
-        if cell.is_ready() {
-            // SAFETY: ready, value is valid and we only clone it.
-            let cloned = unsafe { (*cell.value.get()).assume_init_ref() }.clone();
-            f(cloned);
-            return;
-        }
-
-        // Slow path — register under lock.
-        let cell_for_cb = Arc::clone(&cell);
-        let mut slot: Option<(Arc<TaskCell<T>>, F)> = Some((cell_for_cb, f));
-        let run_now = {
-            let mut ext = cell.ext.lock().expect("task cell ext lock");
-            if ext.done {
-                true
-            } else {
-                let (c, cb) = slot.take().expect("slot consumed twice");
-                ext.callbacks.push(Box::new(move || {
-                    // SAFETY: done == true means the value is valid and complete.
-                    let cloned = unsafe { (*c.value.get()).assume_init_ref() }.clone();
-                    cb(cloned);
-                }));
-                false
-            }
-        };
-
-        if run_now {
-            let (c, cb) = slot.take().expect("slot consumed twice");
-            let cloned = unsafe { (*c.value.get()).assume_init_ref() }.clone();
-            cb(cloned);
-        }
     }
 
     /// Register a callback that receives the taken result when this cell
@@ -457,26 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn clone_result() {
-        let cell = TaskCell::new();
-        cell.complete(Ok(String::from("hello")));
-
-        let r1 = cell.clone_result().unwrap().unwrap();
-        let r2 = cell.clone_result().unwrap().unwrap();
-        assert_eq!(r1, "hello");
-        assert_eq!(r2, "hello");
-    }
-
-    #[test]
-    fn clone_result_returns_none_after_take() {
-        let cell = TaskCell::new();
-        cell.complete(Ok(String::from("gone")));
-
-        assert!(cell.take_result().is_some());
-        assert!(cell.clone_result().is_none());
-    }
-
-    #[test]
     fn on_complete_fires_when_already_ready() {
         use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -507,49 +387,5 @@ mod tests {
         assert_eq!(observed.load(Ordering::SeqCst), 0);
         cell.complete(Ok(99));
         assert_eq!(observed.load(Ordering::SeqCst), 99);
-    }
-
-    #[test]
-    fn on_complete_cloned_leaves_value() {
-        let cell = Arc::new(TaskCell::new());
-        cell.complete(Ok(String::from("shared")));
-
-        use std::sync::Mutex;
-        let captured = Arc::new(Mutex::new(String::new()));
-        let cap = Arc::clone(&captured);
-        TaskCell::on_complete_cloned(Arc::clone(&cell), move |result| {
-            *cap.lock().unwrap() = result.unwrap();
-        });
-        assert_eq!(&*captured.lock().unwrap(), "shared");
-        // Value wasn't taken, so clone_result still works.
-        assert_eq!(cell.clone_result().unwrap().unwrap(), "shared");
-    }
-
-    #[test]
-    fn extra_wakers_all_notified() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::task::Wake;
-
-        struct Counter(AtomicUsize);
-        impl Wake for Counter {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let cell = Arc::new(TaskCell::<i32>::new());
-
-        let c1 = Arc::new(Counter(AtomicUsize::new(0)));
-        let c2 = Arc::new(Counter(AtomicUsize::new(0)));
-        let w1 = Waker::from(Arc::clone(&c1));
-        let w2 = Waker::from(Arc::clone(&c2));
-
-        cell.register_extra_waker(&w1);
-        cell.register_extra_waker(&w2);
-
-        cell.complete(Ok(1));
-
-        assert_eq!(c1.0.load(Ordering::SeqCst), 1);
-        assert_eq!(c2.0.load(Ordering::SeqCst), 1);
     }
 }

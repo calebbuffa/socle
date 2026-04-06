@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use crate::executor::Executor;
@@ -117,6 +118,15 @@ impl std::hash::Hash for Context {
                 1u8.hash(state);
                 (Arc::as_ptr(e) as *const () as usize).hash(state);
             }
+        }
+    }
+}
+
+impl fmt::Debug for Context {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            ContextKind::Immediate => f.write_str("Context(Immediate)"),
+            ContextKind::Custom(e) => write!(f, "Context(Custom({:p}))", Arc::as_ptr(e)),
         }
     }
 }

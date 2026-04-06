@@ -1,12 +1,14 @@
 [package]
 name = "orkester"
-version.workspace = true
+version = "0.1.0"
 edition = "2024"
 license.workspace = true
-description = "Context-aware task scheduling for Rust. Works with tokio, ships with FFI."
+description = "Context-aware task scheduling for Rust. Works with tokio and WASM."
 repository.workspace = true
-keywords = ["Runtime", "async", "ffi", "game-engine", "main-thread"]
-categories = ["asynchronous", "concurrency", "game-development"]
+keywords = ["runtime", "async", "ui"]
+categories = ["asynchronous", "concurrency", "game-development", "user-interface"]
+rust-version = "1.85"
+readme = "README.md"
 
 [lib]
 crate-type = ["rlib"]

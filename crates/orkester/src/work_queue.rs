@@ -24,6 +24,7 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -99,7 +100,7 @@ impl WorkQueue {
     /// Execute all currently pending items and return the count executed.
     ///
     /// Does not block if the queue is empty.
-    pub fn pump(&mut self) -> usize {
+    pub fn flush(&self) -> usize {
         let mut count = 0;
         while let Some(work) = self.inner.dequeue() {
             work();
@@ -108,9 +109,20 @@ impl WorkQueue {
         count
     }
 
+    /// Pump a single item if available, returning `true` if an item was executed.
+    pub fn pump(&self) -> bool {
+        self.inner
+            .dequeue()
+            .map(|work| {
+                work();
+                true
+            })
+            .unwrap_or(false)
+    }
+
     /// Execute pending items until the queue is empty **or** `budget` has
     /// elapsed. Returns the number of items executed.
-    pub fn pump_timed(&mut self, budget: Duration) -> usize {
+    pub fn flush_timed(&self, budget: Duration) -> usize {
         let deadline = Instant::now() + budget;
         let mut count = 0;
         while let Some(work) = self.inner.dequeue() {
@@ -131,7 +143,7 @@ impl WorkQueue {
     /// Block the calling thread until at least one item is available, then
     /// execute all pending items.  Useful when the caller's thread has nothing
     /// else to do while waiting for results dispatched to this queue.
-    pub fn wait_and_pump(&mut self) -> usize {
+    pub fn wait_and_flush(&self) -> usize {
         {
             let mut guard = self.inner.queue.lock().unwrap_or_else(|p| p.into_inner());
             while guard.is_empty() {
@@ -142,12 +154,20 @@ impl WorkQueue {
                     .unwrap_or_else(|p| p.into_inner());
             }
         }
-        self.pump()
+        self.flush()
     }
 }
 
 impl Default for WorkQueue {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl fmt::Debug for WorkQueue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkQueue")
+            .field("has_pending", &self.has_pending())
+            .finish()
     }
 }

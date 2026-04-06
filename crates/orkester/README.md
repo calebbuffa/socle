@@ -156,8 +156,8 @@ let mut wq = WorkQueue::new();
 let ctx = wq.context();
 
 task.then(&ctx, |v| render(v));
-wq.pump();               // drain one batch
-wq.pump_until_empty();   // drain everything queued so far
+wq.pump();    // execute one pending item
+wq.flush();   // drain everything queued so far
 ```
 
 ## Shared Tasks (`Handle<T>`)
@@ -188,13 +188,11 @@ if let Some(permit) = sem.try_acquire() { /* non-blocking */ }
 ## Channels
 
 ```rust
-use orkester::channel;
-
-let (tx, rx) = channel::mpsc::<i32>(16);
+let (tx, rx) = orkester::mpsc::<i32>(16);
 tx.send(1).unwrap();
 let val = rx.recv();  // Some(1)
 
-let (tx, rx) = channel::oneshot::<String>();
+let (tx, rx) = orkester::oneshot::<String>();
 tx.send("hello".into()).unwrap();
 ```
 
@@ -213,7 +211,7 @@ let winner = orkester::race(vec![task_a, task_b]);    // first to complete wins
 let all    = orkester::join_all(vec![a, b, c]);        // wait for all, in order
 
 // Exponential backoff retry
-let task = orkester::retry(3, RetryConfig::default(), || bg_ctx.run(|| fallible()));
+let task = orkester::retry(&bg_ctx, 3, RetryConfig::default(), || bg_ctx.run(|| fallible()));
 
 // Timer (single background thread — no thread parked per call)
 let done = orkester::delay(Duration::from_millis(100));
@@ -223,13 +221,13 @@ let done = orkester::delay(Duration::from_millis(100));
 
 ```toml
 [dependencies]
-orkester = "0.3"
+orkester = "0.1"
 
 # With tokio backend
-orkester = { version = "0.3", features = ["tokio-runtime"] }
+orkester = { version = "0.1", features = ["tokio-runtime"] }
 
 # For WASM targets
-orkester = { version = "0.3", features = ["wasm"] }
+orkester = { version = "0.1", features = ["wasm"] }
 ```
 
 | Feature | Description |
@@ -247,9 +245,10 @@ orkester::pair<T>() -> (Resolver<T>, Task<T>)
 orkester::resolved<T>(value: T) -> Task<T>
 orkester::delay(duration: Duration) -> Task<()>
 orkester::join_all<T>(tasks: impl IntoIterator<Item=Task<T>>) -> Task<Vec<T>>
+orkester::join_all_settle<T>(tasks: impl IntoIterator<Item=Task<T>>) -> Task<Vec<Result<T, AsyncError>>>
 orkester::timeout<T>(task: Task<T>, duration: Duration) -> Task<T>
 orkester::race<T>(tasks: Vec<Task<T>>) -> Task<T>
-orkester::retry<T, F>(attempts: u32, config: RetryConfig, f: F) -> Task<T>
+orkester::retry<T, F>(context: &Context, attempts: u32, config: RetryConfig, f: F) -> Task<T>
 ```
 
 ### `Context`
@@ -331,12 +330,12 @@ join_set.join_next(&mut self) -> Option<Result<T, AsyncError>>
 ```rust
 pub trait Executor: Send + Sync {
     fn execute(&self, task: Box<dyn FnOnce() + Send + 'static>);
-    fn spawn_future(&self, future: BoxFuture) { /* default: execute + block_on */ }
-    fn is_current_thread(&self) -> bool { false }
+    fn spawn(&self, future: BoxFuture) { /* default: execute + block_on */ }
+    fn is_current(&self) -> bool { false }
 }
 ```
 
-Override `spawn_future` when backed by an async runtime so futures are polled by
+Override `spawn` when backed by an async runtime so futures are polled by
 the reactor rather than blocked on a worker thread.
 
 ### `AsyncError`

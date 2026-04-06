@@ -19,6 +19,26 @@ impl<T> std::fmt::Display for SendError<T> {
 
 impl<T: std::fmt::Debug> std::error::Error for SendError<T> {}
 
+/// Error returned by [`Receiver::try_recv`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TryRecvError {
+    /// The channel is open but has no messages yet.
+    Empty,
+    /// All senders have been dropped and the buffer is empty.
+    Disconnected,
+}
+
+impl std::fmt::Display for TryRecvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TryRecvError::Empty => f.write_str("channel empty"),
+            TryRecvError::Disconnected => f.write_str("channel disconnected"),
+        }
+    }
+}
+
+impl std::error::Error for TryRecvError {}
+
 /// Error returned by [`Sender::try_send`] and [`Sender::send_timeout`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrySendError<T> {
@@ -223,14 +243,23 @@ impl<T> Receiver<T> {
         }
     }
 
-    /// Non-blocking receive. Returns `None` if empty (not necessarily closed).
-    pub fn try_recv(&self) -> Option<T> {
+    /// Non-blocking receive.
+    ///
+    /// Returns `Ok(value)` if a message was available.
+    /// Returns `Err(TryRecvError::Empty)` if the channel is open but empty.
+    /// Returns `Err(TryRecvError::Disconnected)` if all senders are dropped and
+    /// the buffer is empty.
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
         let mut queue = self.inner.queue.lock().expect("channel lock");
-        let value = queue.pop_front();
-        if value.is_some() {
+        if let Some(value) = queue.pop_front() {
             self.inner.not_full.notify_one();
+            return Ok(value);
         }
-        value
+        if self.inner.sender_count.load(Ordering::Acquire) == 0 {
+            Err(TryRecvError::Disconnected)
+        } else {
+            Err(TryRecvError::Empty)
+        }
     }
 
     /// Receive a value, blocking for at most `timeout`.

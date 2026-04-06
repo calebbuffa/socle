@@ -62,6 +62,14 @@ impl Default for Scope {
     }
 }
 
+impl std::fmt::Debug for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scope")
+            .field("cancelled", &self.token.is_cancelled())
+            .finish()
+    }
+}
+
 impl Drop for Scope {
     fn drop(&mut self) {
         self.token.cancel();

@@ -472,8 +472,6 @@ fn catch_in_main_thread_recovers_on_main_when_pumped() {
 
 #[test]
 fn then_in_thread_pool_runs_inline_on_same_pool_thread() {
-    let pool = ThreadPool::new(2);
-    let bg_ctx = pool.context();
     let inner_pool = ThreadPool::new(1);
     let inner_ctx = inner_pool.context();
 

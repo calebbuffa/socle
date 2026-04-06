@@ -1,6 +1,7 @@
 //! Counting semaphore for concurrency limiting.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::task::{Resolver, Task};
@@ -56,6 +57,17 @@ impl Semaphore {
     /// Acquire a permit, blocking the current thread if none are available.
     ///
     /// Returns a [`SemaphorePermit`] that releases the slot when dropped.
+    ///
+    /// # Note
+    ///
+    /// The returned permit **must** be bound to a variable. Dropping it
+    /// immediately releases the permit in the same statement, which is
+    /// almost certainly a bug:
+    /// ```text
+    /// let _permit = sem.acquire(); // ✓ holds until _permit is dropped
+    /// sem.acquire();               // ✗ released immediately!
+    /// ```
+    #[must_use = "dropping the permit immediately releases it"]
     pub fn acquire(&self) -> SemaphorePermit {
         // Fast path: try to grab a permit without queueing.
         {
@@ -93,6 +105,7 @@ impl Semaphore {
     /// Try to acquire a permit without blocking.
     ///
     /// Returns `Some(permit)` if a slot was available, `None` otherwise.
+    #[must_use = "dropping the permit immediately releases it"]
     pub fn try_acquire(&self) -> Option<SemaphorePermit> {
         let mut state = self.inner.state.lock().expect("semaphore lock");
         if state.permits > 0 {
@@ -123,6 +136,16 @@ pub struct SemaphorePermit {
     inner: Arc<SemaphoreInner>,
 }
 
+impl fmt::Debug for Semaphore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = self.inner.state.lock().unwrap_or_else(|p| p.into_inner());
+        f.debug_struct("Semaphore")
+            .field("available", &state.permits)
+            .field("max", &state.max_permits)
+            .finish()
+    }
+}
+
 impl Drop for SemaphorePermit {
     fn drop(&mut self) {
         let mut state = self.inner.state.lock().expect("semaphore lock on drop");
@@ -136,7 +159,16 @@ impl Drop for SemaphorePermit {
 }
 
 impl<T: Send + 'static> Task<T> {
-    /// Acquire a semaphore permit before executing, releasing it when done.
+    /// Acquire a semaphore permit immediately and hold it for the lifetime
+    /// of this task, releasing it when the result is delivered.
+    ///
+    /// # Timing
+    ///
+    /// The permit is acquired **synchronously** when `with_semaphore` is
+    /// called and held until the upstream task completes. If `self` is still
+    /// pending, the permit remains held during the entire wait. Use this when
+    /// you want to limit how many tasks can be *in flight* simultaneously,
+    /// not just how many execute concurrently.
     pub fn with_semaphore(self, sem: &Semaphore) -> Task<T> {
         let permit = sem.acquire();
         self.map(move |v| {

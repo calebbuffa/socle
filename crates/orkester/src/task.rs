@@ -6,8 +6,8 @@ use crate::task_cell::TaskCell;
 use std::fmt::{self, Debug, Formatter};
 use std::future::Future as StdFuture;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::task::Poll;
+use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
@@ -125,7 +125,11 @@ pub(crate) fn create_pair<T: Send + 'static>() -> (Resolver<T>, Task<T>) {
 
 /// Output-type adapter for [`Context::run`] and related combinators.
 ///
-/// Sealed: only implemented for `T` (plain values) and `Task<T>` (chained tasks).
+/// This trait is already implemented for `T` (plain values) and `Task<T>`
+/// (chained tasks). Closures passed to [`Context::run`], [`Task::then`],
+/// [`Task::map`], etc. may return either type — both are handled identically.
+///
+/// You do not need to implement this trait yourself.
 pub trait ResolveOutput<T: Send + 'static>: Send + 'static {
     fn resolve_into(self, resolver: Resolver<T>);
     fn into_task(self) -> Task<T>;
@@ -446,7 +450,10 @@ impl<T: Send + 'static> Task<T> {
                 TaskCell::on_complete(cell, move |result| sc.complete(result));
             }
         }
-        Handle { cell: shared }
+        Handle {
+            cell: shared,
+            waker: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -486,15 +493,23 @@ impl<T: Send + 'static> StdFuture for Task<T> {
 /// result. Closures passed to [`then`](Handle::then) receive `T` by value
 /// (cloned from the stored result).
 ///
+/// `Handle<T>` implements [`Future`](std::future::Future) so it can be
+/// directly `.await`'d in async code. Each clone is an independent future
+/// with its own waker registration.
+///
 /// Requires `T: Clone + Send`.
 pub struct Handle<T: Clone + Send + 'static> {
     pub(crate) cell: Arc<SharedCell<T>>,
+    /// Waker slot shared with the completion callback registered on first poll.
+    waker: Arc<Mutex<Option<Waker>>>,
 }
 
 impl<T: Clone + Send + 'static> Clone for Handle<T> {
     fn clone(&self) -> Self {
         Self {
             cell: Arc::clone(&self.cell),
+            // Each clone gets an independent waker slot.
+            waker: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -508,10 +523,6 @@ impl<T: Clone + Send + 'static> Debug for Handle<T> {
 }
 
 impl<T: Clone + Send + 'static> Handle<T> {
-    pub(crate) fn from_shared_cell(cell: Arc<SharedCell<T>>) -> Self {
-        Self { cell }
-    }
-
     #[inline]
     pub fn is_ready(&self) -> bool {
         self.cell.is_ready()
@@ -590,5 +601,53 @@ impl<T: Clone + Send + 'static> Handle<T> {
         });
 
         next_task
+    }
+}
+
+impl<T: Clone + Send + 'static> Unpin for Handle<T> {}
+
+/// `Handle<T>` implements `Future` so it can be `.await`'d in async code.
+///
+/// On the first poll the handle registers a wakeup callback via the shared
+/// completion cell. Subsequent polls (e.g. after a spurious wake) simply
+/// re-check readiness. Each `Handle` clone has its own waker slot so
+/// multiple clones can be awaited on different tasks simultaneously.
+impl<T: Clone + Send + 'static> StdFuture for Handle<T> {
+    type Output = Result<T, AsyncError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        // Fast path: already complete.
+        if let Some(result) = self.cell.get() {
+            return Poll::Ready(result);
+        }
+
+        // Register or update the stored waker, and remember whether this
+        // is the first poll (so we register the completion callback once).
+        let needs_register = {
+            let mut slot = self.waker.lock().unwrap_or_else(|p| p.into_inner());
+            let was_empty = slot.is_none();
+            match slot.as_ref() {
+                Some(w) if w.will_wake(cx.waker()) => {}
+                _ => *slot = Some(cx.waker().clone()),
+            }
+            was_empty
+        };
+
+        if needs_register {
+            // Register a one-shot callback that wakes the latest stored waker.
+            let waker_slot = Arc::clone(&self.waker);
+            SharedCell::on_complete(Arc::clone(&self.cell), move |_| {
+                if let Some(w) = waker_slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                    w.wake();
+                }
+            });
+        }
+
+        // Re-check after registering to close the missed-wakeup window.
+        if let Some(result) = self.cell.get() {
+            Poll::Ready(result)
+        } else {
+            Poll::Pending
+        }
     }
 }
