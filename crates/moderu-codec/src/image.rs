@@ -1,7 +1,7 @@
 //! Image decoding: PNG / JPEG / WebP → `Image` pixel data, and image encoder stub.
 
 use crate::CodecEncoder;
-use moderu::{GltfModel, Image};
+use moderu::{GltfModel, ImageData};
 
 /// Errors that can occur during image decode or encode operations.
 #[derive(thiserror::Error, Debug)]
@@ -89,7 +89,7 @@ pub fn decode(model: &mut GltfModel) -> Vec<String> {
 
 /// Low-level: decode raw image bytes (PNG/JPEG/WebP) into RGBA8 pixel data.
 ///
-/// Accepts raw bytes and returns an RGBA8 decoded [`moderu::Image`].
+/// Accepts raw bytes and returns an RGBA8 decoded [`moderu::ImageData`].
 /// Supported formats: PNG, JPEG, WebP.
 ///
 /// # Example
@@ -97,11 +97,11 @@ pub fn decode(model: &mut GltfModel) -> Vec<String> {
 /// let img = moderu_codec::image::decode_buffer(&png_bytes)?;
 /// // img.data is RGBA8, img.width / img.height are pixel dimensions
 /// ```
-pub fn decode_buffer(data: &[u8]) -> Result<moderu::Image, ImageError> {
+pub fn decode_buffer(data: &[u8]) -> Result<moderu::ImageData, ImageError> {
     decode_image_bytes(data)
 }
 
-fn decode_image_bytes(data: &[u8]) -> Result<Image, ImageError> {
+fn decode_image_bytes(data: &[u8]) -> Result<ImageData, ImageError> {
     use image::ImageReader;
     use std::io::Cursor;
 
@@ -114,7 +114,7 @@ fn decode_image_bytes(data: &[u8]) -> Result<Image, ImageError> {
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
 
-    Ok(Image {
+    Ok(ImageData {
         data: rgba.into_raw(),
         width,
         height,
@@ -153,7 +153,7 @@ pub fn encode(model: &mut GltfModel) -> Result<(), ImageError> {
     ImageEncoder::encode(model)
 }
 
-/// Generate a full mipmap chain for an uncompressed [`moderu::Image`].
+/// Generate a full mipmap chain for an uncompressed [`moderu::ImageData`].
 ///
 /// After this call, `image.mip_positions` contains one entry per mip level
 /// (starting at mip 0 which is the full-resolution level), and `image.data`
@@ -168,7 +168,7 @@ pub fn encode(model: &mut GltfModel) -> Result<(), ImageError> {
 /// # Errors
 /// Returns an error string if the image format is not RGBA8 or the `image`
 /// crate cannot resize the input.
-pub fn generate_mipmaps(img: &mut moderu::Image) -> Result<(), ImageError> {
+pub fn generate_mipmaps(img: &mut moderu::ImageData) -> Result<(), ImageError> {
     use image::{ImageBuffer, Rgba, imageops};
     use moderu::MipPosition;
 

@@ -16,8 +16,6 @@
 
 use i3s::cmn::{AttributeStorageInfo, HeaderValueType};
 
-// ── Public types ──────────────────────────────────────────────────────────────
-
 /// A decoded attribute buffer for one field of one node.
 #[derive(Debug, Clone)]
 pub struct AttributeBuffer {
@@ -69,7 +67,11 @@ pub enum AttributeDecodeError {
     UnknownValueType(String),
     /// String payload contains invalid UTF-8.
     #[error("invalid UTF-8 at feature {feature_index}: {error}")]
-    InvalidUtf8 { feature_index: usize, #[source] error: std::str::Utf8Error },
+    InvalidUtf8 {
+        feature_index: usize,
+        #[source]
+        error: std::str::Utf8Error,
+    },
     /// Attribute descriptor has no `attributeValues` section.
     #[error("attributeStorageInfo has no attributeValues descriptor")]
     MissingAttributeValues,
@@ -80,8 +82,6 @@ pub enum AttributeDecodeError {
     #[error("attribute buffer arithmetic overflow")]
     Overflow,
 }
-
-// ── Public entry point ────────────────────────────────────────────────────────
 
 /// Decode a raw I3S attribute binary buffer into an [`AttributeBuffer`].
 ///
@@ -108,10 +108,8 @@ pub fn decode_attribute(
         });
     }
 
-    // ── Determine value type ──────────────────────────────────────────────
     let value_type = extract_value_type(info)?;
 
-    // ── Decode payload ────────────────────────────────────────────────────
     let values = match value_type {
         HeaderValueType::Int32 => {
             let v = read_typed::<i32>(data, &mut offset, count)?;
@@ -169,8 +167,8 @@ pub fn decode_attribute(
                     .filter(|&b| b == 0)
                     .map(|_| &slice[..slice.len() - 1])
                     .unwrap_or(slice);
-                let s = std::str::from_utf8(slice)
-                    .map_err(|e| AttributeDecodeError::InvalidUtf8 {
+                let s =
+                    std::str::from_utf8(slice).map_err(|e| AttributeDecodeError::InvalidUtf8 {
                         feature_index: i,
                         error: e,
                     })?;
@@ -188,8 +186,6 @@ pub fn decode_attribute(
         values,
     })
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn read_u32(data: &[u8], offset: &mut usize) -> Result<u32, AttributeDecodeError> {
     if *offset + 4 > data.len() {
@@ -281,11 +277,7 @@ fn extract_value_type(
         "Float32" => HeaderValueType::Float32,
         "Float64" => HeaderValueType::Float64,
         "String" | "Oid32" | "Oid64" => HeaderValueType::String,
-        _ => {
-            return Err(AttributeDecodeError::UnknownValueType(
-                type_str.to_owned(),
-            ))
-        }
+        _ => return Err(AttributeDecodeError::UnknownValueType(type_str.to_owned())),
     };
     Ok(vt)
 }
@@ -293,11 +285,12 @@ fn extract_value_type(
 /// Whether the `ordering` field includes `AttributeByteCounts`, indicating
 /// a string-type attribute.
 pub fn has_byte_counts(info: &AttributeStorageInfo) -> bool {
-    info.ordering
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|o| matches!(o, i3s::cmn::AttributeStorageInfoOrdering::AttributeByteCounts))
+    info.ordering.as_deref().unwrap_or(&[]).iter().any(|o| {
+        matches!(
+            o,
+            i3s::cmn::AttributeStorageInfoOrdering::AttributeByteCounts
+        )
+    })
 }
 
 /// Build a minimal `AttributeStorageInfo` for testing without a JSON layer doc.
@@ -319,8 +312,6 @@ fn make_info(name: &str, value_type: &str) -> AttributeStorageInfo {
         object_ids: None,
     }
 }
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -381,7 +372,11 @@ mod tests {
     #[test]
     fn f32_values() {
         let info = make_info("temp", "Float32");
-        let payload: Vec<u8> = [f32_le(1.0), f32_le(2.0)].iter().flatten().copied().collect();
+        let payload: Vec<u8> = [f32_le(1.0), f32_le(2.0)]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
         let attr = decode_attribute(&buf(2, &payload), &info).unwrap();
         let AttributeValues::Float32(v) = attr.values else {
             panic!("expected Float32");
@@ -445,7 +440,10 @@ mod tests {
     fn truncated_header_returns_error() {
         let info = make_info("x", "Int32");
         let result = decode_attribute(&[], &info); // no count header
-        assert!(matches!(result, Err(AttributeDecodeError::Truncated { .. })));
+        assert!(matches!(
+            result,
+            Err(AttributeDecodeError::Truncated { .. })
+        ));
     }
 
     #[test]
@@ -453,7 +451,10 @@ mod tests {
         let info = make_info("x", "Int32");
         // count = 3, but only 4 bytes of payload (need 12)
         let result = decode_attribute(&buf(3, &[0u8; 4]), &info);
-        assert!(matches!(result, Err(AttributeDecodeError::Truncated { .. })));
+        assert!(matches!(
+            result,
+            Err(AttributeDecodeError::Truncated { .. })
+        ));
     }
 
     #[test]

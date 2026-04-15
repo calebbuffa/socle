@@ -59,7 +59,7 @@ impl AsRef<str> for Uri {
 /// # Examples
 ///
 /// ```
-/// use kiban::resolve_url;
+/// use outil::resolve_url;
 ///
 /// assert_eq!(
 ///     resolve_url("https://example.com/tiles/model.gltf", "buffer0.bin"),
@@ -100,7 +100,7 @@ pub fn resolve_url(base: &str, key: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use kiban::file_extension;
+/// use outil::file_extension;
 ///
 /// assert_eq!(file_extension("https://example.com/data/tile.b3dm?v=1"), Some("b3dm"));
 /// assert!(file_extension("model.GLB").map_or(false, |e| e.eq_ignore_ascii_case("glb")));

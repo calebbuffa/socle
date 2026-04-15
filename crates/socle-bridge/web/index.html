@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>socle — Babylon.js Viewer</title>
+    <style>
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #111; }
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; }
+        #status { position: absolute; top: 8px; left: 8px; color: #ccc; font: 13px monospace; pointer-events: none; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/babylonjs@6.46.0/babylon.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/babylonjs-loaders@6.46.0/babylonjs.loaders.min.js"></script>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="status">connecting…</div>
+    <script src="bridge.js"></script>
+</body>
+</html>

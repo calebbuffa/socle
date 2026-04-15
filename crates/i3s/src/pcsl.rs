@@ -520,5 +520,4 @@ pub struct PointCloudVertexAttributes {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct PointCloudSlpkHashtable {
-}
+pub struct PointCloudSlpkHashtable {}

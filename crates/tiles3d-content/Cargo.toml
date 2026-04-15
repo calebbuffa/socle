@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-kiban = { path = "../kiban" }
+outil = { path = "../outil" }
 tiles3d = { path = "../tiles3d" }
 moderu = { path = "../moderu" }
 moderu-io = { path = "../moderu-io" }

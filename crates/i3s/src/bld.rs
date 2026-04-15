@@ -231,8 +231,7 @@ pub struct FilterBlockAuthoringInfo {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct FilterMode {
-}
+pub struct FilterMode {}
 
 /// Shows all elements that comply with the filter block of a filter in a building scene layer.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -399,5 +398,4 @@ pub struct Sublayer {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct DefaultFilterTypes {
-}
+pub struct DefaultFilterTypes {}

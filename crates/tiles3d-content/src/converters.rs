@@ -25,8 +25,8 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use kiban::file_extension;
 use moderu::GltfModel;
+use outil::file_extension;
 
 // ---------------------------------------------------------------------------
 // Public result type

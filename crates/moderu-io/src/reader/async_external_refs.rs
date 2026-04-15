@@ -146,7 +146,7 @@ async fn resolve_images_async(
 ///   => r"C:\tiles\buffer0.bin"
 /// ```
 pub fn resolve_uri(base_uri: &str, relative: &str) -> String {
-    kiban::resolve_url(base_uri, relative)
+    outil::resolve_url(base_uri, relative)
 }
 
 #[cfg(test)]

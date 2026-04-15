@@ -233,7 +233,7 @@
       "extraFields": [
         {
           "name": "pixels",
-          "rustType": "crate::image::Image",
+          "rustType": "crate::image::ImageData",
           "doc": "Decoded pixel data. Populated by the reader pipeline; not serialized."
         }
       ]

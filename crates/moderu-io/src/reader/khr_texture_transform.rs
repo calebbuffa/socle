@@ -3,7 +3,7 @@
 //! For each material texture that has this extension, rewrites the UV
 //! coordinates of every primitive using that texture.
 
-use moderu::{GltfModel, KhrTextureTransform};
+use moderu::{GltfModel, TextureTransform};
 
 const EXT_NAME: &str = "KHR_texture_transform";
 
@@ -64,7 +64,7 @@ pub fn apply_texture_transforms(model: &mut GltfModel, warnings: &mut super::err
     }
 }
 
-fn collect_transforms(model: &GltfModel) -> Vec<(usize, u32, KhrTextureTransform)> {
+fn collect_transforms(model: &GltfModel) -> Vec<(usize, u32, TextureTransform)> {
     let mut result = Vec::new();
 
     for (mat_idx, mat) in model.materials.iter().enumerate() {
@@ -72,7 +72,7 @@ fn collect_transforms(model: &GltfModel) -> Vec<(usize, u32, KhrTextureTransform
         let texture_infos = collect_texture_infos(mat);
 
         for (texcoord, ext_val) in texture_infos {
-            let tx = KhrTextureTransform::from_json(&ext_val);
+            let tx = TextureTransform::from_json(&ext_val);
             result.push((mat_idx, texcoord, tx));
         }
     }
@@ -123,7 +123,7 @@ fn collect_texture_infos(mat: &moderu::Material) -> Vec<(u32, serde_json::Value)
 fn transform_uvs(
     model: &mut GltfModel,
     acc_idx: usize,
-    tx: &KhrTextureTransform,
+    tx: &TextureTransform,
 ) -> Result<usize, String> {
     let bv_idx = model
         .accessors
@@ -169,7 +169,7 @@ fn transform_uvs(
                 v = buf[off + comp_size] as f64;
             }
 
-            // Delegate to KhrTextureTransform::apply — single source of truth.
+            // Delegate to TextureTransform::apply — single source of truth.
             let [fu, fv] = tx.apply(u, v);
 
             out.extend_from_slice(&(fu as f32).to_le_bytes());

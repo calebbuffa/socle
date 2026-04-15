@@ -28,14 +28,6 @@ pub fn bounds_entirely_clipped(bounds: &SpatialBounds, normal: DVec3, plane_dist
     bounds.is_entirely_clipped(normal, plane_distance)
 }
 
-/// Returns `true` if the horizontal projection of `camera` falls within `bounds`.
-///
-/// Delegates to [`SpatialBounds::is_over_footprint`].
-#[inline]
-pub fn camera_is_over_bounds(camera: DVec3, bounds: &SpatialBounds) -> bool {
-    bounds.is_over_footprint(camera)
-}
-
 /// Test a ray against `bounds`, returning distance `t ≥ 0` to the first
 /// intersection, or `None` on miss.
 ///

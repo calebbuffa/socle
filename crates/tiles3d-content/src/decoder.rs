@@ -96,7 +96,7 @@ impl B3dmOffsets {
                 ft_json_len: ft_json,
                 ft_bin_len: ft_bin,
                 bt_json_len: bt_json,
-                bt_bin_len: bt_bin
+                bt_bin_len: bt_bin,
             })
         }
     }
@@ -212,12 +212,9 @@ fn i3dm_apply_instancing(
     ft: &Json,
 ) -> GltfModel {
     let mut inst_builder = GltfModelBuilder::new();
-    let trans_flat: Vec<f32> = positions.iter().flat_map(|p| p.iter().copied()).collect();
-    let rot_flat: Vec<f32> = rotations.iter().flat_map(|q| q.iter().copied()).collect();
-    let scale_flat: Vec<f32> = scales.iter().flat_map(|s| s.iter().copied()).collect();
-    let trans_acc = inst_builder.push_accessor(&trans_flat, AccessorType::Vec3);
-    let rot_acc = inst_builder.push_accessor(&rot_flat, AccessorType::Vec4);
-    let scale_acc = inst_builder.push_accessor(&scale_flat, AccessorType::Vec3);
+    let trans_acc = inst_builder.push_accessor(&positions);
+    let rot_acc = inst_builder.push_accessor(&rotations);
+    let scale_acc = inst_builder.push_accessor(&scales);
     let inst_model = inst_builder.finish();
     let acc_base = model.accessors.len();
     model = model.merge(inst_model);
@@ -433,26 +430,22 @@ fn pnts_build_model(
     normals: Option<Vec<[f32; 3]>>,
 ) -> GltfModel {
     let mut builder = GltfModelBuilder::new();
-    let pos_flat: Vec<f32> = positions.iter().flat_map(|p| p.iter().copied()).collect();
-    let pos_acc = builder.push_accessor(&pos_flat, AccessorType::Vec3);
+    let pos_acc = builder.push_accessor(&positions);
     let mut prim = builder
         .primitive()
         .mode(PrimitiveMode::Points)
         .attribute("POSITION", pos_acc);
     if let Some(norm_data) = normals {
-        let norm_flat: Vec<f32> = norm_data.iter().flat_map(|n| n.iter().copied()).collect();
-        let norm_acc = builder.push_accessor(&norm_flat, AccessorType::Vec3);
+        let norm_acc = builder.push_accessor(&norm_data);
         prim = prim.attribute("NORMAL", norm_acc);
     }
     match &color {
         Some(PntsColorData::Rgba(vals)) => {
-            let flat: Vec<f32> = vals.iter().flat_map(|c| c.iter().copied()).collect();
-            let acc = builder.push_accessor(&flat, AccessorType::Vec4);
+            let acc = builder.push_accessor(vals.as_slice());
             prim = prim.attribute("COLOR_0", acc);
         }
         Some(PntsColorData::Rgb(vals)) => {
-            let flat: Vec<f32> = vals.iter().flat_map(|c| c.iter().copied()).collect();
-            let acc = builder.push_accessor(&flat, AccessorType::Vec3);
+            let acc = builder.push_accessor(vals.as_slice());
             prim = prim.attribute("COLOR_0", acc);
         }
         Some(PntsColorData::Constant(_)) | None => {}

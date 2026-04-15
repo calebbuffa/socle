@@ -78,6 +78,8 @@ pub enum SpatialBounds {
     Sphere { center: DVec3, radius: f64 },
     /// Oriented bounding box.
     OrientedBox { center: DVec3, half_axes: DMat3 },
+    /// Empty bounds (contains no points).
+    Empty,
 }
 
 impl SpatialBounds {
@@ -108,6 +110,7 @@ impl SpatialBounds {
                     polygon_boundary_distance_2d(p2, vertices)
                 }
             }
+            SpatialBounds::Empty => f64::INFINITY,
         }
     }
 
@@ -136,6 +139,7 @@ impl SpatialBounds {
                 let p2 = DVec2::new(point.x, point.y);
                 point_in_polygon_2d(p2, vertices)
             }
+            SpatialBounds::Empty => false,
         }
     }
 
@@ -190,6 +194,7 @@ impl SpatialBounds {
             SpatialBounds::Polygon { vertices } => {
                 point_in_polygon_2d(DVec2::new(point.x, point.z), vertices)
             }
+            SpatialBounds::Empty => false,
         }
     }
 
@@ -216,6 +221,7 @@ impl SpatialBounds {
                 ray_vs_aabb(origin, direction, min3, max3)
             }
             SpatialBounds::Polygon { vertices } => ray_vs_polygon_2d(origin, direction, vertices),
+            SpatialBounds::Empty => None,
         }
     }
 
@@ -267,6 +273,7 @@ impl SpatialBounds {
                     radius,
                 }
             }
+            SpatialBounds::Empty => SpatialBounds::Empty,
         }
     }
 }
@@ -307,6 +314,7 @@ fn bounds_support_dot(bounds: &SpatialBounds, normal: DVec3) -> f64 {
             .iter()
             .map(|v| normal.x * v.x + normal.y * v.y)
             .fold(f64::NEG_INFINITY, f64::max),
+        SpatialBounds::Empty => f64::NEG_INFINITY,
     }
 }
 

@@ -3,7 +3,7 @@
 //! Mirrors `Cesium3DTilesContent::ImplicitTilingUtilities`.
 
 use crate::tile::{OctreeTileID, QuadtreeTileID};
-use kiban::resolve_url;
+use outil::resolve_url;
 
 /// Denominator for a given implicit tile level.
 ///

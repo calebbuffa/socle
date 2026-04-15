@@ -59,6 +59,9 @@ pub(crate) fn shape_intersects_bounds(shape: &QueryShape, bounds: &SpatialBounds
 }
 
 fn convex_vs_bounds(planes: &[(DVec3, f64)], bounds: &SpatialBounds) -> bool {
+    if matches!(bounds, SpatialBounds::Empty) {
+        return false;
+    }
     for &(n, d) in planes {
         // If the support point of `bounds` along `-n` is outside the plane,
         // the entire bounds is outside → prune.
@@ -111,6 +114,7 @@ fn support_along(bounds: &SpatialBounds, dir: DVec3) -> DVec3 {
                 })
                 .unwrap_or(DVec3::ZERO)
         }
+        SpatialBounds::Empty => DVec3::ZERO,
     }
 }
 
@@ -165,6 +169,7 @@ fn aabb_vs_bounds(qmin: DVec3, qmax: DVec3, bounds: &SpatialBounds) -> bool {
                 .fold(DVec2::splat(f64::MIN), |a, &v| a.max(v));
             qmin.x <= pmax.x && qmax.x >= pmin.x && qmin.y <= pmax.y && qmax.y >= pmin.y
         }
+        SpatialBounds::Empty => false,
     }
 }
 
@@ -222,6 +227,7 @@ fn polygon_vs_bounds(poly: &[DVec2], bounds: &SpatialBounds) -> bool {
                 DVec2::new(center.x + rx, center.z + rz),
             )
         }
+        SpatialBounds::Empty => return false,
     };
 
     // Quick AABB reject.

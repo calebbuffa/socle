@@ -3,9 +3,9 @@
 //! Data structures (`Image`, `Rectangle`) are defined in `moderu`.
 //! Processing operations like blitting live here in `moderu-reader`.
 
-use moderu::{Image, Rectangle};
+use moderu::{ImageData, Rectangle};
 
-fn rect_in_bounds(img: &Image, r: Rectangle) -> bool {
+fn rect_in_bounds(img: &ImageData, r: Rectangle) -> bool {
     r.x >= 0
         && r.y >= 0
         && r.width > 0
@@ -18,9 +18,9 @@ fn rect_in_bounds(img: &Image, r: Rectangle) -> bool {
 /// `target_rect` in `target`. Returns `false` if the rects are out of
 /// bounds or the images have a different channel count.
 pub fn blit_image(
-    target: &mut Image,
+    target: &mut ImageData,
     target_rect: Rectangle,
-    source: &Image,
+    source: &ImageData,
     source_rect: Rectangle,
 ) -> bool {
     if source.channels != target.channels || source.channels == 0 {

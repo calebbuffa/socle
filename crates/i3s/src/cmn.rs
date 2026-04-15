@@ -1154,8 +1154,7 @@ pub struct ServiceUpdateTimeStamp {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct SlpkHashtable {
-}
+pub struct SlpkHashtable {}
 
 /// The spatialReference object is located at the top level of the JSON hierarchy.  A spatial
 /// reference can be defined using a Well-Known ID (WKID) or Well-Known Text (WKT). The default
@@ -1727,8 +1726,7 @@ pub struct GeometryNormal {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct GeometryParams {
-}
+pub struct GeometryParams {}
 
 /// Position vertex attribute.  Relative to the center of oriented-bounded box of the node.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

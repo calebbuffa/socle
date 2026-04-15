@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "moderu"
-version = "0.3.0"
+version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
@@ -878,7 +878,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "zukei",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

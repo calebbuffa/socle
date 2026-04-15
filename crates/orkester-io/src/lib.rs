@@ -3,13 +3,13 @@
 //! Provides the [`AssetAccessor`] trait for abstracting network/file I/O
 //! in format-specific tile loaders, plus shared utilities used by all loaders.
 
+use flate2::read::GzDecoder;
+use io::Read;
 use orkester::Task;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
-
-pub use kiban::resolve_url;
 
 /// Content-encoding of the raw bytes in an [`AssetResponse`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -19,6 +19,12 @@ pub enum ContentEncoding {
     None,
     /// Data is gzip-compressed and must be decompressed before use.
     Gzip,
+}
+
+pub struct AssetRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub priority: RequestPriority,
 }
 
 /// Response from an asset request.
@@ -114,10 +120,6 @@ pub trait AssetAccessor: Send + Sync + 'static {
     ) -> Task<Result<AssetResponse, io::Error>>;
 }
 
-// ---------------------------------------------------------------------------
-// GunzipAccessor
-// ---------------------------------------------------------------------------
-
 /// Decorator that decompresses gzip-encoded responses from an inner accessor.
 ///
 /// If the response carries `ContentEncoding::Gzip` the data is decompressed
@@ -135,8 +137,6 @@ impl<A: AssetAccessor> GunzipAccessor<A> {
 
 fn gunzip_response(mut resp: AssetResponse) -> Result<AssetResponse, io::Error> {
     if resp.content_encoding == ContentEncoding::Gzip {
-        use flate2::read::GzDecoder;
-        use io::Read;
         let mut decoder = GzDecoder::new(resp.data.as_slice());
         let mut decompressed = Vec::new();
         decoder.read_to_end(&mut decompressed)?;
@@ -172,10 +172,6 @@ impl<A: AssetAccessor> AssetAccessor for GunzipAccessor<A> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ArchiveAccessor
-// ---------------------------------------------------------------------------
-
 /// Self-contained accessor for `.zip`, `.slpk`, and `.3tz` local archives.
 ///
 /// The ZIP central directory is read once at construction; thereafter each
@@ -194,7 +190,7 @@ pub struct ArchiveAccessor {
     /// The raw archive bytes. `Arc<[u8]>` avoids the extra Vec indirection.
     data: Arc<[u8]>,
     /// Runtime used to run blocking I/O on a background thread.
-    bg_context: orkester::Context,
+    bg_ctx: orkester::Context,
 }
 
 impl ArchiveAccessor {
@@ -202,13 +198,13 @@ impl ArchiveAccessor {
     ///
     /// Reads and indexes the central directory synchronously. Returns an error
     /// if the file cannot be read or does not look like a valid ZIP archive.
-    pub fn open(path: impl AsRef<Path>, bg_context: orkester::Context) -> io::Result<Self> {
+    pub fn open(path: impl AsRef<Path>, bg_ctx: orkester::Context) -> io::Result<Self> {
         let data = std::fs::read(path)?;
-        Self::from_bytes(data, bg_context)
+        Self::from_bytes(data, bg_ctx)
     }
 
     /// Create from an already-loaded byte buffer.
-    pub fn from_bytes(data: Vec<u8>, bg_context: orkester::Context) -> io::Result<Self> {
+    pub fn from_bytes(data: Vec<u8>, bg_ctx: orkester::Context) -> io::Result<Self> {
         let cursor = io::Cursor::new(&data);
         let mut archive = zip::ZipArchive::new(cursor)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -224,7 +220,7 @@ impl ArchiveAccessor {
         Ok(Self {
             index: Arc::new(index),
             data: Arc::from(data.into_boxed_slice()),
-            bg_context,
+            bg_ctx,
         })
     }
 
@@ -288,7 +284,7 @@ impl AssetAccessor for ArchiveAccessor {
         let path = archive_url_path(url).to_owned();
         let data = Arc::clone(&self.data);
         let index = Arc::clone(&self.index);
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             Self::read_entry_sync(&data, &index, &path).map(|data| AssetResponse {
                 status: 200,
                 data,
@@ -308,7 +304,7 @@ impl AssetAccessor for ArchiveAccessor {
         let path = archive_url_path(url).to_owned();
         let data = Arc::clone(&self.data);
         let index = Arc::clone(&self.index);
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             Self::read_entry_sync(&data, &index, &path).and_then(|entry_data| {
                 let start = offset as usize;
                 let end = (offset + length) as usize;
@@ -339,12 +335,12 @@ impl AssetAccessor for ArchiveAccessor {
 ///
 /// Query strings and fragments are stripped before resolving the path.
 pub struct FileAccessor {
-    bg_context: orkester::Context,
+    bg_ctx: orkester::Context,
 }
 
 impl FileAccessor {
-    pub fn new(bg_context: orkester::Context) -> Self {
-        Self { bg_context }
+    pub fn new(bg_ctx: orkester::Context) -> Self {
+        Self { bg_ctx }
     }
 
     fn url_to_path(url: &str) -> std::path::PathBuf {
@@ -384,7 +380,7 @@ impl AssetAccessor for FileAccessor {
         _priority: RequestPriority,
     ) -> orkester::Task<Result<AssetResponse, io::Error>> {
         let path = Self::url_to_path(url);
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             std::fs::read(&path)
                 .map_err(|e| io::Error::new(e.kind(), format!("{e} (path: {})", path.display())))
                 .map(|data| AssetResponse {
@@ -412,7 +408,7 @@ impl AssetAccessor for FileAccessor {
             return orkester::resolved(Err(io::Error::new(io::ErrorKind::InvalidInput, msg)));
         }
         let path = Self::url_to_path(url);
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             use io::Read as _;
             let mut file = std::fs::File::open(&path)
                 .map_err(|e| io::Error::new(e.kind(), format!("{e} (path: {})", path.display())))?;
@@ -443,16 +439,16 @@ impl AssetAccessor for FileAccessor {
 /// Headers set at construction (e.g. `Authorization`) are merged with
 /// per-request headers; per-request headers take precedence.
 pub struct HttpAccessor {
-    bg_context: orkester::Context,
+    bg_ctx: orkester::Context,
     /// Shared, immutable headers applied to every request. `Arc` makes cloning O(1).
     default_headers: Arc<[(String, String)]>,
 }
 
 impl HttpAccessor {
     /// Create an accessor with no default headers.
-    pub fn new(bg_context: orkester::Context) -> Self {
+    pub fn new(bg_ctx: orkester::Context) -> Self {
         Self {
-            bg_context,
+            bg_ctx,
             default_headers: Arc::from([]),
         }
     }
@@ -461,11 +457,11 @@ impl HttpAccessor {
     ///
     /// Useful for `Authorization`, `X-Api-Key`, and similar static headers.
     pub fn with_headers(
-        bg_context: orkester::Context,
+        bg_ctx: orkester::Context,
         headers: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
         Self {
-            bg_context,
+            bg_ctx,
             default_headers: headers.into_iter().collect(),
         }
     }
@@ -518,7 +514,7 @@ impl AssetAccessor for HttpAccessor {
         let url = url.to_owned();
         let default_headers = Arc::clone(&self.default_headers);
         let extra_headers = headers.to_vec();
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             HttpAccessor::build_request(&url, &default_headers, &extra_headers)
                 .call()
                 .map_err(HttpAccessor::map_ureq_error)
@@ -548,7 +544,7 @@ impl AssetAccessor for HttpAccessor {
             format!("bytes={offset}-{last}")
         }));
         let extra_headers = range_header;
-        self.bg_context.run(move || {
+        self.bg_ctx.run(move || {
             HttpAccessor::build_request(&url, &default_headers, &extra_headers)
                 .call()
                 .map_err(HttpAccessor::map_ureq_error)

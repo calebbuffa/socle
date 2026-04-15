@@ -1,0 +1,35 @@
+[package]
+name = "socle-bridge"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace crates
+orkester     = { path = "../orkester" }
+orkester-io  = { path = "../orkester-io" }
+selekt       = { path = "../selekt" }
+tiles3d-selekt = { path = "../tiles3d-selekt" }
+kasane       = { path = "../kasane" }
+terra        = { path = "../terra" }
+moderu       = { path = "../moderu" }
+moderu-io    = { path = "../moderu-io" }
+egaku        = { path = "../egaku" }
+
+kiban        = { path = "../kiban" }
+
+# Image encoding
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# WebSocket + HTTP
+tungstenite = "0.24"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+glam        = { version = "0.32", features = ["serde"] }
+log         = "0.4"
+env_logger  = "0.11"
+clap        = { version = "4", features = ["derive"] }

@@ -16,8 +16,6 @@
 use i3s::cmn::{CompressedAttributesEncoding, GeometryBuffer};
 use moderu::{AccessorType, GltfModel, GltfModelBuilder, PrimitiveMode};
 
-// ── Error ────────────────────────────────────────────────────────────────────
-
 /// Errors from the I3S geometry decode pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum GeometryDecodeError {
@@ -34,8 +32,6 @@ pub enum GeometryDecodeError {
     #[error("no usable geometry representation")]
     NoGeometry,
 }
-
-// ── Helper readers ────────────────────────────────────────────────────────────
 
 /// Read `count` little-endian `f32` values starting at `*offset`.
 fn read_f32s(
@@ -80,11 +76,7 @@ fn read_u16s(
 }
 
 /// Read `count` raw bytes starting at `*offset` (used for u8 color).
-fn read_u8s(
-    data: &[u8],
-    offset: &mut usize,
-    count: usize,
-) -> Result<Vec<u8>, GeometryDecodeError> {
+fn read_u8s(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<u8>, GeometryDecodeError> {
     if *offset + count > data.len() {
         return Err(GeometryDecodeError::Truncated {
             expected: *offset + count,
@@ -97,11 +89,7 @@ fn read_u8s(
 }
 
 /// Skip `n` bytes.
-fn skip(
-    data: &[u8],
-    offset: &mut usize,
-    n: usize,
-) -> Result<(), GeometryDecodeError> {
+fn skip(data: &[u8], offset: &mut usize, n: usize) -> Result<(), GeometryDecodeError> {
     if *offset + n > data.len() {
         return Err(GeometryDecodeError::Truncated {
             expected: *offset + n,
@@ -111,8 +99,6 @@ fn skip(
     *offset += n;
     Ok(())
 }
-
-// ── Public entry point ────────────────────────────────────────────────────────
 
 /// Decode a raw I3S geometry buffer into a [`GltfModel`].
 ///
@@ -138,8 +124,6 @@ pub fn decode_geometry(
     decode_uncompressed(data, geom_buf, vertex_count)
 }
 
-// ── Uncompressed path ─────────────────────────────────────────────────────────
-
 fn decode_uncompressed(
     data: &[u8],
     desc: &GeometryBuffer,
@@ -154,55 +138,45 @@ fn decode_uncompressed(
     let mut b = GltfModelBuilder::new();
     let mut prim = b.primitive();
 
-    // ── POSITION (Float32×3, required) ────────────────────────────────────
     {
         let pos = read_f32s(data, &mut offset, vertex_count * 3)?;
-        let acc = b.push_accessor(&pos, AccessorType::Vec3);
+        let acc = b.push_accessor(bytemuck::cast_slice::<f32, [f32; 3]>(&pos));
         prim = prim.attribute("POSITION", acc);
     }
 
-    // ── NORMAL (Float32×3, optional) ──────────────────────────────────────
     if desc.normal.is_some() {
         let n = read_f32s(data, &mut offset, vertex_count * 3)?;
-        let acc = b.push_accessor(&n, AccessorType::Vec3);
+        let acc = b.push_accessor(bytemuck::cast_slice::<f32, [f32; 3]>(&n));
         prim = prim.attribute("NORMAL", acc);
     }
 
-    // ── UV0 (Float32×2, optional) ─────────────────────────────────────────
     if desc.uv0.is_some() {
         let uv = read_f32s(data, &mut offset, vertex_count * 2)?;
-        let acc = b.push_accessor(&uv, AccessorType::Vec2);
+        let acc = b.push_accessor(bytemuck::cast_slice::<f32, [f32; 2]>(&uv));
         prim = prim.attribute("TEXCOORD_0", acc);
     }
 
-    // ── COLOR (UInt8×component, optional) ─────────────────────────────────
     if let Some(color_desc) = &desc.color {
         let components = color_desc.component.max(1) as usize;
         let c = read_u8s(data, &mut offset, vertex_count * components)?;
-        // Map component count to accessor type; always normalised u8.
-        let acc_type = match components {
-            1 | 3 => AccessorType::Vec3, // expand grayscale / RGB (no alpha) to Vec3
-            4 => AccessorType::Vec4,
-            _ => AccessorType::Vec4,
+        // Always normalised u8.  Grayscale (1 channel) is expanded to RGB.
+        let acc = match components {
+            1 => {
+                let typed: Vec<[u8; 3]> = c.iter().map(|&r| [r, r, r]).collect();
+                b.push_accessor(&typed)
+            }
+            3 => b.push_accessor(bytemuck::cast_slice::<u8, [u8; 3]>(&c)),
+            _ => b.push_accessor(bytemuck::cast_slice::<u8, [u8; 4]>(&c)),
         };
-        // Pad to 3 or 4 components if needed.
-        let padded: Vec<u8> = match components {
-            1 => c.iter().flat_map(|&r| [r, r, r]).collect(),
-            3 | 4 => c,
-            _ => c,
-        };
-        let acc = b.push_accessor(&padded, acc_type);
         prim = prim.attribute("COLOR_0", acc);
     }
 
-    // ── UV_REGION (UInt16×4, optional — texture atlas) ────────────────────
     if desc.uv_region.is_some() {
         let uv_r = read_u16s(data, &mut offset, vertex_count * 4)?;
-        let acc = b.push_accessor(&uv_r, AccessorType::Vec4);
+        let acc = b.push_accessor(bytemuck::cast_slice::<u16, [u16; 4]>(&uv_r));
         prim = prim.attribute("_UV_REGION", acc);
     }
 
-    // ── FEATURE_ID (UInt16 or UInt32 ×1, optional, per-feature) ──────────
     if let Some(feat) = &desc.feature_id {
         // Per spec: binding is per-feature (one id per feature, not per vertex)
         // We skip encoding this in the glTF model for now; it's used for
@@ -211,15 +185,10 @@ fn decode_uncompressed(
         // TODO: encode as GLTF feature ID extension if needed by renderer
     }
 
-    // ── FACE_RANGE (UInt32×2, per-feature, skip for rendering) ───────────
-    // Not pushed into the glTF model; used by the attribute decoder.
-
     let prim_built = prim.build();
     b.push_mesh(prim_built);
     Ok(b.finish())
 }
-
-// ── Draco-compressed path ─────────────────────────────────────────────────────
 
 fn decode_draco(
     data: &[u8],
@@ -264,8 +233,7 @@ fn decode_draco_impl(
         })
         .collect();
 
-    let mesh =
-        draco::decode_buffer(data, &attr_map).map_err(GeometryDecodeError::Draco)?;
+    let mesh = draco::decode_buffer(data, &attr_map).map_err(GeometryDecodeError::Draco)?;
 
     build_model_from_decoded_mesh(&mesh)
 }
@@ -280,8 +248,6 @@ fn decode_draco_impl(
     ))
 }
 
-// ── Model assembly from DecodedMesh ──────────────────────────────────────────
-
 #[cfg(feature = "draco")]
 fn build_model_from_decoded_mesh(
     mesh: &moderu_codec::draco::DecodedMesh,
@@ -292,14 +258,12 @@ fn build_model_from_decoded_mesh(
     let mut prim = b.primitive().indices(idx_acc);
 
     for attr in &mesh.attributes {
-        let acc_type = match attr.num_components {
-            1 => AccessorType::Scalar,
-            2 => AccessorType::Vec2,
-            3 => AccessorType::Vec3,
-            4 => AccessorType::Vec4,
-            _ => AccessorType::Vec4,
+        let acc = match attr.num_components {
+            1 => b.push_accessor(attr.data.as_slice()),
+            2 => b.push_accessor(bytemuck::cast_slice::<f32, [f32; 2]>(&attr.data)),
+            3 => b.push_accessor(bytemuck::cast_slice::<f32, [f32; 3]>(&attr.data)),
+            _ => b.push_accessor(bytemuck::cast_slice::<f32, [f32; 4]>(&attr.data)),
         };
-        let acc = b.push_accessor(&attr.data, acc_type);
         prim = prim.attribute(attr.name.clone(), acc);
     }
 
@@ -308,14 +272,12 @@ fn build_model_from_decoded_mesh(
     Ok(b.finish())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use i3s::cmn::{
-        GeometryBuffer, GeometryNormal, GeometryNormalType, GeometryPosition,
-        GeometryPositionType, GeometryUV, GeometryUVType,
+        GeometryBuffer, GeometryNormal, GeometryNormalType, GeometryPosition, GeometryPositionType,
+        GeometryUV, GeometryUVType,
     };
 
     fn f32_le(vals: &[f32]) -> Vec<u8> {

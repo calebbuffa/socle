@@ -1,261 +1,288 @@
-//! `OverlayEngine<P>` — a [`selekt::SelectionEngine`] augmented with raster overlay draping.
+//! Standalone raster overlay engine.
 //!
-//! `OverlayEngine` wraps a `selekt::SelectionEngine<P::Content>` and adds
-//! raster overlay lifecycle management:
+//! [`OverlayEngine`] manages raster overlay lifecycle independently from
+//! any tile selection engine. Each frame the caller passes a set of visible
+//! node ids and a hierarchy reference; the engine fetches, composites, and
+//! caches overlay tiles for those nodes.
 //!
-//! - Overlay tile providers are initialized asynchronously when an overlay is added.
-//! - Each frame, tiles that appear in the render set have overlay tiles fetched.
-//! - [`OverlayEngine::render_nodes`] returns a fully declarative per-frame render list
-//!   — each node carries its content *and* all currently-ready overlay tiles.
-//!   The renderer re-binds exactly what is active this frame; no attach/detach
-//!   callbacks are required.
+//! The design closely follows cesium-native's `RasterMappedTo3DTile`:
 //!
-//! Geographic extents are read directly from
-//! [`selekt::SpatialHierarchy::geographic_extent`] — no caller-supplied closure needed.
+//! - Each (geometry-tile, overlay) pair has at most one **ready** raster tile
+//!   currently attached and optionally one **loading** higher-resolution tile.
+//! - When the loading tile finishes, it replaces the ready tile (detach old,
+//!   attach new).
+//! - Tile overlay state is **not** destroyed the instant a geometry tile leaves
+//!   the render set; it survives for one additional frame so that brief
+//!   flickering in the selection engine doesn't cause jarring attach/detach
+//!   cycles.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use egaku::PrepareRendererResources;
-use glam::DMat4;
 use orkester::Task;
 use orkester_io::AssetAccessor;
-use selekt::{FrameResult, NodeId, ViewState};
 
+use crate::event::OverlayEvent;
+use crate::hierarchy::OverlayHierarchy;
 use crate::overlay::{OverlayCollection, OverlayId, RasterOverlayTile, RasterOverlayTileProvider};
 
 /// Default texel density (texels per radian) used when choosing overlay zoom levels.
-///
-/// Corresponds to one 256-pixel tile covering a quarter of the globe (45°) at
-/// zoom level 0: `256 / (π/4) ≈ 327 texels/radian`.
 pub const DEFAULT_TARGET_TEXELS_PER_RADIAN: f64 = 256.0 / (std::f64::consts::PI / 4.0);
 
-/// A pending or active tile provider for a single raster overlay.
+/// Per-node info passed to the overlay engine each frame.
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayNodeInfo {
+    pub node_id: u64,
+    /// Geometric error of this tile (metres).  Smaller = more detailed.
+    pub geometric_error: f64,
+}
+
+/// Viewport / projection info needed to compute per-tile overlay resolution.
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayViewInfo {
+    /// Viewport height in pixels.
+    pub viewport_height: f64,
+    /// SSE denominator = `2 * tan(fov_y / 2)` for perspective.
+    /// For orthographic: `2 * half_height`.
+    pub sse_denominator: f64,
+    /// Maximum screen-space error threshold (pixels).  Default 16.
+    pub maximum_screen_space_error: f64,
+}
+
+impl Default for OverlayViewInfo {
+    fn default() -> Self {
+        Self {
+            viewport_height: 768.0,
+            sse_denominator: 2.0 * (std::f64::consts::FRAC_PI_4).tan(), // 45° fov
+            maximum_screen_space_error: 16.0,
+        }
+    }
+}
+
+// ── Provider bookkeeping ─────────────────────────────────────────────────────
+
 enum ProviderState {
-    /// Still initializing (async task running).
     Pending(Task<Box<dyn RasterOverlayTileProvider>>),
-    /// Ready for use.
     Active(Arc<dyn RasterOverlayTileProvider>),
 }
 
-/// Tracks pending and attached overlay tiles for a single geometry tile.
+// ── Per-(node, overlay) attachment state ─────────────────────────────────────
+
+/// Mirrors cesium-native's `RasterMappedTo3DTile::AttachmentState`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AttachmentState {
+    /// No raster tile has been attached yet.
+    Unattached,
+    /// A coarse ancestor tile is attached while a higher-res replacement loads.
+    TemporarilyAttached,
+    /// The best-available raster tile is attached.
+    Attached,
+}
+
+/// State for ONE overlay on ONE geometry tile.
+struct MappedOverlay {
+    state: AttachmentState,
+    /// Currently displayed raster tile (possibly low-res).
+    ready: Option<RasterOverlayTile>,
+    /// Zoom level of the ready tile (so we can detect upgrades).
+    ready_level: u32,
+    /// In-flight fetch tasks for the target (possibly higher-res) attachment.
+    loading: HashMap<(u32, u32, u32), Task<RasterOverlayTile>>,
+    /// Zoom level being loaded.
+    loading_level: u32,
+}
+
+/// All overlay state for a single geometry tile.
 #[derive(Default)]
 struct TileOverlayState {
-    /// In-flight fetch tasks: (overlay_id, tile_coords) -> task.
-    pending: HashMap<(OverlayId, (u32, u32, u32)), Task<RasterOverlayTile>>,
-    /// Successfully fetched overlays: overlay_id -> (uv_set_index, tile).
-    attached: HashMap<OverlayId, (u32, RasterOverlayTile)>,
+    /// Per-overlay attachment state.
+    overlays: HashMap<OverlayId, MappedOverlay>,
 }
 
-/// A single render-ready node yielded by [`OverlayEngine::render_nodes`].
-///
-/// Carries the geometry tile, its world transform, and the set of overlay
-/// tiles currently ready for draping. The renderer re-binds this state every
-/// frame — no attach/detach callbacks are needed.
-pub struct OverlayRenderNode<'a, C> {
-    /// The node's identity within the hierarchy.
-    pub id: NodeId,
-    /// Accumulated world-space transform for this node.
-    pub world_transform: DMat4,
-    /// Renderer-owned GPU content for this node.
-    pub content: &'a C,
-    /// Overlay tiles currently ready for draping.
-    ///
-    /// Each entry is `(uv_set_index, overlay_tile)`. `uv_set_index` is stable
-    /// for the lifetime of the overlay registration (position in the
-    /// `add_overlay` call order).
-    pub overlays: Vec<(u32, &'a RasterOverlayTile)>,
-}
+// ── OverlayEngine ────────────────────────────────────────────────────────────
 
-/// High-level tile streaming handle with raster overlay support.
-///
-/// Wraps a [`selekt::SelectionEngine<P::Content>`] and drives overlay draping
-/// through a declarative per-frame [`render_nodes`](Self::render_nodes) iterator.
-///
-/// # Type parameters
-/// - `P` — content preparer implementing [`PrepareRendererResources`];
-///   `P::Content` is the decoded tile content type stored by the engine.
-pub struct OverlayEngine<P: PrepareRendererResources> {
-    /// Inner engine — drives traversal, loading, and main-thread finalization.
-    inner: selekt::SelectionEngine<P::Content>,
-    /// Content preparer shared with the overlay system.
-    preparer: Arc<P>,
-    /// Shared asset accessor for constructing overlay tile providers.
+pub struct OverlayEngine {
     accessor: Arc<dyn AssetAccessor>,
-    /// User-facing overlay collection. Drives provider initialization.
+    ctx: orkester::Context,
     collection: OverlayCollection,
-    /// Provider state per overlay, keyed by `OverlayId`.
     providers: HashMap<OverlayId, ProviderState>,
-    /// Overlay state per geometry tile.
-    tile_state: HashMap<NodeId, TileOverlayState>,
-    /// Tiles that were rendered last frame (used to detect appear/disappear).
-    prev_rendered: HashSet<NodeId>,
-    /// Stable ordered list of overlay ids (for UV-set index assignment).
+    tile_state: HashMap<u64, TileOverlayState>,
+    /// Tiles rendered in the *previous* frame.
+    prev_rendered: HashSet<u64>,
+    /// Tiles rendered two frames ago — used for deferred cleanup.
+    prev_prev_rendered: HashSet<u64>,
     overlay_order: Vec<OverlayId>,
-    /// Texel density hint (texels per radian) passed to
-    /// [`RasterOverlayTileProvider::tiles_for_extent`].
     target_texels_per_radian: f64,
+    view_info: OverlayViewInfo,
+    events: Vec<OverlayEvent>,
 }
 
-impl<P: PrepareRendererResources> OverlayEngine<P> {
-    /// Create an `OverlayEngine` wrapping an existing [`selekt::SelectionEngine`].
-    ///
-    /// Geographic extents are read from
-    /// [`selekt::SpatialHierarchy::geographic_extent`] automatically.
-    /// No extra closure is required.
-    pub fn new(
-        engine: selekt::SelectionEngine<P::Content>,
-        preparer: Arc<P>,
-        accessor: Arc<dyn AssetAccessor>,
-    ) -> Self {
+impl OverlayEngine {
+    pub fn new(accessor: Arc<dyn AssetAccessor>, ctx: orkester::Context) -> Self {
         Self {
-            inner: engine,
-            preparer,
             accessor,
+            ctx,
             collection: OverlayCollection::new(),
             providers: HashMap::new(),
             tile_state: HashMap::new(),
             prev_rendered: HashSet::new(),
+            prev_prev_rendered: HashSet::new(),
             overlay_order: Vec::new(),
             target_texels_per_radian: DEFAULT_TARGET_TEXELS_PER_RADIAN,
+            view_info: OverlayViewInfo::default(),
+            events: Vec::new(),
         }
     }
 
-    /// Set the texel density hint used when choosing overlay zoom levels.
     pub fn set_target_texels_per_radian(&mut self, v: f64) {
         self.target_texels_per_radian = v;
     }
-}
 
-impl<P: PrepareRendererResources> OverlayEngine<P> {
-    /// Add a raster overlay. Returns an `OverlayId` for later removal.
-    ///
-    /// The overlay's tile provider is created asynchronously; draping starts
-    /// as soon as the provider is ready.
-    pub fn add_overlay(
-        &mut self,
-        overlay: impl crate::overlay::RasterOverlay + 'static,
-    ) -> OverlayId {
-        let runtime = self.inner.runtime();
+    pub fn set_view_info(&mut self, info: OverlayViewInfo) {
+        self.view_info = info;
+    }
+
+    pub fn add(&mut self, overlay: impl crate::overlay::RasterOverlay + 'static) -> OverlayId {
         let id = self.collection.add(overlay);
         if let Some((_, raw)) = self.collection.iter().find(|(oid, _)| *oid == id) {
-            let task = raw.create_tile_provider(runtime, &self.accessor);
+            let task = raw.create_tile_provider(&self.ctx, &self.accessor);
             self.providers.insert(id, ProviderState::Pending(task));
         }
         self.overlay_order.push(id);
         id
     }
 
-    /// Remove a raster overlay. Tiles that had it attached will simply stop
-    /// yielding it from [`render_nodes`](Self::render_nodes) next frame.
-    pub fn remove_overlay(&mut self, id: OverlayId) {
+    pub fn remove(&mut self, id: OverlayId) {
         self.collection.remove(id);
         self.providers.remove(&id);
-        for state in self.tile_state.values_mut() {
-            state.attached.remove(&id);
-            state.pending.retain(|(oid, _), _| *oid != id);
+        for (&node_id, state) in &mut self.tile_state {
+            if state.overlays.remove(&id).is_some() {
+                self.events.push(OverlayEvent::Detached {
+                    node_id,
+                    overlay_id: id,
+                });
+            }
         }
         self.overlay_order.retain(|&oid| oid != id);
     }
 
-    /// Run one frame: traversal → load dispatch → main-thread finalization → overlay fetch drain.
+    pub fn len(&self) -> usize {
+        self.overlay_order.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.overlay_order.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (OverlayId, &dyn crate::overlay::RasterOverlay)> {
+        self.collection.iter()
+    }
+
+    pub fn for_node(&self, node_id: u64) -> Vec<(u32, &RasterOverlayTile)> {
+        self.tile_state
+            .get(&node_id)
+            .map(|state| {
+                state
+                    .overlays
+                    .iter()
+                    .filter_map(|(_, mapped)| {
+                        let uv = overlay_order_index(&self.overlay_order, OverlayId(0)); // unused in this path
+                        mapped.ready.as_ref().map(|t| (0u32, t))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns `true` if all active overlays have been attached to this node.
     ///
-    /// `delta_time` is elapsed seconds since the previous call; passed through to
-    /// [`FrameResult::delta_time_seconds`].
-    pub fn update(&mut self, views: &[ViewState], delta_time: f32) -> &FrameResult {
-        // 1. Drain completed provider init tasks.
+    /// When overlays are registered, tiles should not be rendered until their
+    /// overlays are ready — the parent tile should stay visible instead.
+    /// This mirrors cesium-native's `RasterMappedTo3DTile::update()` returning
+    /// `MoreDetailAvailable` to keep parents rendering.
+    pub fn is_node_ready(&self, node_id: u64) -> bool {
+        // If no overlays registered, everything is ready.
+        if self.overlay_order.is_empty() {
+            return true;
+        }
+        // If no active providers yet, nothing can be ready.
+        let active_count = self
+            .providers
+            .values()
+            .filter(|p| matches!(p, ProviderState::Active(_)))
+            .count();
+        if active_count == 0 {
+            return false;
+        }
+        let state = match self.tile_state.get(&node_id) {
+            Some(s) => s,
+            None => return false,
+        };
+        // Check that every active overlay has an attached tile for this node.
+        for (&overlay_id, provider_state) in &self.providers {
+            if !matches!(provider_state, ProviderState::Active(_)) {
+                continue;
+            }
+            match state.overlays.get(&overlay_id) {
+                Some(mapped) if mapped.ready.is_some() => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Run one frame of overlay processing.
+    ///
+    /// Each entry in `nodes` is `(node_id, geometric_error)`. The geometric
+    /// error is used together with `maximum_screen_space_error` to compute
+    /// per-tile overlay texel density — matching cesium-native's
+    /// `computeDesiredScreenPixels()` formula.
+    pub fn update(&mut self, nodes: &[(u64, f64)], hierarchy: &dyn OverlayHierarchy) {
+        // 1. Promote pending providers.
         self.drain_pending_providers();
 
-        // 2. Inner engine update (traversal + load + GPU upload).
-        self.inner.update(views, delta_time);
+        let current: HashSet<u64> = nodes.iter().map(|(id, _)| *id).collect();
 
-        // 3. Compute tile set delta.
-        let current: HashSet<NodeId> = self
-            .inner
-            .last_result()
-            .nodes_to_render
-            .iter()
+        // 2. Deferred cleanup: tiles gone for TWO consecutive frames get purged.
+        //    This prevents flicker from one-frame selection jitter.
+        let stale: Vec<u64> = self
+            .tile_state
+            .keys()
             .copied()
+            .filter(|id| !current.contains(id) && !self.prev_rendered.contains(id))
             .collect();
-
-        // 4. Tiles that disappeared: drop overlay state.
-        let disappeared: Vec<NodeId> = self.prev_rendered.difference(&current).copied().collect();
-        for node_id in disappeared {
-            self.tile_state.remove(&node_id);
+        for node_id in stale {
+            if let Some(state) = self.tile_state.remove(&node_id) {
+                for (&overlay_id, mapped) in &state.overlays {
+                    if mapped.state != AttachmentState::Unattached {
+                        self.events.push(OverlayEvent::Detached {
+                            node_id,
+                            overlay_id,
+                        });
+                    }
+                }
+            }
         }
 
-        // 5. Tiles that appeared or are still visible: dispatch overlay tile fetches.
-        for &node_id in &current {
-            self.dispatch_overlay_fetches(node_id);
+        // 3. For visible tiles, dispatch fetches and process completions.
+        for &(node_id, geometric_error) in nodes {
+            self.dispatch_for_node(node_id, geometric_error, hierarchy);
         }
+        self.process_completions();
 
-        // 6. Drain completed tile fetch tasks.
-        self.drain_pending_tiles();
-
-        // 7. Update previous frame set.
+        // 4. Rotate frame sets.
+        self.prev_prev_rendered = std::mem::take(&mut self.prev_rendered);
         self.prev_rendered = current;
-
-        self.inner.last_result()
     }
 
-    /// Iterate over render-ready nodes with their overlay tiles.
-    ///
-    /// Returns one [`OverlayRenderNode`] per node in the last frame's render set
-    /// that has loaded content. Each node carries its world transform and the
-    /// set of overlay tiles currently ready. The renderer should rebind all
-    /// listed overlays every frame — binding is idempotent and avoids the need
-    /// for stateful attach/detach callbacks.
-    pub fn render_nodes(&self) -> impl Iterator<Item = OverlayRenderNode<'_, P::Content>> {
-        self.inner
-            .last_result()
-            .nodes_to_render
-            .iter()
-            .filter_map(|&id| {
-                let content = self.inner.content(id)?;
-                let world_transform = self.inner.hierarchy().world_transform(id);
-                let overlays = self
-                    .tile_state
-                    .get(&id)
-                    .map(|state| {
-                        state
-                            .attached
-                            .iter()
-                            .map(|(_, (uv, tile))| (*uv, tile))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Some(OverlayRenderNode {
-                    id,
-                    world_transform,
-                    content,
-                    overlays,
-                })
-            })
-    }
-
-    /// Access the underlying inner engine.
-    pub fn inner(&self) -> &selekt::SelectionEngine<P::Content> {
-        &self.inner
-    }
-
-    /// Mutable access to the underlying engine.
-    pub fn inner_mut(&mut self) -> &mut selekt::SelectionEngine<P::Content> {
-        &mut self.inner
-    }
-
-    /// Access the content preparer.
-    pub fn preparer(&self) -> &Arc<P> {
-        &self.preparer
-    }
-
-    /// Access the overlay collection for inspection.
-    pub fn overlays(&self) -> &OverlayCollection {
+    pub fn collection(&self) -> &OverlayCollection {
         &self.collection
     }
 
-    // ── private helpers ──────────────────────────────────────────────────────
+    pub fn drain_events(&mut self) -> Vec<OverlayEvent> {
+        std::mem::take(&mut self.events)
+    }
 
-    /// Drain completed provider-init tasks and promote them to `Active`.
     fn drain_pending_providers(&mut self) {
         let ready_ids: Vec<OverlayId> = self
             .providers
@@ -265,7 +292,6 @@ impl<P: PrepareRendererResources> OverlayEngine<P> {
                 _ => None,
             })
             .collect();
-
         for id in ready_ids {
             if let Some(ProviderState::Pending(task)) = self.providers.remove(&id) {
                 let provider = task.block().unwrap_or_else(|_| Box::new(DummyProvider));
@@ -275,443 +301,233 @@ impl<P: PrepareRendererResources> OverlayEngine<P> {
         }
     }
 
-    /// Dispatch overlay tile fetch tasks for all active providers covering `node_id`.
-    fn dispatch_overlay_fetches(&mut self, node_id: NodeId) {
-        let geo_rect = match self.inner.hierarchy().geographic_extent(node_id) {
+    /// For a single geometry node, ensure each active overlay has fetches in flight.
+    /// If the node has no overlay yet but a parent does, immediately inherit the
+    /// parent's overlay (CesiumJS "upsampledFromParent" pattern) so tiles are
+    /// never rendered without some texture.
+    fn dispatch_for_node(
+        &mut self,
+        node_id: u64,
+        geometric_error: f64,
+        hierarchy: &dyn OverlayHierarchy,
+    ) {
+        let geo_rect = match hierarchy.globe_rectangle(node_id) {
             Some(r) => r,
             None => return,
         };
 
+        // Before mutating tile_state, collect parent overlay data for any
+        // overlay that this node doesn't have yet.
+        let mut parent_overlays: HashMap<OverlayId, RasterOverlayTile> = HashMap::new();
+        if !self.tile_state.contains_key(&node_id)
+            || self.tile_state.get(&node_id).map_or(false, |s| {
+                self.overlay_order
+                    .iter()
+                    .any(|oid| !s.overlays.contains_key(oid))
+            })
+        {
+            // Walk up hierarchy to find closest ancestor with ready overlays.
+            let mut ancestor = hierarchy.parent(node_id);
+            while let Some(pid) = ancestor {
+                if let Some(parent_state) = self.tile_state.get(&pid) {
+                    for oid in &self.overlay_order {
+                        if !parent_overlays.contains_key(oid) {
+                            if let Some(pm) = parent_state.overlays.get(oid) {
+                                if let Some(ref tile) = pm.ready {
+                                    parent_overlays.insert(*oid, tile.clone());
+                                }
+                            }
+                        }
+                    }
+                    // If we found all overlays, stop walking.
+                    if parent_overlays.len() == self.overlay_order.len() {
+                        break;
+                    }
+                }
+                ancestor = hierarchy.parent(pid);
+            }
+        }
+
+        // Compute per-node target texel density.
+        //
+        // The geometry tile covers `rect_width_rad` radians and should have an
+        // overlay tile that provides at least one full 256-texel tile across
+        // it. So target_texels_per_radian = 256 / rect_width_rad  (one overlay
+        // tile per geometry tile at minimum). The `tiles_for_extent` function
+        // then picks the coarsest level meeting that density.
+        //
+        // As tiles refine (smaller rect_width), this value increases and the
+        // overlay level rises to match — exactly matching the geometry LOD.
+        let rect_width_rad = (geo_rect.east - geo_rect.west).abs().max(f64::EPSILON);
+        let target = 256.0 / rect_width_rad;
         let state = self.tile_state.entry(node_id).or_default();
-        let target = self.target_texels_per_radian;
 
         for (&overlay_id, provider_state) in &self.providers {
             let provider = match provider_state {
                 ProviderState::Active(p) => Arc::clone(p),
                 ProviderState::Pending(_) => continue,
             };
-            if state.attached.contains_key(&overlay_id) {
+
+            let is_new = !state.overlays.contains_key(&overlay_id);
+
+            let mapped = state
+                .overlays
+                .entry(overlay_id)
+                .or_insert_with(|| MappedOverlay {
+                    state: AttachmentState::Unattached,
+                    ready: None,
+                    ready_level: 0,
+                    loading: HashMap::new(),
+                    loading_level: 0,
+                });
+
+            // Inherit parent's overlay immediately if this is a new entry.
+            if is_new && mapped.state == AttachmentState::Unattached {
+                if let Some(parent_tile) = parent_overlays.remove(&overlay_id) {
+                    mapped.ready = Some(parent_tile.clone());
+                    mapped.ready_level = 0; // parent level — will be upgraded
+                    mapped.state = AttachmentState::TemporarilyAttached;
+
+                    let uv_index = overlay_order_index(&self.overlay_order, overlay_id);
+                    self.events.push(OverlayEvent::Attached {
+                        node_id,
+                        overlay_id,
+                        uv_index,
+                        tile: parent_tile,
+                    });
+                }
+            }
+
+            // If already fully attached and no loading in progress, check if
+            // higher resolution is available.
+            let tile_coords = provider.tiles_for_extent(geo_rect, target);
+            if tile_coords.is_empty() {
                 continue;
             }
-            let tile_coords = provider.tiles_for_extent(geo_rect, target);
-            for coords in tile_coords {
-                let key = (overlay_id, coords);
-                if state.pending.contains_key(&key) {
-                    continue;
-                }
-                let (x, y, level) = coords;
+            let target_level = tile_coords[0].2;
+
+            // Already loading this level or better? Skip.
+            if !mapped.loading.is_empty() && mapped.loading_level >= target_level {
+                continue;
+            }
+            // Already attached at this level? Skip.
+            if mapped.state == AttachmentState::Attached && mapped.ready_level >= target_level {
+                continue;
+            }
+
+            // Dispatch fetches for all coords at the target level.
+            // Clear any existing loading state (we're upgrading).
+            log::debug!(
+                "overlay node={:?} ge={:.1} target_tpr={:.1} → level {} ({} tiles)",
+                node_id,
+                geometric_error,
+                target,
+                target_level,
+                tile_coords.len(),
+            );
+            mapped.loading.clear();
+            mapped.loading_level = target_level;
+            for (x, y, level) in tile_coords {
                 let task = provider.get_tile(x, y, level);
-                state.pending.insert(key, task);
+                mapped.loading.insert((x, y, level), task);
+            }
+
+            // If we already have a ready tile displayed, mark as temporarily
+            // attached while the higher-res version loads (cesium-native pattern).
+            if mapped.state == AttachmentState::Attached {
+                mapped.state = AttachmentState::TemporarilyAttached;
             }
         }
     }
 
-    /// Drain completed tile fetch tasks and record them in `attached`.
-    fn drain_pending_tiles(&mut self) {
-        let mut completions: Vec<(NodeId, OverlayId, RasterOverlayTile)> = Vec::new();
-
-        for (&node_id, state) in &mut self.tile_state {
-            let ready_keys: Vec<(OverlayId, (u32, u32, u32))> = state
-                .pending
-                .iter()
-                .filter_map(|(k, task)| if task.is_ready() { Some(*k) } else { None })
-                .collect();
-            for key in ready_keys {
-                if let Some(task) = state.pending.remove(&key) {
-                    if let Ok(tile) = task.block() {
-                        completions.push((node_id, key.0, tile));
-                    }
-                }
-            }
-        }
-
+    /// Check all in-flight fetch groups. When ALL fetches for a (node, overlay)
+    /// are done, composite into one tile and emit an Attached event.
+    fn process_completions(&mut self) {
         let overlay_order = &self.overlay_order;
-        for (node_id, overlay_id, tile) in completions {
-            let uv_index = overlay_order_index(overlay_order, overlay_id);
-            if let Some(state) = self.tile_state.get_mut(&node_id) {
-                // V-flip pixels from web top-down to GL bottom-up convention.
-                let flipped = vflip_rgba(&tile.pixels, tile.width, tile.height);
-                let flipped_tile = RasterOverlayTile { pixels: flipped, ..tile };
-                state.attached.insert(overlay_id, (uv_index, flipped_tile));
-            }
-        }
-    }
-}
 
-fn overlay_order_index(order: &[OverlayId], id: OverlayId) -> u32 {
-    order.iter().position(|&oid| oid == id).unwrap_or(0) as u32
-}
-
-/// Flip pixel rows from top-down (web convention) to bottom-up (GL convention).
-fn vflip_rgba(pixels: &[u8], width: u32, height: u32) -> Arc<[u8]> {
-    let stride = (width as usize) * 4;
-    let mut out = vec![0u8; pixels.len()];
-    for row in 0..height as usize {
-        let src_start = row * stride;
-        let dst_start = (height as usize - 1 - row) * stride;
-        out[dst_start..dst_start + stride].copy_from_slice(&pixels[src_start..src_start + stride]);
-    }
-    Arc::from(out)
-}
-
-/// Minimal no-op provider used as a placeholder during `drain_pending_providers`.
-struct DummyProvider;
-
-impl RasterOverlayTileProvider for DummyProvider {
-    fn get_tile(&self, _x: u32, _y: u32, _level: u32) -> Task<RasterOverlayTile> {
-        unreachable!("DummyProvider::get_tile should never be called")
-    }
-    fn bounds(&self) -> terra::GlobeRectangle {
-        terra::GlobeRectangle::new(0.0, 0.0, 0.0, 0.0)
-    }
-    fn maximum_level(&self) -> u32 {
-        0
-    }
-    fn tiles_for_extent(&self, _: terra::GlobeRectangle, _: f64) -> Vec<(u32, u32, u32)> {
-        vec![]
-    }
-}
-//!
-//! `OverlayEngine` wraps a `selekt::SelectionEngine<P::Content>` (where `P` implements
-//! [`OverlayablePreparer`]) and adds raster overlay lifecycle management:
-//!
-//! - Overlay tile providers are initialized asynchronously when an overlay is added.
-//! - Each frame, tiles that newly appear in the render set have overlay tiles
-//!   fetched and attached via [`OverlayablePreparer::attach_raster`].
-//! - Tiles that disappear from the render set have their overlays detached via
-//!   [`OverlayablePreparer::detach_raster`].
-//!
-//! # Geographic bounds injection
-//!
-//! Computing which overlay tile coordinates to request requires knowing each
-//! tile's geographic rectangle. Because `selekt` works in ECEF and formats
-//! vary in how they store geographic extents, the caller supplies a
-//! `geo_bounds` closure at construction time.
-//!
-//! Format-specific helper functions (e.g., `tiles3d_selekt::geo_rectangle_for_node`)
-//! convert `SpatialBounds` to `GlobeRectangle` and can be used directly as
-//! the closure argument.
-
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-use orkester::Task;
-use orkester_io::AssetAccessor;
-use selekt::{FrameResult, NodeId, ViewState};
-
-use crate::overlay::{OverlayCollection, OverlayId, RasterOverlayTile, RasterOverlayTileProvider};
-use crate::preparer::OverlayablePreparer;
-
-/// Default texel density (texels per radian) used when choosing overlay zoom levels.
-///
-/// Corresponds to one 256-pixel tile covering a quarter of the globe (45°) at
-/// zoom level 0: `256 / (π/4) ≈ 327 texels/radian`.
-pub const DEFAULT_TARGET_TEXELS_PER_RADIAN: f64 = 256.0 / (std::f64::consts::PI / 4.0);
-
-/// A pending or active tile provider for a single raster overlay.
-enum ProviderState {
-    /// Still initializing (async task running).
-    Pending(Task<Box<dyn RasterOverlayTileProvider>>),
-    /// Ready for use.
-    Active(Arc<dyn RasterOverlayTileProvider>),
-}
-
-/// Tracks pending and attached overlay tiles for a single geometry tile.
-#[derive(Default)]
-struct TileOverlayState {
-    /// In-flight fetch tasks: (overlay_id, tile_coords) -> task.
-    pending: HashMap<(OverlayId, (u32, u32, u32)), Task<RasterOverlayTile>>,
-    /// Successfully attached overlays: overlay_id -> uv_set_index.
-    attached: HashMap<OverlayId, u32>,
-}
-
-/// High-level tile streaming handle with raster overlay support.
-///
-/// Wraps a [`selekt::SelectionEngine<P::Content>`] and drives overlay attach/detach based on
-/// which tiles enter and leave the render set each frame.
-///
-/// # Type parameters
-/// - `P` — content preparer implementing [`OverlayablePreparer`]; `P::Content` is the
-///   decoded tile content type stored by the engine.
-pub struct OverlayEngine<P: OverlayablePreparer> {
-    /// Inner engine — drives traversal, loading, and main-thread finalization.
-    inner: selekt::SelectionEngine<P::Content>,
-    /// Content preparer shared with the overlay system.
-    preparer: Arc<P>,
-    /// Shared asset accessor for constructing overlay tile providers.
-    accessor: Arc<dyn AssetAccessor>,
-    /// User-facing overlay collection. Drives provider initialization.
-    collection: OverlayCollection,
-    /// Provider state per overlay, keyed by `OverlayId`.
-    providers: HashMap<OverlayId, ProviderState>,
-    /// Overlay state per geometry tile.
-    tile_state: HashMap<NodeId, TileOverlayState>,
-    /// Tiles that were rendered last frame (used to detect appear/disappear).
-    prev_rendered: HashSet<NodeId>,
-    /// Stable ordered list of overlay ids (for UV-set index assignment).
-    overlay_order: Vec<OverlayId>,
-    /// Projects a tile's `NodeId` to its geographic rectangle.
-    ///
-    /// Returns `None` if the tile has no usable geographic extent (e.g., the root
-    /// of a tileset whose bounding volume is a sphere and the caller cannot provide
-    /// a tighter estimate). In that case, overlay draping is skipped for that tile.
-    geo_bounds: Arc<dyn Fn(NodeId) -> Option<terra::GlobeRectangle> + Send + Sync>,
-    /// Texel density hint (texels per radian) passed to
-    /// [`RasterOverlayTileProvider::tiles_for_extent`].
-    target_texels_per_radian: f64,
-}
-
-impl<P: OverlayablePreparer> OverlayEngine<P> {
-    /// Create an `OverlayEngine` wrapping an existing [`selekt::SelectionEngine`].
-    ///
-    /// `geo_bounds` converts a `NodeId` to a `GlobeRectangle` (in radians).
-    /// Returning `None` disables overlay draping for that tile.
-    ///
-    /// `target_texels_per_radian` controls the tile zoom level chosen for draping;
-    /// a value of `256.0 / (PI / 4.0)` ≈ 327 corresponds to one 256-pixel tile
-    /// covering a quarter of the globe at level 0.
-    pub fn new(
-        engine: selekt::SelectionEngine<P::Content>,
-        preparer: Arc<P>,
-        accessor: Arc<dyn AssetAccessor>,
-        geo_bounds: impl Fn(NodeId) -> Option<terra::GlobeRectangle> + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            inner: engine,
-            preparer,
-            accessor,
-            collection: OverlayCollection::new(),
-            providers: HashMap::new(),
-            tile_state: HashMap::new(),
-            prev_rendered: HashSet::new(),
-            overlay_order: Vec::new(),
-            geo_bounds: Arc::new(geo_bounds),
-            target_texels_per_radian: DEFAULT_TARGET_TEXELS_PER_RADIAN,
-        }
-    }
-
-    /// Set the texel density hint used when choosing overlay zoom levels.
-    pub fn set_target_texels_per_radian(&mut self, v: f64) {
-        self.target_texels_per_radian = v;
-    }
-}
-
-impl<P: OverlayablePreparer> OverlayEngine<P> {
-    /// Add a raster overlay. Returns an `OverlayId` for later removal.
-    ///
-    /// The overlay's tile provider is created asynchronously; draping starts
-    /// as soon as the provider is ready.
-    pub fn add_overlay(
-        &mut self,
-        overlay: impl crate::overlay::RasterOverlay + 'static,
-    ) -> OverlayId {
-        let runtime = self.inner.runtime();
-        let id = self.collection.add(overlay);
-        // Find the overlay we just added and kick off provider initialization.
-        if let Some((_, raw)) = self.collection.iter().find(|(oid, _)| *oid == id) {
-            let task = raw.create_tile_provider(runtime, &self.accessor);
-            self.providers.insert(id, ProviderState::Pending(task));
-        }
-        self.overlay_order.push(id);
-        id
-    }
-
-    /// Remove a raster overlay and detach it from all currently-rendered tiles.
-    pub fn remove_overlay(&mut self, id: OverlayId) {
-        self.collection.remove(id);
-        self.providers.remove(&id);
-        // Detach from all currently-rendered tiles.
-        let uv_index = self
-            .overlay_order
+        // Collect (node, overlay) pairs whose loading group is fully ready.
+        let ready_pairs: Vec<(u64, OverlayId)> = self
+            .tile_state
             .iter()
-            .position(|&oid| oid == id)
-            .unwrap_or(0) as u32;
-        let preparer = Arc::clone(&self.preparer);
-        let engine = &mut self.inner;
-        for node_id in self.prev_rendered.iter().copied() {
-            if let Some(state) = self.tile_state.get_mut(&node_id) {
-                if state.attached.remove(&id).is_some() {
-                    if let Some(content) = engine.content_mut(node_id) {
-                        preparer.detach_raster(node_id, uv_index, content);
-                    }
-                }
-                state.pending.retain(|(oid, _), _| *oid != id);
-            }
-        }
-        self.overlay_order.retain(|&oid| oid != id);
-    }
-
-    /// Run one frame: traversal → load dispatch → main-thread finalization → overlay draping.
-    ///
-    /// `delta_time` is elapsed seconds since the previous call; passed through to [`FrameResult::delta_time_seconds`].
-    pub fn update(&mut self, views: &[ViewState], delta_time: f32) -> &FrameResult {
-        // 1. Drain completed provider init tasks.
-        self.drain_pending_providers();
-
-        // 2. Inner stratum update (traversal + load + GPU upload).
-        self.inner.update(views, delta_time);
-
-        // 3. Compute tile set delta.
-        let current: HashSet<NodeId> = self
-            .inner
-            .last_result()
-            .nodes_to_render
-            .iter()
-            .copied()
-            .collect();
-
-        // 4. Tiles that disappeared: detach overlays and drop state.
-        let disappeared: Vec<NodeId> = self.prev_rendered.difference(&current).copied().collect();
-        for node_id in disappeared {
-            self.detach_all(node_id);
-            self.tile_state.remove(&node_id);
-        }
-
-        // 5. Tiles that appeared: dispatch overlay tile fetches.
-        let appeared: Vec<NodeId> = current.difference(&self.prev_rendered).copied().collect();
-        for node_id in appeared {
-            self.dispatch_overlay_fetches(node_id);
-        }
-
-        // 6. Drain completed tile fetch tasks and call attach_raster.
-        self.drain_pending_tiles();
-
-        // 7. Update previous frame set.
-        self.prev_rendered = current;
-
-        self.inner.last_result()
-    }
-
-    /// Access the underlying inner stratum.
-    pub fn inner(&self) -> &selekt::SelectionEngine<P::Content> {
-        &self.inner
-    }
-
-    /// Mutable access to the underlying engine.
-    pub fn inner_mut(&mut self) -> &mut selekt::SelectionEngine<P::Content> {
-        &mut self.inner
-    }
-
-    /// Access the content preparer.
-    pub fn preparer(&self) -> &Arc<P> {
-        &self.preparer
-    }
-
-    /// Access the overlay collection for inspection.
-    pub fn overlays(&self) -> &OverlayCollection {
-        &self.collection
-    }
-
-    // ── private helpers ──────────────────────────────────────────────────────
-
-    /// Drain completed provider-init tasks and promote them to `Active`.
-    fn drain_pending_providers(&mut self) {
-        let ready_ids: Vec<OverlayId> = self
-            .providers
-            .iter()
-            .filter_map(|(&id, state)| match state {
-                ProviderState::Pending(task) if task.is_ready() => Some(id),
-                _ => None,
+            .flat_map(|(&node_id, state)| {
+                state
+                    .overlays
+                    .iter()
+                    .filter(|(_, mapped)| {
+                        !mapped.loading.is_empty() && mapped.loading.values().all(|t| t.is_ready())
+                    })
+                    .map(move |(&overlay_id, _)| (node_id, overlay_id))
             })
             .collect();
 
-        for id in ready_ids {
-            if let Some(ProviderState::Pending(task)) = self.providers.remove(&id) {
-                let provider = task.block().unwrap_or_else(|_| Box::new(DummyProvider));
-                self.providers
-                    .insert(id, ProviderState::Active(Arc::from(provider)));
-            }
-        }
-    }
-
-    /// Dispatch overlay tile fetch tasks for all active providers covering `node_id`.
-    fn dispatch_overlay_fetches(&mut self, node_id: NodeId) {
-        let geo_rect = match (self.geo_bounds)(node_id) {
-            Some(r) => r,
-            None => return,
-        };
-
-        let state = self.tile_state.entry(node_id).or_default();
-        let target = self.target_texels_per_radian;
-
-        for (&overlay_id, provider_state) in &self.providers {
-            let provider = match provider_state {
-                ProviderState::Active(p) => Arc::clone(p),
-                ProviderState::Pending(_) => continue, // will retry when provider is ready
+        for (node_id, overlay_id) in ready_pairs {
+            let state = match self.tile_state.get_mut(&node_id) {
+                Some(s) => s,
+                None => continue,
             };
-            if state.attached.contains_key(&overlay_id) {
-                continue; // already attached
-            }
-            let tile_coords = provider.tiles_for_extent(geo_rect, target);
-            // For each required overlay tile, dispatch an async fetch task.
-            for coords in tile_coords {
-                let key = (overlay_id, coords);
-                if state.pending.contains_key(&key) {
-                    continue; // already in flight
-                }
-                let (x, y, level) = coords;
-                let task = provider.get_tile(x, y, level);
-                state.pending.insert(key, task);
-            }
-        }
-    }
+            let mapped = match state.overlays.get_mut(&overlay_id) {
+                Some(m) => m,
+                None => continue,
+            };
 
-    /// Drain completed tile fetch tasks and call `attach_raster` on finished ones.
-    fn drain_pending_tiles(&mut self) {
-        // Phase 1: collect completed tasks into a flat buffer (no engine/preparer access).
-        let mut completions: Vec<(NodeId, OverlayId, RasterOverlayTile)> = Vec::new();
-
-        for (&node_id, state) in &mut self.tile_state {
-            let ready_keys: Vec<(OverlayId, (u32, u32, u32))> = state
-                .pending
-                .iter()
-                .filter_map(|(k, task)| if task.is_ready() { Some(*k) } else { None })
-                .collect();
-            for key in ready_keys {
-                if let Some(task) = state.pending.remove(&key) {
-                    if let Ok(tile) = task.block() {
-                        completions.push((node_id, key.0, tile));
-                    }
+            // Drain all loading tasks.
+            let tasks: HashMap<(u32, u32, u32), Task<RasterOverlayTile>> =
+                std::mem::take(&mut mapped.loading);
+            let mut tiles: Vec<RasterOverlayTile> = Vec::new();
+            for (_, task) in tasks {
+                if let Ok(tile) = task.block() {
+                    tiles.push(tile);
                 }
             }
-        }
-
-        // Phase 2: apply attach_raster and update attached state.
-        let overlay_order = self.overlay_order.clone();
-        let preparer = Arc::clone(&self.preparer);
-        let engine = &mut self.inner;
-
-        for (node_id, overlay_id, tile) in completions {
-            if let Some(content) = engine.content_mut(node_id) {
-                let uv_index = overlay_order_index(&overlay_order, overlay_id);
-                preparer.attach_raster(node_id, uv_index, &tile, content);
+            if tiles.is_empty() {
+                continue;
             }
-            // Record the attachment regardless of whether content was present
-            // (content might be transiently absent mid-frame).
-            if let Some(state) = self.tile_state.get_mut(&node_id) {
-                let uv_index = overlay_order_index(&overlay_order, overlay_id);
-                state.attached.insert(overlay_id, uv_index);
-            }
-        }
-    }
 
-    /// Call `detach_raster` for every overlay attached to `node_id`.
-    fn detach_all(&mut self, node_id: NodeId) {
-        let Some(state) = self.tile_state.get(&node_id) else {
-            return;
-        };
-        if state.attached.is_empty() {
-            return;
-        }
-        let attached: Vec<(OverlayId, u32)> =
-            state.attached.iter().map(|(&k, &v)| (k, v)).collect();
-        let preparer = Arc::clone(&self.preparer);
-        let engine = &mut self.inner;
-        if let Some(content) = engine.content_mut(node_id) {
-            for (overlay_id, uv_index) in attached {
-                preparer.detach_raster(node_id, uv_index, content);
-                let _ = overlay_id; // id already used via uv_index
+            // Composite into a single tile.
+            let composite = if tiles.len() == 1 {
+                tiles.into_iter().next().unwrap()
+            } else {
+                let mut west = f64::MAX;
+                let mut south = f64::MAX;
+                let mut east = f64::MIN;
+                let mut north = f64::MIN;
+                for t in &tiles {
+                    west = west.min(t.rectangle.west);
+                    south = south.min(t.rectangle.south);
+                    east = east.max(t.rectangle.east);
+                    north = north.max(t.rectangle.north);
+                }
+                let target_rect = terra::GlobeRectangle::new(west, south, east, north);
+                let cols = ((east - west) / (tiles[0].rectangle.east - tiles[0].rectangle.west))
+                    .ceil() as u32;
+                let rows = ((north - south) / (tiles[0].rectangle.north - tiles[0].rectangle.south))
+                    .ceil() as u32;
+                let target_w = (cols * tiles[0].width).min(2048);
+                let target_h = (rows * tiles[0].height).min(2048);
+                crate::compositing::composite_overlay_tiles(&tiles, target_w, target_h, target_rect)
+            };
+
+            let uv_index = overlay_order_index(overlay_order, overlay_id);
+
+            // If there was a previous ready tile, detach it first.
+            if mapped.state != AttachmentState::Unattached && mapped.ready.is_some() {
+                self.events.push(OverlayEvent::Detached {
+                    node_id,
+                    overlay_id,
+                });
             }
+
+            // Attach the new composite.
+            mapped.ready = Some(composite.clone());
+            mapped.ready_level = mapped.loading_level;
+            mapped.state = AttachmentState::Attached;
+
+            self.events.push(OverlayEvent::Attached {
+                node_id,
+                overlay_id,
+                uv_index,
+                tile: composite,
+            });
         }
     }
 }

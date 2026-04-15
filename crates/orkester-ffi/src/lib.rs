@@ -778,7 +778,7 @@ pub unsafe extern "C" fn orkester_dispatch(system: *mut orkester_t) -> usize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn orkester_dispatch_one(system: *mut orkester_t) -> bool {
     let system = unsafe { &mut *(system as *mut OrkesterRuntime) };
-    system.work_queue.pump_timed(std::time::Duration::ZERO) > 0
+    system.work_queue.flush_timed(std::time::Duration::ZERO) > 0
 }
 
 // ─── Main Thread Scope ─────────────────────────────────────────────────────

@@ -1,1 +1,31 @@
-//! `kasane` — raster overlay system for socle tile streaming.\n//!\n//! Provides the overlay layer that drapes satellite imagery, terrain textures,\n//! and other raster data over 3D tile content.\n//!\n//! # Key types\n//!\n//! - [`RasterOverlay`] — source of overlay tiles (URL template, WMS, ion asset, …)\n//! - [`RasterOverlayTileProvider`] — produces individual overlay tiles\n//! - [`RasterOverlayTile`] — a single overlay tile (pixel data + UV info)\n//! - [`OverlayCollection`] — manages a set of overlays for an [`OverlayEngine`]\n//! - [`OverlayEngine`] — high-level streaming handle with declarative overlay draping\n//! - [`OverlayRenderNode`] — per-frame render node carrying geometry content and overlay tiles\n\npub use overlay::{\n    OverlayCollection, OverlayId, RasterOverlay, RasterOverlayTile, RasterOverlayTileProvider,\n    default_tiles_for_extent,\n};\npub use engine::{DEFAULT_TARGET_TEXELS_PER_RADIAN, OverlayEngine, OverlayRenderNode};\n\nmod engine;\nmod overlay;
+mod basemaps;
+mod compositing;
+mod engine;
+mod event;
+pub mod gltf;
+mod hierarchy;
+mod overlay;
+mod providers;
+mod target;
+
+pub use basemaps::Basemap;
+pub use compositing::composite_overlay_tiles;
+pub use engine::{
+    DEFAULT_TARGET_TEXELS_PER_RADIAN, OverlayEngine, OverlayNodeInfo, OverlayViewInfo,
+};
+pub use event::OverlayEvent;
+pub use gltf::apply_raster_overlay;
+pub use hierarchy::OverlayHierarchy;
+pub use overlay::{
+    OverlayCollection, OverlayId, RasterOverlay, RasterOverlayTile, RasterOverlayTileProvider,
+    default_tiles_for_extent,
+};
+pub use providers::tms::TmsOptions;
+pub use providers::url_template::UrlTemplateOptions;
+pub use providers::wms::WmsOptions;
+pub use providers::wmts::WmtsOptions;
+pub use providers::{
+    TileMapServiceRasterOverlay, UrlTemplateRasterOverlay, WebMapServiceRasterOverlay,
+    WebMapTileServiceRasterOverlay,
+};
+pub use target::OverlayTarget;

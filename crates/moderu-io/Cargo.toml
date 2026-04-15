@@ -16,7 +16,7 @@ spz = ["moderu-codec/spz"]
 async = ["dep:orkester", "dep:orkester-io"]
 
 [dependencies]
-kiban = { path = "../kiban" }
+outil = { path = "../outil" }
 moderu = { path = "../moderu" }
 moderu-codec = { path = "../moderu-codec" }
 orkester = { path = "../orkester", optional = true }

@@ -7,7 +7,6 @@ description = "Async I/O traits for orkester"
 repository.workspace = true
 
 [dependencies]
-kiban = { path = "../kiban" }
 orkester = { path = "../orkester" }
 flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }

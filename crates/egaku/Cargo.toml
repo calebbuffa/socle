@@ -8,3 +8,4 @@ repository.workspace = true
 
 [dependencies]
 moderu = { path = "../moderu" }
+orkester = { path = "../orkester" }

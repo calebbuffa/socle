@@ -16,4 +16,5 @@ zukei = { path = "../zukei" }
 glam = { version = "0.32", features = ["std"] }
 serde_json = "1"
 flate2 = "1"
+bytemuck = "1"
 thiserror = "2"

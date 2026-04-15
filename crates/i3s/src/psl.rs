@@ -175,8 +175,7 @@ pub struct GeometryDefinitionPsl {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "strict", serde(deny_unknown_fields))]
-pub struct Resources {
-}
+pub struct Resources {}
 
 /// The store object describes the exact physical storage of a layer and enables the client to
 /// detect when multiple layers are served from the same store. Storing multiple layers in a single

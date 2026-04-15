@@ -204,6 +204,19 @@ pub struct StreamingOptions {
 
     /// Speed multiplier threshold for `cull_requests_while_moving`.
     pub cull_requests_while_moving_multiplier: f64,
+
+    /// If `true`, newly-visible nodes fade in over `lod_transition_length` seconds
+    /// instead of popping in. Matches cesium-native `enableLodTransitionPeriod`.
+    pub enable_lod_transition: bool,
+
+    /// Duration in seconds of the fade-in/fade-out LOD transition.
+    /// Matches cesium-native `lodTransitionLength` (default 1.0 s).
+    pub lod_transition_length: f32,
+
+    /// If `true` and `enable_lod_transition` is on, descendants are kicked while
+    /// their parent is still fading in, preventing pop-in of children over a
+    /// partially-transparent parent. Matches cesium-native `kickDescendantsWhileFadingIn`.
+    pub kick_descendants_while_fading_in: bool,
 }
 
 impl Default for StreamingOptions {
@@ -215,6 +228,9 @@ impl Default for StreamingOptions {
             load_siblings_on_skip: false,
             cull_requests_while_moving: true,
             cull_requests_while_moving_multiplier: 60.0,
+            enable_lod_transition: false,
+            lod_transition_length: 1.0,
+            kick_descendants_while_fading_in: true,
         }
     }
 }

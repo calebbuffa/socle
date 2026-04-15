@@ -20,6 +20,13 @@ pub struct Ellipsoid {
     one_over_radii_squared: DVec3,
 }
 
+// default ellipsoid is wgs84
+impl Default for Ellipsoid {
+    fn default() -> Self {
+        Self::wgs84()
+    }
+}
+
 impl Ellipsoid {
     // WGS84 semi-major / semi-minor axes (metres).
     pub const WGS84_A: f64 = 6_378_137.0;
@@ -99,7 +106,6 @@ impl Ellipsoid {
     /// Compute the unit geodetic surface normal at an ECEF position.
     ///
     /// The normal at surface point P is proportional to `P / radii^2` (element-wise)
-    /// and encodes the geodetic latitude and longitude: `(cos\phi cos\lambda, cos\phi sin\lambda, sin\phi)`.
     #[inline]
     pub fn geodetic_surface_normal(&self, ecef: DVec3) -> DVec3 {
         (ecef * self.one_over_radii_squared).normalize()

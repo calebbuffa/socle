@@ -13,8 +13,8 @@
 //! | [`meshopt::decode_vertex_buffer`] | compressed bytes | `Vec<u8>` |
 //! | [`meshopt::decode_index_buffer`] | compressed bytes | `Vec<u32>` |
 //! | [`spz::decode_buffer`] | SPZ bytes | [`spz::DecodedSplats`] |
-//! | [`ktx2::decode_buffer`] | KTX2 bytes | `moderu::Image` |
-//! | [`image::decode_buffer`] | PNG/JPEG/WebP bytes | `moderu::Image` |
+//! | [`ktx2::decode_buffer`] | KTX2 bytes | `moderu::ImageData` |
+//! | [`image::decode_buffer`] | PNG/JPEG/WebP bytes | `moderu::ImageData` |
 //!
 //! ### Model-level (glTF in-place)
 //! Operate on a [`moderu::GltfModel`], decompressing or compressing all

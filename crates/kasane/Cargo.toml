@@ -7,10 +7,11 @@ description = "Raster overlay system for socle tile streaming"
 repository.workspace = true
 
 [dependencies]
-egaku = { path = "../egaku" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+log = "0.4"
 moderu = { path = "../moderu" }
-selekt = { path = "../selekt" }
 orkester = { path = "../orkester" }
 orkester-io = { path = "../orkester-io" }
 terra = { path = "../terra" }
+zukei = { path = "../zukei" }
 glam = { version = "0.32", features = ["std"] }

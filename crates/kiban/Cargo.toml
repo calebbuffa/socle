@@ -3,7 +3,18 @@ name = "kiban"
 version.workspace = true
 edition = "2024"
 license.workspace = true
-description = "Foundation utilities for socle — URI resolution, path helpers"
+description = "Streaming spatial data platform — composes selekt, kasane, egaku into a unified runtime"
 repository.workspace = true
 
 [dependencies]
+selekt = { path = "../selekt" }
+tiles3d-selekt = { path = "../tiles3d-selekt" }
+kasane = { path = "../kasane" }
+egaku = { path = "../egaku" }
+moderu = { path = "../moderu" }
+outil = { path = "../outil" }
+orkester = { path = "../orkester" }
+orkester-io = { path = "../orkester-io" }
+terra = { path = "../terra" }
+zukei = { path = "../zukei" }
+glam = { version = "0.32", features = ["std"] }

@@ -79,7 +79,7 @@ pub enum NodeLoadState {
 
 /// Outcome assigned to a node at the end of each selection traversal.
 ///
-/// Stored as `last_result` in [`NodeState`] so the next frame can enforce
+/// Stored as `last_result` in [`NodeStatus`](crate::NodeStatus) so the next frame can enforce
 /// continuity (e.g., keep refining a node whose children are still loading)
 /// and count nodes that are fading out of the selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -114,88 +114,5 @@ impl NodeRefinementResult {
     #[inline]
     pub fn was_rendered(self) -> bool {
         matches!(self, Self::Rendered | Self::RenderedAndKicked)
-    }
-}
-
-/// Per-node internal tracking state (not part of the public API).
-#[derive(Clone, Debug)]
-pub(crate) struct NodeState {
-    pub lifecycle: NodeLoadState,
-    /// Number of load attempts so far.
-    pub retry_count: u8,
-    /// Frame on which to attempt the next retry (for backoff).
-    pub next_retry_frame: u64,
-    /// Selection outcome from the previous frame.
-    /// Used to enforce continuity and detect nodes fading out of the selection.
-    pub last_result: NodeRefinementResult,
-    /// Importance score computed during the last traversal frame.
-    /// Higher values indicate higher visual priority. Used to guide cache eviction.
-    pub importance: f32,
-    /// Seconds since the engine's `load_epoch` at which this node became `Renderable`.
-    /// 0 means not yet loaded. Used to detect expired content via
-    /// `SpatialHierarchy::content_max_age`. Wraps after ~136 years.
-    pub loaded_epoch_secs: u32,
-}
-
-impl NodeState {
-    pub fn new() -> Self {
-        Self {
-            lifecycle: NodeLoadState::Unloaded,
-            retry_count: 0,
-            next_retry_frame: 0,
-            last_result: NodeRefinementResult::None,
-            importance: 0.0,
-            loaded_epoch_secs: 0,
-        }
-    }
-}
-
-impl Default for NodeState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Dense flat storage of per-node state, indexed by `NodeId`.
-///
-/// O(1) access with no hashing. Grows on demand. Unvisited entries
-/// are equivalent to `NodeState::new()` (lifecycle = Unloaded).
-pub(crate) struct NodeStateVec {
-    states: Vec<NodeState>,
-}
-
-impl NodeStateVec {
-    /// Static default for out-of-range reads. All-zero / Unloaded.
-    const DEFAULT: NodeState = NodeState {
-        lifecycle: NodeLoadState::Unloaded,
-        retry_count: 0,
-        next_retry_frame: 0,
-        last_result: NodeRefinementResult::None,
-        importance: 0.0,
-        loaded_epoch_secs: 0,
-    };
-
-    pub fn new() -> Self {
-        Self { states: Vec::new() }
-    }
-
-    /// O(1) read. Returns the static default for never-seen nodes.
-    #[inline(always)]
-    pub fn get(&self, id: NodeId) -> &NodeState {
-        self.states.get(id.index()).unwrap_or(&Self::DEFAULT)
-    }
-
-    /// O(1) write. Grows the backing vec if needed.
-    #[inline(always)]
-    pub fn get_mut(&mut self, id: NodeId) -> &mut NodeState {
-        let idx = id.index();
-        if idx >= self.states.len() {
-            self.states.resize_with(idx + 1, NodeState::new);
-        }
-        &mut self.states[idx]
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &NodeState> {
-        self.states.iter()
     }
 }

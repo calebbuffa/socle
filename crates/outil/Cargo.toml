@@ -1,0 +1,7 @@
+[package]
+name = "outil"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Common utilities for the socle ecosystem"
+repository.workspace = true

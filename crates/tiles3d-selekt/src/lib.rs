@@ -4,25 +4,24 @@
 //! spatial hierarchy adapters ([`ExplicitTilesetHierarchy`],
 //! [`ImplicitQuadtreeHierarchy`], [`ImplicitOctreeHierarchy`]),
 //! external tileset resolution ([`ExternalTilesetResolver`]), and the
-//! high-level [`Tiles3dFormat`] adapter that wires them all together for
-//! `selekt::SelectionEngine`.
+//! high-level [`TilesetBuilder`] that wires them together.
 
-mod ellipsoid_content_loader;
+pub(crate) mod ellipsoid_content_loader;
 mod ellipsoid_tileset_loader;
 mod evaluator;
 mod height_sampler;
-mod hierarchy;
+pub(crate) mod hierarchy;
 mod loader;
 mod resolver;
+mod skirt;
 mod tileset;
 
 pub use ellipsoid_tileset_loader::EllipsoidTilesetLoader;
 pub use evaluator::{GEOMETRIC_ERROR_FAMILY, GeometricErrorEvaluator};
 pub use height_sampler::{ApproximateHeightSampler, HeightSampler, SampleHeightResult};
 pub use hierarchy::{ExplicitTilesetHierarchy, ImplicitOctreeHierarchy, ImplicitQuadtreeHierarchy};
-pub use loader::{
-    TileContentDecoder, TileDecoded, Tiles3dError, TilesetLoader, TilesetLoaderFactory,
-};
+pub use loader::{LoadResult, Tiles3dError, TilesetLoader, TilesetLoaderFactory};
 pub use resolver::ExternalTilesetResolver;
 pub use tiles3d_content::TileFormat;
-pub use tileset::{Tileset, TilesetBuilder};
+pub use tileset::{ReadyTileset, TilesetBuilder, TilesetResult};
+pub use skirt::SkirtMeshMetadata;

@@ -1,85 +1,66 @@
-//! Two-phase renderer resource preparation for tile format loaders.
+//! Content preparation pipeline for tile format loaders.
 //!
-//! Mirrors cesium-native's `IPrepareRendererResources`: a worker-thread
-//! decode phase followed by a main-thread GPU-upload phase.  The split
-//! lets the load pipeline saturate worker threads with parsing while
-//! keeping GPU-API calls confined to the render thread.
-//!
-//! # Relationship to the load pipeline
-//!
-//! A format-specific `ContentLoader` drives the two phases in sequence:
+//! [`ContentPipeline`] is a single-closure pipeline that transforms a
+//! [`GltfModel`] into renderer-ready content. The pipeline captures its
+//! own [`orkester::Context`]s and decides internally what runs where:
 //!
 //! ```text
-//! AssetAccessor::get(url)          ← worker thread (orkester-io)
-//!   → PrepareRendererResources::prepare_in_load_thread(model)
-//!                                  ← worker thread (decode / decompress)
-//!   → PrepareRendererResources::prepare_in_main_thread(worker_result)
-//!                                  ← main thread   (GPU upload)
-//!   → Content                      ← stored in the selection engine
+//! pipeline.run(model)   → Task<Result<C, PipelineError>>
+//!   ├─ bg.run(|| decode(model))        ← user-chosen context
+//!   └─ main.run(|| upload(cpu_data))   ← user-chosen context
 //! ```
 //!
-//! The loader owns the bytes→[`GltfModel`] step. The renderer owns
-//! [`GltfModel`]→`WorkerResult`→`Content`.
+//! Loaders only need one background context for the asset fetch; the
+//! pipeline handles all scheduling of decode/upload internally.
 
 use moderu::GltfModel;
+use orkester::Task;
 
-/// Two-phase renderer resource preparation.
+/// Error type returned by a content pipeline.
+pub type PipelineError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Content preparation pipeline.
 ///
-/// Implement this trait to bridge the tile-loading pipeline and your
-/// rendering backend. The engine guarantees:
+/// A single opaque function: [`GltfModel`] → [`Task<Result<C, PipelineError>>`].
+/// The pipeline captures its own contexts and decides scheduling internally.
 ///
-/// * [`prepare_in_load_thread`] is called on a worker thread — safe to do
-///   blocking CPU work (parsing, decompression, mesh building).
-/// * [`prepare_in_main_thread`] is called on the main thread — safe to call
-///   GPU APIs. Must not block.
+/// # Type parameter
 ///
-/// # Type parameters
-///
-/// * `WorkerResult` — CPU-side intermediate produced by the worker phase
-///   and consumed by the main-thread phase.
-/// * `Content` — Final render-ready value delivered to the selection engine.
-///
-/// [`prepare_in_load_thread`]: PrepareRendererResources::prepare_in_load_thread
-/// [`prepare_in_main_thread`]: PrepareRendererResources::prepare_in_main_thread
-pub trait PrepareRendererResources: Send + Sync + 'static {
-    /// CPU-side decode result passed from the worker phase to the main-thread phase.
-    type WorkerResult: Send + 'static;
+/// * `C` — Final renderer-ready content (e.g. `Vec<GpuTile>`, `usize` for tests)
+pub struct ContentPipeline<C: Send + 'static> {
+    run: Box<dyn Fn(GltfModel) -> Task<Result<C, PipelineError>> + Send + Sync>,
+    free: Option<Box<dyn Fn(C) + Send + Sync>>,
+}
 
-    /// Final render-ready content stored by the engine.
-    type Content: Send + 'static;
+impl<C: Send + 'static> ContentPipeline<C> {
+    /// Create a pipeline from a closure that transforms a model into content.
+    ///
+    /// The closure should capture any [`orkester::Context`]s it needs and
+    /// schedule work on them internally.
+    pub fn new(
+        run: impl Fn(GltfModel) -> Task<Result<C, PipelineError>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            run: Box::new(run),
+            free: None,
+        }
+    }
 
-    /// Error returned by either phase.
-    type Error: std::error::Error + Send + Sync + 'static;
+    /// Set an optional callback to release content when evicted.
+    pub fn on_free(mut self, f: impl Fn(C) + Send + Sync + 'static) -> Self {
+        self.free = Some(Box::new(f));
+        self
+    }
 
-    /// Worker-thread phase.
-    ///
-    /// Decode `model` into CPU-side geometry, textures, and metadata.
-    /// Do **not** call any GPU API here.
-    fn prepare_in_load_thread(&self, model: GltfModel) -> Result<Self::WorkerResult, Self::Error>;
+    /// Run the pipeline on a model. Returns a task that resolves to content.
+    pub fn run(&self, model: GltfModel) -> Task<Result<C, PipelineError>> {
+        (self.run)(model)
+    }
 
-    /// Main-thread phase.
-    ///
-    /// Upload CPU-side data to the GPU and return the final renderable
-    /// content.  Must not block — do all heavy work in
-    /// [`prepare_in_load_thread`] instead.
-    ///
-    /// [`prepare_in_load_thread`]: PrepareRendererResources::prepare_in_load_thread
-    fn prepare_in_main_thread(&self, worker_result: Self::WorkerResult) -> Self::Content;
-
-    /// Release a worker-phase result that will never reach the main thread.
-    ///
-    /// Called when a tile is evicted after the worker phase finished but before
-    /// [`prepare_in_main_thread`] ran (mid-pipeline eviction). The default
-    /// implementation drops `worker_result` normally; override if CPU-side
-    /// resources need explicit cleanup.
-    ///
-    /// [`prepare_in_main_thread`]: PrepareRendererResources::prepare_in_main_thread
-    fn free_worker_result(&self, _worker_result: Self::WorkerResult) {}
-
-    /// Release main-thread GPU resources for an evicted tile.
-    ///
-    /// Called on the main thread when the engine evicts a resident tile to stay
-    /// within `max_cached_bytes`. The default implementation drops `content`
-    /// normally; override to destroy GPU buffers, bind groups, etc.
-    fn free(&self, _content: Self::Content) {}
+    /// Release content (GPU cleanup). No-op if no `on_free` was set.
+    pub fn free_content(&self, content: C) {
+        if let Some(f) = &self.free {
+            f(content);
+        }
+    }
 }

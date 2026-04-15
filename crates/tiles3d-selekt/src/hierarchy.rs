@@ -8,21 +8,23 @@
 //! ```no_run
 //! # use tiles3d::{Tileset, Tile, BoundingVolume};
 //! # use tiles3d_selekt::ExplicitTilesetHierarchy;
-//! # fn load_tileset() -> Tileset { Tileset::default() }
-//! let tileset: Tileset = load_tileset();
+//! # fn load_nodeset() -> Tileset { Tileset::default() }
+//! let tileset: Tileset = load_nodeset();
 //! let hierarchy = ExplicitTilesetHierarchy::from_tileset(&tileset);
 //! // Pass `hierarchy` to `SelectionEngine::builder(...)`.
 //! ```
 
 use glam::{DMat3, DMat4, DVec2, DVec3};
-use selekt::{ContentKey, LodDescriptor, NodeId, NodeKind, RefinementMode, SceneGraph};
+use selekt::{ContentKey, LodDescriptor, NodeDescriptor, NodeId, NodeKind, RefinementMode};
 use std::collections::HashMap;
 use terra::GlobeRectangle;
 use zukei::SpatialBounds;
 
 use tiles3d::implicit_tiling_utilities;
 use tiles3d::{BoundingVolume, ImplicitTiling, Tile, Tileset};
-use tiles3d::{OctreeAvailability, QuadtreeAvailability, TileAvailabilityFlags};
+use tiles3d::{
+    OctreeAvailability, QuadtreeAvailability, SubtreeAvailability, TileAvailabilityFlags,
+};
 use tiles3d::{OctreeTileID, QuadtreeTileID, TileBoundingVolumes, TileTransform};
 
 use crate::evaluator::GEOMETRIC_ERROR_FAMILY;
@@ -114,80 +116,36 @@ impl ExplicitTilesetHierarchy {
     pub fn resolve_content_keys(&mut self, base_url: &str) {
         for node in &mut self.nodes {
             for key in &mut node.content_keys {
-                key.0 = orkester_io::resolve_url(base_url, &key.0).into();
+                key.0 = outil::resolve_url(base_url, &key.0).into();
             }
         }
     }
-}
 
-impl SceneGraph for ExplicitTilesetHierarchy {
-    fn root(&self) -> NodeId {
-        NodeId::from_index(0)
-    }
-
-    fn parent(&self, node: NodeId) -> Option<NodeId> {
-        self.nodes.get(node.index())?.parent
-    }
-
-    fn children(&self, node: NodeId) -> &[NodeId] {
-        self.nodes
-            .get(node.index())
-            .map_or(&[], |n| n.children.as_slice())
-    }
-
-    fn node_kind(&self, node: NodeId) -> NodeKind {
-        self.nodes
-            .get(node.index())
-            .map_or(NodeKind::Renderable, |n| n.kind)
-    }
-
-    fn bounds(&self, node: NodeId) -> &SpatialBounds {
-        // Fallback to a zero sphere; should never happen for valid hierarchies.
-        static FALLBACK: SpatialBounds = SpatialBounds::Sphere {
-            center: DVec3::ZERO,
-            radius: 0.0,
-        };
-        self.nodes
-            .get(node.index())
-            .map_or(&FALLBACK, |n| &n.bounds)
-    }
-
-    fn content_bounds(&self, node: NodeId) -> Option<&SpatialBounds> {
-        self.nodes.get(node.index())?.content_bounds.as_ref()
-    }
-
-    fn viewer_request_volume(&self, node: NodeId) -> Option<&SpatialBounds> {
-        self.nodes.get(node.index())?.viewer_request_volume.as_ref()
-    }
-
-    fn lod_descriptor(&self, node: NodeId) -> &LodDescriptor {
-        static FALLBACK: LodDescriptor = LodDescriptor {
-            family: GEOMETRIC_ERROR_FAMILY,
-            value: 0.0,
-        };
-        self.nodes.get(node.index()).map_or(&FALLBACK, |n| &n.lod)
-    }
-
-    fn refinement_mode(&self, node: NodeId) -> RefinementMode {
-        self.nodes
-            .get(node.index())
-            .map_or(RefinementMode::Replace, |n| n.refinement)
-    }
-
-    fn content_keys(&self, node: NodeId) -> &[ContentKey] {
-        self.nodes
-            .get(node.index())
-            .map_or(&[], |n| n.content_keys.as_slice())
-    }
-
-    fn world_transform(&self, node: NodeId) -> glam::DMat4 {
-        self.nodes
-            .get(node.index())
-            .map_or(glam::DMat4::IDENTITY, |n| n.world_transform)
-    }
-
-    fn node_count(&self) -> usize {
-        self.nodes.len()
+    /// Convert the hierarchy into a flat array of [`NodeDescriptor`]s.
+    ///
+    /// Returns `(descriptors, root_index)`. The root is always index 0.
+    pub fn to_descriptors(&self) -> (Vec<NodeDescriptor>, usize) {
+        let descs: Vec<NodeDescriptor> = self
+            .nodes
+            .iter()
+            .map(|n| NodeDescriptor {
+                bounds: n.bounds.clone(),
+                lod: n.lod,
+                refinement: n.refinement,
+                kind: n.kind,
+                content_keys: n.content_keys.clone(),
+                world_transform: n.world_transform,
+                might_have_latent_children: false,
+                child_indices: n.children.iter().map(|c| c.index()).collect(),
+                content_bounds: n.content_bounds.clone(),
+                viewer_request_volume: n.viewer_request_volume.clone(),
+                lod_metric_override: None,
+                globe_rectangle: n.globe_rectangle,
+                unconditionally_refined: false,
+                content_max_age: None,
+            })
+            .collect();
+        (descs, 0)
     }
 }
 
@@ -300,7 +258,10 @@ fn parse_refinement(refine: Option<&tiles3d::Refine>) -> RefinementMode {
 /// Priority: `box` > `sphere` > `region` (as a sphere approximation).
 /// `region` bounding volumes are converted to an OBB approximation via the
 /// sphere that encloses the region's corners.
-fn bounding_volume_to_spatial_bounds(bv: &BoundingVolume, world_transform: DMat4) -> SpatialBounds {
+pub(crate) fn bounding_volume_to_spatial_bounds(
+    bv: &BoundingVolume,
+    world_transform: DMat4,
+) -> SpatialBounds {
     debug_assert!(
         bv.r#box.len() >= 12 || bv.sphere.len() >= 4 || !bv.region.is_empty(),
         "BoundingVolume has no valid box, sphere, or region data"
@@ -378,7 +339,7 @@ fn bounding_volume_to_spatial_bounds(bv: &BoundingVolume, world_transform: DMat4
 ///
 /// Returns `None` for `box` and `sphere` volumes, which have no exact
 /// geodetic longitude/latitude extent without unprojecting.
-fn bounding_volume_to_globe_rectangle(bv: &BoundingVolume) -> Option<GlobeRectangle> {
+pub(crate) fn bounding_volume_to_globe_rectangle(bv: &BoundingVolume) -> Option<GlobeRectangle> {
     if bv.region.len() >= 4 {
         let r = &bv.region;
         // region = [west, south, east, north, minH, maxH] in radians.
@@ -414,6 +375,32 @@ fn region_ecef_corners(
         }
     }
     out
+}
+
+/// Convert a geodetic region (radians) to a `SpatialBounds::Sphere`.
+///
+/// Used by the expand callback to create bounds for dynamically generated children.
+pub(crate) fn region_to_sphere_bounds(
+    west: f64,
+    south: f64,
+    east: f64,
+    north: f64,
+    min_h: f64,
+    max_h: f64,
+) -> SpatialBounds {
+    let corners = region_ecef_corners(west, south, east, north, min_h, max_h);
+    let mut mn = corners[0];
+    let mut mx = corners[0];
+    for &c in &corners[1..] {
+        mn = mn.min(c);
+        mx = mx.max(c);
+    }
+    let center = (mn + mx) * 0.5;
+    let half = (mx - mn) * 0.5;
+    SpatialBounds::Sphere {
+        center,
+        radius: half.length(),
+    }
 }
 
 struct OctNodeData {
@@ -579,43 +566,30 @@ impl ImplicitOctreeHierarchy {
             self.nodes.push(child_node);
         }
     }
-}
 
-impl SceneGraph for ImplicitOctreeHierarchy {
-    fn root(&self) -> NodeId {
-        NodeId::from_index(0)
-    }
-
-    fn parent(&self, node: NodeId) -> Option<NodeId> {
-        self.nodes[node.index()].parent
-    }
-
-    fn children(&self, node: NodeId) -> &[NodeId] {
-        &self.nodes[node.index()].children
-    }
-
-    fn node_kind(&self, node: NodeId) -> NodeKind {
-        self.nodes[node.index()].kind
-    }
-
-    fn bounds(&self, node: NodeId) -> &SpatialBounds {
-        &self.nodes[node.index()].bounds
-    }
-
-    fn lod_descriptor(&self, node: NodeId) -> &LodDescriptor {
-        &self.nodes[node.index()].lod
-    }
-
-    fn refinement_mode(&self, node: NodeId) -> RefinementMode {
-        self.nodes[node.index()].refinement
-    }
-
-    fn content_keys(&self, node: NodeId) -> &[ContentKey] {
-        self.nodes[node.index()].content_keys.as_slice()
-    }
-
-    fn node_count(&self) -> usize {
-        self.nodes.len()
+    /// Convert the hierarchy into a flat array of [`NodeDescriptor`]s.
+    pub fn to_descriptors(&self) -> (Vec<NodeDescriptor>, usize) {
+        let descs: Vec<NodeDescriptor> = self
+            .nodes
+            .iter()
+            .map(|n| NodeDescriptor {
+                bounds: n.bounds.clone(),
+                lod: n.lod,
+                refinement: n.refinement,
+                kind: n.kind,
+                content_keys: n.content_keys.clone(),
+                world_transform: DMat4::IDENTITY,
+                might_have_latent_children: false,
+                child_indices: n.children.iter().map(|c| c.index()).collect(),
+                content_bounds: None,
+                viewer_request_volume: None,
+                lod_metric_override: None,
+                globe_rectangle: None,
+                unconditionally_refined: false,
+                content_max_age: None,
+            })
+            .collect();
+        (descs, 0)
     }
 }
 
@@ -683,6 +657,7 @@ fn split_bounds_oct(root: &SpatialBounds, tile: OctreeTileID) -> SpatialBounds {
             // 2D polygon bounds are not subdivided for implicit tilesets — return as-is.
             root.clone()
         }
+        SpatialBounds::Empty => SpatialBounds::Empty,
     }
 }
 
@@ -697,6 +672,11 @@ struct QuadNodeData {
     kind: NodeKind,
     refinement: RefinementMode,
     content_keys: Vec<ContentKey>,
+    /// Geographic extent of this tile (radians), present when root BV is a region.
+    globe_rect: Option<terra::GlobeRectangle>,
+    /// True when this tile is a subtree-boundary node that may have children
+    /// once its child subtree file is fetched.
+    might_have_latent_children: bool,
 }
 
 /// A `selekt::SceneGraph` backed by a 3D Tiles implicit quadtree.
@@ -710,12 +690,23 @@ pub struct ImplicitQuadtreeHierarchy {
     tile_to_node: HashMap<QuadtreeTileID, NodeId>,
     /// Availability information.
     availability: QuadtreeAvailability,
-    /// Root bounding volume (split into children by halving).
+    /// Root bounding volume (split into children by halving); used as fallback
+    /// when the root is not a region BV.
     root_bounds: SpatialBounds,
+    /// Geographic extent of the overall tileset root tile (radians).
+    /// Present when the root bounding volume is a `region`.
+    root_globe_rect: Option<terra::GlobeRectangle>,
+    /// Height range to use when computing ECEF spheres from globe rectangles.
+    root_region_min_h: f64,
+    root_region_max_h: f64,
     /// Geometric error at the root; halved per level.
     root_geometric_error: f64,
     /// URL template for content keys: `{level}`, `{x}`, `{y}` placeholders.
     content_url_template: String,
+    /// URI template for subtree files: `{level}`, `{x}`, `{y}` placeholders.
+    subtrees_uri_template: String,
+    /// Number of tile levels covered by each subtree file.
+    subtree_levels: u32,
     /// Whether children use REPLACE (default) or ADD refinement.
     refinement: RefinementMode,
 }
@@ -734,17 +725,38 @@ impl ImplicitQuadtreeHierarchy {
     pub fn new(
         root_bv: &BoundingVolume,
         root_geometric_error: f64,
-        _implicit_tiling: &ImplicitTiling,
+        implicit_tiling: &ImplicitTiling,
         availability: QuadtreeAvailability,
         content_url_template: impl Into<String>,
         use_additive_refinement: bool,
     ) -> Self {
-        let root_bounds = implicit_bvol_to_bounds(root_bv);
+        let root_globe_rect = bounding_volume_to_globe_rectangle(root_bv);
+        let (root_region_min_h, root_region_max_h) = if root_bv.region.len() >= 6 {
+            (root_bv.region[4], root_bv.region[5])
+        } else {
+            (0.0, 0.0)
+        };
+        let root_bounds = if let Some(rect) = root_globe_rect {
+            region_to_sphere_bounds(
+                rect.west,
+                rect.south,
+                rect.east,
+                rect.north,
+                root_region_min_h,
+                root_region_max_h,
+            )
+        } else {
+            implicit_bvol_to_bounds(root_bv)
+        };
+
         let refinement = if use_additive_refinement {
             RefinementMode::Add
         } else {
             RefinementMode::Replace
         };
+
+        let subtrees_uri_template = implicit_tiling.subtrees.uri.clone();
+        let subtree_levels = implicit_tiling.subtree_levels;
 
         let root_id = QuadtreeTileID::new(0, 0, 0);
         let flags = availability.compute_availability(root_id);
@@ -781,6 +793,8 @@ impl ImplicitQuadtreeHierarchy {
             kind,
             refinement,
             content_keys,
+            globe_rect: root_globe_rect,
+            might_have_latent_children: false,
         };
 
         let mut tile_to_node = HashMap::new();
@@ -791,12 +805,137 @@ impl ImplicitQuadtreeHierarchy {
             tile_to_node,
             availability,
             root_bounds,
+            root_globe_rect,
+            root_region_min_h,
+            root_region_max_h,
             root_geometric_error,
             content_url_template,
+            subtrees_uri_template,
+            subtree_levels,
             refinement,
         };
         // Eagerly expand all available levels via BFS so children() never
         // needs to mutate self.
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(NodeId::from_index(0));
+        while let Some(node_id) = queue.pop_front() {
+            h.expand_node(node_id);
+            let children = h.nodes[node_id.index()].children.clone();
+            queue.extend(children);
+        }
+        h
+    }
+
+    /// Build a hierarchy for a child subtree rooted at `subtree_root`.
+    ///
+    /// Used when a boundary node's synthetic content key is loaded: the fresh
+    /// `SubtreeAvailability` for `subtree_root` is turned into a hierarchy whose
+    /// descriptors are injected as children of the boundary node by kiban.
+    ///
+    /// `root_bv` / `root_geometric_error` are the OVERALL tileset root's values
+    /// (not the sub-subtree root's), so all ECEF positions and errors are
+    /// computed consistently relative to the top-level tile.
+    pub fn new_for_subtree(
+        subtree_root: QuadtreeTileID,
+        root_bv: &BoundingVolume,
+        root_geometric_error: f64,
+        implicit_tiling: &ImplicitTiling,
+        subtree_av: SubtreeAvailability,
+        content_url_template: impl Into<String>,
+        use_additive_refinement: bool,
+    ) -> Self {
+        let root_globe_rect = bounding_volume_to_globe_rectangle(root_bv);
+        let (root_region_min_h, root_region_max_h) = if root_bv.region.len() >= 6 {
+            (root_bv.region[4], root_bv.region[5])
+        } else {
+            (0.0, 0.0)
+        };
+        // Overall root bounds — used as fallback for non-region BVs in split_bounds.
+        let overall_root_bounds = implicit_bvol_to_bounds(root_bv);
+
+        let refinement = if use_additive_refinement {
+            RefinementMode::Add
+        } else {
+            RefinementMode::Replace
+        };
+
+        let subtrees_uri_template = implicit_tiling.subtrees.uri.clone();
+        let subtree_levels = implicit_tiling.subtree_levels;
+        let available_levels = implicit_tiling.available_levels;
+
+        let content_url_template = content_url_template.into();
+
+        let mut qa = QuadtreeAvailability::new(subtree_levels, available_levels);
+        qa.add_subtree(subtree_root, subtree_av);
+
+        let flags = qa.compute_availability(subtree_root);
+        let has_content = flags.contains(TileAvailabilityFlags::CONTENT_AVAILABLE);
+        let kind = if has_content {
+            NodeKind::Renderable
+        } else {
+            NodeKind::Empty
+        };
+        let content_keys = if has_content {
+            vec![ContentKey(implicit_tiling_utilities::resolve_url_quad(
+                "",
+                &content_url_template,
+                subtree_root,
+            ))]
+        } else {
+            vec![]
+        };
+
+        let root_error = root_geometric_error
+            / implicit_tiling_utilities::compute_level_denominator(subtree_root.level);
+        let root_rect = root_globe_rect.map(|r| split_globe_rect(r, subtree_root));
+        let root_node_bounds = if let Some(rect) = root_rect {
+            region_to_sphere_bounds(
+                rect.west,
+                rect.south,
+                rect.east,
+                rect.north,
+                root_region_min_h,
+                root_region_max_h,
+            )
+        } else {
+            split_bounds(&overall_root_bounds, subtree_root)
+        };
+
+        let root_node = QuadNodeData {
+            tile_id: subtree_root,
+            parent: None,
+            children: Vec::new(),
+            expanded: false,
+            bounds: root_node_bounds,
+            lod: LodDescriptor {
+                family: GEOMETRIC_ERROR_FAMILY,
+                value: root_error,
+            },
+            kind,
+            refinement,
+            content_keys,
+            globe_rect: root_rect,
+            might_have_latent_children: false,
+        };
+
+        let mut tile_to_node = HashMap::new();
+        tile_to_node.insert(subtree_root, NodeId::from_index(0));
+
+        let mut h = Self {
+            nodes: vec![root_node],
+            tile_to_node,
+            availability: qa,
+            root_bounds: overall_root_bounds,
+            root_globe_rect,
+            root_region_min_h,
+            root_region_max_h,
+            root_geometric_error,
+            content_url_template,
+            subtrees_uri_template,
+            subtree_levels,
+            refinement,
+        };
+
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(NodeId::from_index(0));
         while let Some(node_id) = queue.pop_front() {
@@ -828,22 +967,53 @@ impl ImplicitQuadtreeHierarchy {
             }
 
             let child_id = NodeId::from_index(self.nodes.len());
-            let child_bounds = split_bounds(&self.root_bounds, child_tile);
-            let has_content = flags.contains(TileAvailabilityFlags::CONTENT_AVAILABLE);
-            let kind = if has_content {
-                NodeKind::Renderable
+
+            // Compute geographic rectangle and ECEF bounds for the child.
+            let child_globe_rect = self
+                .root_globe_rect
+                .map(|r| split_globe_rect(r, child_tile));
+            let child_bounds = if let Some(rect) = child_globe_rect {
+                region_to_sphere_bounds(
+                    rect.west,
+                    rect.south,
+                    rect.east,
+                    rect.north,
+                    self.root_region_min_h,
+                    self.root_region_max_h,
+                )
             } else {
-                NodeKind::Empty
+                split_bounds(&self.root_bounds, child_tile)
             };
 
-            let content_keys = if has_content {
-                vec![ContentKey(implicit_tiling_utilities::resolve_url_quad(
+            // Detect subtree-boundary tiles: available but subtree not yet loaded.
+            // These are child-subtree roots that need a separate fetch to stream
+            // deeper tiles.  We give them a synthetic content key so kiban will
+            // call TilesetLoader::load(), which will fetch the subtree file and
+            // return a SubScene with the tile's own children.
+            let is_subtree_boundary = flags.contains(TileAvailabilityFlags::SUBTREE_AVAILABLE)
+                && !flags.contains(TileAvailabilityFlags::SUBTREE_LOADED);
+
+            let has_content = flags.contains(TileAvailabilityFlags::CONTENT_AVAILABLE);
+            let (kind, content_keys, might_have_latent_children) = if is_subtree_boundary {
+                let subtree_relative_url = implicit_tiling_utilities::resolve_url_quad(
                     "",
-                    &self.content_url_template,
+                    &self.subtrees_uri_template,
                     child_tile,
-                ))]
+                );
+                let synthetic_key = format!("__subtree__:{}", subtree_relative_url);
+                (NodeKind::Renderable, vec![ContentKey(synthetic_key)], true)
+            } else if has_content {
+                (
+                    NodeKind::Renderable,
+                    vec![ContentKey(implicit_tiling_utilities::resolve_url_quad(
+                        "",
+                        &self.content_url_template,
+                        child_tile,
+                    ))],
+                    false,
+                )
             } else {
-                vec![]
+                (NodeKind::Empty, vec![], false)
             };
 
             let child_node = QuadNodeData {
@@ -859,6 +1029,8 @@ impl ImplicitQuadtreeHierarchy {
                 kind,
                 refinement: self.refinement,
                 content_keys,
+                globe_rect: child_globe_rect,
+                might_have_latent_children,
             };
 
             self.nodes[node_id.index()].children.push(child_id);
@@ -866,65 +1038,54 @@ impl ImplicitQuadtreeHierarchy {
             self.nodes.push(child_node);
         }
     }
-}
 
-impl SceneGraph for ImplicitQuadtreeHierarchy {
-    fn root(&self) -> NodeId {
-        NodeId::from_index(0)
-    }
-
-    fn parent(&self, node: NodeId) -> Option<NodeId> {
-        self.nodes[node.index()].parent
-    }
-
-    fn children(&self, node: NodeId) -> &[NodeId] {
-        &self.nodes[node.index()].children
-    }
-
-    fn node_kind(&self, node: NodeId) -> NodeKind {
-        self.nodes[node.index()].kind
-    }
-
-    fn bounds(&self, node: NodeId) -> &SpatialBounds {
-        &self.nodes[node.index()].bounds
-    }
-
-    fn lod_descriptor(&self, node: NodeId) -> &LodDescriptor {
-        &self.nodes[node.index()].lod
-    }
-
-    fn refinement_mode(&self, node: NodeId) -> RefinementMode {
-        self.nodes[node.index()].refinement
-    }
-
-    fn content_keys(&self, node: NodeId) -> &[ContentKey] {
-        self.nodes[node.index()].content_keys.as_slice()
-    }
-
-    fn node_count(&self) -> usize {
-        self.nodes.len()
+    /// Convert the hierarchy into a flat array of [`NodeDescriptor`]s.
+    pub fn to_descriptors(&self) -> (Vec<NodeDescriptor>, usize) {
+        let descs: Vec<NodeDescriptor> = self
+            .nodes
+            .iter()
+            .map(|n| NodeDescriptor {
+                bounds: n.bounds.clone(),
+                lod: n.lod,
+                refinement: n.refinement,
+                kind: n.kind,
+                content_keys: n.content_keys.clone(),
+                world_transform: DMat4::IDENTITY,
+                might_have_latent_children: n.might_have_latent_children,
+                child_indices: n.children.iter().map(|c| c.index()).collect(),
+                content_bounds: None,
+                viewer_request_volume: None,
+                lod_metric_override: None,
+                globe_rectangle: n.globe_rect,
+                unconditionally_refined: false,
+                content_max_age: None,
+            })
+            .collect();
+        (descs, 0)
     }
 }
 
 fn implicit_bvol_to_bounds(bv: &BoundingVolume) -> SpatialBounds {
-    // Prefer OBB, then sphere.
-    if let Some(obb) = TileBoundingVolumes::get_oriented_bounding_box(bv) {
-        return SpatialBounds::OrientedBox {
-            center: obb.center,
-            half_axes: obb.half_axes_matrix(),
-        };
-    }
-    if let Some(s) = TileBoundingVolumes::get_bounding_sphere(bv) {
-        return SpatialBounds::Sphere {
-            center: s.center,
-            radius: s.radius,
-        };
-    }
-    // Fall back to an AABB centred at the origin with zero extent.
-    SpatialBounds::AxisAlignedBox {
-        min: DVec3::ZERO,
-        max: DVec3::ZERO,
-    }
+    bounding_volume_to_spatial_bounds(bv, DMat4::IDENTITY)
+}
+
+/// Subdivide a root geographic rectangle for implicit-tiling tile `tile`.
+///
+/// The returned rectangle covers exactly the `1 / 2^tile.level` fraction of
+/// `root` that `tile` occupies.  Both inputs and outputs use radians.
+pub(crate) fn split_globe_rect(
+    root: terra::GlobeRectangle,
+    tile: QuadtreeTileID,
+) -> terra::GlobeRectangle {
+    let denom = implicit_tiling_utilities::compute_level_denominator(tile.level) as u32;
+    let w = (root.east - root.west) / denom as f64;
+    let h = (root.north - root.south) / denom as f64;
+    terra::GlobeRectangle::new(
+        root.west + tile.x as f64 * w,
+        root.south + tile.y as f64 * h,
+        root.west + (tile.x + 1) as f64 * w,
+        root.south + (tile.y + 1) as f64 * h,
+    )
 }
 
 /// Compute the [`SpatialBounds`] for `tile` by subdividing the root bounds.
@@ -991,5 +1152,6 @@ fn split_bounds(root: &SpatialBounds, tile: QuadtreeTileID) -> SpatialBounds {
             // 2D polygon bounds are not subdivided for implicit tilesets — return as-is.
             root.clone()
         }
+        SpatialBounds::Empty => SpatialBounds::Empty,
     }
 }

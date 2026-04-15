@@ -4,7 +4,7 @@
 //! RGBA8 using the `basis-universal` transcoder.
 
 use crate::CodecEncoder;
-use moderu::{GltfModel, Image};
+use moderu::{GltfModel, ImageData};
 
 /// Errors that can occur during KTX2 decode or encode operations.
 #[derive(thiserror::Error, Debug)]
@@ -92,7 +92,7 @@ pub fn decode(model: &mut GltfModel) -> Vec<String> {
 
 /// Low-level: decode a raw KTX2 buffer to RGBA8 pixel data.
 ///
-/// Accepts the raw bytes of a KTX2 container and returns a decoded [`moderu::Image`].
+/// Accepts the raw bytes of a KTX2 container and returns a decoded [`moderu::ImageData`].
 /// Use [`is_ktx2`] to check if a buffer is KTX2 before calling this.
 ///
 /// # Example
@@ -101,12 +101,12 @@ pub fn decode(model: &mut GltfModel) -> Vec<String> {
 ///     let img = moderu_codec::ktx2::decode_buffer(&data)?;
 /// }
 /// ```
-pub fn decode_buffer(data: &[u8]) -> Result<moderu::Image, Ktx2Error> {
+pub fn decode_buffer(data: &[u8]) -> Result<moderu::ImageData, Ktx2Error> {
     transcode_ktx2_to_rgba8(data)
 }
 
 /// Transcode a KTX2 blob to RGBA8 pixel data.
-fn transcode_ktx2_to_rgba8(data: &[u8]) -> Result<Image, Ktx2Error> {
+fn transcode_ktx2_to_rgba8(data: &[u8]) -> Result<ImageData, Ktx2Error> {
     use ktx2_reader::Reader;
 
     let reader = Reader::new(data).map_err(|e| Ktx2Error::Parse(format!("{e:?}")))?;
@@ -139,7 +139,7 @@ fn is_basis_format(format: Option<ktx2_reader::Format>) -> bool {
     format.is_none()
 }
 
-fn transcode_basis(data: &[u8], width: u32, height: u32) -> Result<Image, Ktx2Error> {
+fn transcode_basis(data: &[u8], width: u32, height: u32) -> Result<ImageData, Ktx2Error> {
     use basis_universal::transcoding::{Transcoder, TranscoderTextureFormat, transcoder_init};
 
     transcoder_init();
@@ -162,7 +162,7 @@ fn transcode_basis(data: &[u8], width: u32, height: u32) -> Result<Image, Ktx2Er
         )
         .map_err(|e| Ktx2Error::BasisTranscode(format!("{e:?}")))?;
 
-    Ok(Image {
+    Ok(ImageData {
         data: transcode_result,
         width,
         height,
@@ -178,13 +178,13 @@ fn extract_rgba_from_ktx2(
     width: u32,
     height: u32,
     format: Option<ktx2_reader::Format>,
-) -> Result<Image, Ktx2Error> {
+) -> Result<ImageData, Ktx2Error> {
     let expected_size = (width as usize) * (height as usize) * 4;
 
     match format {
         Some(ktx2_reader::Format::R8G8B8A8_UNORM) | Some(ktx2_reader::Format::R8G8B8A8_SRGB) => {
             if data.len() >= expected_size {
-                Ok(Image {
+                Ok(ImageData {
                     data: data[..expected_size].to_vec(),
                     width,
                     height,
@@ -211,7 +211,7 @@ fn extract_rgba_from_ktx2(
                 rgba.extend_from_slice(pixel);
                 rgba.push(255);
             }
-            Ok(Image {
+            Ok(ImageData {
                 data: rgba,
                 width,
                 height,

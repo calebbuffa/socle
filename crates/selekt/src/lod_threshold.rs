@@ -15,7 +15,7 @@
 /// quality is reclaimed conservatively once the budget is stable.
 ///
 /// Use [`LodThreshold::multiplier`] as the `lod_multiplier` argument to
-/// [`traverse`](crate::traversal::traverse).
+/// [`select`](crate::select).
 pub struct LodThreshold {
     /// User-configured base multiplier. The dynamic `current` value never goes
     /// below this floor.
@@ -54,7 +54,7 @@ impl LodThreshold {
     }
 
     /// Call once per frame after eviction, returns the effective multiplier for
-    /// this frame which should be passed to [`traverse`](crate::traversal::traverse).
+    /// this frame which should be passed to [`select`](crate::select).
     ///
     /// - `resident_bytes`: total bytes currently resident in the cache.
     /// - `budget_bytes`: maximum allowed resident bytes (`SelectionOptions::max_cached_bytes`).

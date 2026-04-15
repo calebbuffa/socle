@@ -5,17 +5,15 @@ use std::sync::Arc;
 use orkester::Task;
 use orkester_io::AssetAccessor;
 
-/// A single raster overlay tile — pixel data plus UV transform for draping.
+/// A single raster overlay tile — pixel data plus its geographic extent.
 #[derive(Clone, Debug)]
 pub struct RasterOverlayTile {
     /// RGBA pixel data, row-major from top-left.
     pub pixels: Arc<[u8]>,
     pub width: u32,
     pub height: u32,
-    /// UV translation applied when sampling this tile onto geometry.
-    pub translation: glam::Vec2,
-    /// UV scale applied when sampling this tile onto geometry.
-    pub scale: glam::Vec2,
+    /// Geographic rectangle this overlay tile covers.
+    pub rectangle: terra::GlobeRectangle,
 }
 
 /// Produces individual overlay tiles on demand.
@@ -60,7 +58,7 @@ pub trait RasterOverlay: Send + Sync {
     /// is then used for the lifetime of the overlay.
     fn create_tile_provider(
         &self,
-        runtime: &orkester::Runtime,
+        context: &orkester::Context,
         accessor: &Arc<dyn AssetAccessor>,
     ) -> Task<Box<dyn RasterOverlayTileProvider>>;
 }

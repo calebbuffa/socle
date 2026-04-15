@@ -24,7 +24,7 @@ pub struct CullingVolume {
 impl CullingVolume {
     /// Create a culling volume from an explicit set of planes.
     pub fn from_planes(planes: Vec<Plane>) -> Self {
-        Self { planes: planes }
+        Self { planes }
     }
 
     /// Build 4 side frustum planes from camera parameters.
@@ -298,6 +298,7 @@ impl CullingVolume {
                 // 2D polygon bounds — conservatively visible.
                 CullingResult::Intersecting
             }
+            SpatialBounds::Empty => CullingResult::Outside,
         }
     }
 }

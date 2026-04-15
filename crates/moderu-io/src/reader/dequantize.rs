@@ -135,7 +135,7 @@ fn dequantize_accessor(model: &mut GltfModel, acc_idx: usize) -> Result<usize, S
         buffer_view: Some(new_bv_idx),
         byte_offset: 0,
         component_type: AccessorComponentType::Float,
-        count: count,
+        count,
         r#type: at,
         normalized: false,
         min: min_vals.iter().map(|&v| v).collect(),

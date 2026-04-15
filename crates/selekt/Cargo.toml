@@ -11,5 +11,5 @@ crate-type = ["rlib"]
 
 [dependencies]
 glam = { version = "0.32", features = ["std"] }
-orkester = { path = "../orkester" }
+terra = { path = "../terra" }
 zukei = { path = "../zukei" }

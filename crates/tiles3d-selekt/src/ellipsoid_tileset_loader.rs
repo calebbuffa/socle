@@ -19,6 +19,7 @@
 
 use std::f64::consts::PI;
 
+use glam::DVec3;
 use terra::{Cartographic, Ellipsoid, calc_quadtree_max_geometric_error};
 use tiles3d::{Asset, BoundingVolume, Content, Refine, Tile, Tileset};
 use tiles3d::{QuadtreeTileID, QuadtreeTilingScheme};
@@ -82,7 +83,7 @@ impl EllipsoidTilesetLoader {
 
         // Level-0 tiles: 2 columns × 1 row.
         for x in 0..self.tiling_scheme.root_tiles_x() {
-            if let Some(child) = self.build_tile(QuadtreeTileID::new(0, x, 0), 0) {
+            if let Some(child) = self.build_tile(QuadtreeTileID::new(0, x, 0), 0, DVec3::ZERO) {
                 root.children.push(child);
             }
         }
@@ -99,7 +100,12 @@ impl EllipsoidTilesetLoader {
     }
 
     /// Recursively build a tile and its children up to `self.max_depth`.
-    fn build_tile(&self, id: QuadtreeTileID, depth: u32) -> Option<Tile> {
+    ///
+    /// `parent_ecef` is the ECEF center of the parent tile (or zero for root
+    /// children). The tile's 3D Tiles transform is set *relative* to the parent
+    /// so that `accumulated_transform * local_transform` gives the correct
+    /// absolute ECEF translation.
+    fn build_tile(&self, id: QuadtreeTileID, depth: u32, parent_ecef: DVec3) -> Option<Tile> {
         let rect = self.tiling_scheme.tile_to_rectangle(id)?;
 
         // Lon/lat rectangle in radians.
@@ -123,12 +129,15 @@ impl EllipsoidTilesetLoader {
         let origin = self
             .ellipsoid
             .cartographic_to_ecef(Cartographic::new(center_lon, center_lat, 0.0));
-        // Column-major 4×4 translation matrix.
+        // Column-major 4×4 translation matrix, RELATIVE to parent.
+        // 3D Tiles transforms compose: world = parent_world * local.
+        // We want world = translate(origin), so local = translate(origin - parent_ecef).
+        let rel = origin - parent_ecef;
         let transform = vec![
             1.0, 0.0, 0.0, 0.0, // col 0
             0.0, 1.0, 0.0, 0.0, // col 1
             0.0, 0.0, 1.0, 0.0, // col 2
-            origin.x, origin.y, origin.z, 1.0, // col 3
+            rel.x, rel.y, rel.z, 1.0, // col 3
         ];
 
         let mut tile = Tile {
@@ -136,10 +145,11 @@ impl EllipsoidTilesetLoader {
             geometric_error,
             refine: Some(Refine::Replace),
             transform,
-            // Encode bounding rect into content URI so EllipsoidContentLoader
-            // can tessellate the patch without a network fetch.
+            // Encode bounding rect + geometric error into content URI so
+            // EllipsoidContentLoader can tessellate the patch (with skirts)
+            // without a network fetch.
             content: Some(Content {
-                uri: format!("{lon_west},{lat_south},{lon_east},{lat_north}"),
+                uri: format!("{lon_west},{lat_south},{lon_east},{lat_north},{geometric_error}"),
                 ..Default::default()
             }),
             ..Default::default()
@@ -147,7 +157,7 @@ impl EllipsoidTilesetLoader {
 
         if depth < self.max_depth {
             for child_id in self.child_ids(id) {
-                if let Some(child) = self.build_tile(child_id, depth + 1) {
+                if let Some(child) = self.build_tile(child_id, depth + 1, origin) {
                     tile.children.push(child);
                 }
             }

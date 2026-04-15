@@ -1,39 +1,24 @@
 //! Async 3D Tiles content loading.
 //!
-//! Provides [`TilesetLoaderFactory`] and [`TilesetLoader`], the two halves
-//! of the async fetch→decode→GPU pipeline for 3D Tiles.
-//!
-//! # Design
-//!
-//! Follows cesium-native's two-phase model:
-//!
-//! ```text
-//! AssetAccessor::get(url)                   ← returns Task immediately
-//!   .then(Context::BACKGROUND, ...)         ← worker: status check, format detect
-//!   → PrepareRendererResources::prepare_in_load_thread(bytes)
-//!                                           ← worker thread (parse / decompress)
-//!   .then(Context::MAIN, ...)               ← main thread (GPU upload)
-//!   → PrepareRendererResources::prepare_in_main_thread(worker_result)
-//!   → Payload::Renderable(C)               ← stored by the engine
-//! ```
-//!
-//! Tile format detection (b3dm, i3dm, cmpt, pnts, glb, tileset.json) is done
-//! by inspecting the URL extension and the first four bytes of the response.
+//! [`TilesetLoaderFactory`] fetches `tileset.json` and produces
+//! [`NodeDescriptor`]s + a [`TilesetLoader`] that streams tile content.
+//! Each tile is fetched, format-detected, decoded to a
+//! [`GltfModel`](moderu::GltfModel), then handed to the renderer's
+//! [`ContentPipeline`](egaku::ContentPipeline).
 
 use std::sync::Arc;
 
-use egaku::PrepareRendererResources;
+use egaku::ContentPipeline;
 use orkester::{CancellationToken, Context, Task};
-use orkester_io::{AssetAccessor, AssetResponse, RequestPriority, resolve_url};
-use selekt::{
-    ContentKey, ContentLoader, NodeContent, NodeId, SceneGraph, SceneRef, SelectionEngineBuilder,
-};
+use orkester_io::{AssetAccessor, AssetResponse, RequestPriority};
+use outil::resolve_url;
+use selekt::{ContentKey, ExpandResult, NodeDescriptor, NodeId};
+use terra::{Cartographic, Ellipsoid, GlobeRectangle, calc_quadtree_max_geometric_error};
 
-use crate::GeometricErrorEvaluator;
 use crate::hierarchy::{
     ExplicitTilesetHierarchy, ImplicitOctreeHierarchy, ImplicitQuadtreeHierarchy,
 };
-use tiles3d::implicit_tiling_utilities as ImplicitTilingUtilities;
+use tiles3d::implicit_tiling_utilities;
 use tiles3d::parse_subtree;
 use tiles3d::{
     BoundingVolume, ImplicitTiling, OctreeAvailability, QuadtreeAvailability, SubdivisionScheme,
@@ -65,114 +50,102 @@ pub enum Tiles3dError {
     UnknownSubdivisionScheme(String),
 }
 
+/// Result of loading content for a single tile.
+pub enum LoadResult<C> {
+    /// Normal renderable content.
+    Renderable { content: C, byte_size: usize },
+    /// External tileset reference — provides new sub-scene nodes.
+    SubScene {
+        descriptors: Vec<NodeDescriptor>,
+        root_index: usize,
+        byte_size: usize,
+    },
+    /// Empty — no geometry or sub-scene.
+    Empty,
+}
+
 /// Build the URL for the root subtree file (level=0, x=0, y=0[, z=0]).
-///
-/// `uri_template` is the `subtrees.uri` field from an `ImplicitTiling`
-/// descriptor, e.g. `"subtrees/{level}/{x}/{y}.subtree"`.
 fn resolve_root_subtree_url(
     base_url: &str,
     uri_template: &str,
     scheme: SubdivisionScheme,
 ) -> String {
-    let expanded = match scheme {
-        SubdivisionScheme::Quadtree => ImplicitTilingUtilities::resolve_url_quad(
+    match scheme {
+        SubdivisionScheme::Quadtree => implicit_tiling_utilities::resolve_url_quad(
             base_url,
             uri_template,
             QuadtreeTileID::new(0, 0, 0),
         ),
-        SubdivisionScheme::Octree => ImplicitTilingUtilities::resolve_url_oct(
+        SubdivisionScheme::Octree => implicit_tiling_utilities::resolve_url_oct(
             base_url,
             uri_template,
             OctreeTileID::new(0, 0, 0, 0),
         ),
-    };
-    expanded
+    }
 }
 
-/// Async factory that fetches and parses `tileset.json`, builds an
-/// [`ExplicitTilesetHierarchy`], and constructs a [`TilesetLoader`].
-///
-/// # Type parameters
-///
-/// * `R` — A [`PrepareRendererResources`] implementation. The loader drives
-///   the two phases automatically.
-pub struct TilesetLoaderFactory<R>
-where
-    R: PrepareRendererResources,
-{
-    /// Absolute URL of `tileset.json`.
+/// Async factory that fetches and parses `tileset.json`, builds
+/// [`NodeDescriptor`]s, and constructs a [`TilesetLoader`].
+pub struct TilesetLoaderFactory<C: Send + 'static> {
     pub tileset_url: String,
-    /// HTTP headers forwarded to every request issued by the loader.
     pub headers: Vec<(String, String)>,
-    /// Maximum screen-space error threshold (pixels).
     pub maximum_screen_space_error: f64,
-    /// The renderer resource preparer shared with the tile loader.
-    pub preparer: Arc<R>,
+    pub pipeline: Arc<ContentPipeline<C>>,
 }
 
-impl<R> TilesetLoaderFactory<R>
-where
-    R: PrepareRendererResources,
-{
-    /// Create a factory for the given tileset URL with default SSE (16 px).
-    pub fn new(tileset_url: impl Into<String>, preparer: Arc<R>) -> Self {
+impl<C: Send + 'static> TilesetLoaderFactory<C> {
+    pub fn new(tileset_url: impl Into<String>, pipeline: Arc<ContentPipeline<C>>) -> Self {
         Self {
             tileset_url: tileset_url.into(),
             headers: Vec::new(),
             maximum_screen_space_error: 16.0,
-            preparer,
+            pipeline,
         }
     }
 
-    /// Set custom request headers (e.g. `Authorization`).
     pub fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
         self.headers = headers;
         self
     }
 
-    /// Override the maximum screen-space error threshold.
     pub fn with_maximum_screen_space_error(mut self, sse: f64) -> Self {
         self.maximum_screen_space_error = sse;
         self
     }
 }
 
-impl<R> TilesetLoaderFactory<R>
+/// Return type of [`TilesetLoaderFactory::create`]:
+/// `(descriptors, root_index, loader, attribution)`.
+type FactoryResult<C> = (
+    Vec<NodeDescriptor>,
+    usize,
+    TilesetLoader<C>,
+    Option<Arc<str>>,
+);
+
+impl<C> TilesetLoaderFactory<C>
 where
-    R: PrepareRendererResources + 'static,
-    R::WorkerResult: Send + 'static,
-    R::Content: Send + 'static,
-    R::Error: std::error::Error + Send + Sync + 'static,
+    C: Send + 'static,
 {
     pub fn create(
         self,
-        bg_context: Context,
+        bg_ctx: Context,
         asset_accessor: &Arc<dyn AssetAccessor>,
-    ) -> Task<Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>> {
+    ) -> Task<Result<FactoryResult<C>, Tiles3dError>> {
         let url: Arc<str> = self.tileset_url.into();
         let headers: Arc<[(String, String)]> = self.headers.into();
-        let sse = self.maximum_screen_space_error;
-        debug_assert!(
-            sse > 0.0,
-            "maximum_screen_space_error must be positive, got {sse}"
-        );
-        let preparer = self.preparer;
-        // Single clone of accessor — captured by move into the background closure.
-        // url and headers are also moved in after .get() borrows them (NLL).
+        let _sse = self.maximum_screen_space_error;
+        let pipeline = self.pipeline;
         let accessor = Arc::clone(asset_accessor);
-        let bg_context_clone = bg_context.clone();
+        let bg_ctx_clone = bg_ctx.clone();
 
-        // Kick off the tileset.json fetch immediately.
         asset_accessor
             .get(&url, &headers, RequestPriority::HIGH)
-            // Phase 1 (background): parse tileset.json; branch on implicit/explicit.
-            // Returns a Task so the implicit branch can chain a second async fetch.
             .then(
-                &bg_context,
+                &bg_ctx,
                 move |io_result: Result<AssetResponse, std::io::Error>| -> Task<
-                    Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>,
+                    Result<FactoryResult<C>, Tiles3dError>,
                 > {
-                    // Parse tileset.json
                     let response = match io_result {
                         Ok(r) => r,
                         Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
@@ -186,23 +159,18 @@ where
                             Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
                         };
 
-                    let lod = GeometricErrorEvaluator::new(sse);
-                    // Extract copyright before tileset is partially moved below.
                     let attribution: Option<Arc<str>> = tileset
                         .asset
                         .copyright
                         .as_deref()
                         .filter(|s| !s.is_empty())
                         .map(Arc::from);
-                    // Each of loader and resolver needs its own Arc reference.
-                    // accessor/url/headers are moved into this closure (0 extra pre-clones);
-                    // one clone goes to TilesetLoader and the original is moved into
-                    // fetch_implicit (implicit path) or dropped (explicit path).
-                    let loader = TilesetLoader::new(
+
+                    let loader = TilesetLoader::http(
                         Arc::clone(&accessor),
                         Arc::clone(&url),
                         Arc::clone(&headers),
-                        Arc::clone(&preparer),
+                        Arc::clone(&pipeline),
                     );
 
                     // Detect implicit tiling
@@ -230,7 +198,7 @@ where
                             resolve_root_subtree_url(&url, &implicit.subtrees.uri, scheme);
 
                         fetch_implicit_subtree_and_build(
-                            bg_context_clone,
+                            bg_ctx_clone,
                             accessor,
                             headers,
                             subtree_url,
@@ -242,31 +210,23 @@ where
                             implicit,
                             content_template,
                             use_add,
-                            lod,
                             loader,
                             attribution,
                         )
                     } else {
                         // Explicit tileset
-                        let hierarchy: Box<dyn SceneGraph> =
-                            Box::new(ExplicitTilesetHierarchy::from_tileset(&tileset));
-                        let config = SelectionEngineBuilder::new(
-                            bg_context_clone.clone(),
-                            hierarchy,
-                            lod,
-                            loader,
-                        );
-                        orkester::resolved(Ok((config, attribution)))
+                        let hierarchy = ExplicitTilesetHierarchy::from_tileset(&tileset);
+                        let (descriptors, root_index) = hierarchy.to_descriptors();
+                        orkester::resolved(Ok((descriptors, root_index, loader, attribution)))
                     }
                 },
             )
     }
 }
 
-/// Fetch the root subtree and build an implicit hierarchy loader result.
 #[allow(clippy::too_many_arguments)]
-fn fetch_implicit_subtree_and_build<R>(
-    bg_context: Context,
+fn fetch_implicit_subtree_and_build<C>(
+    bg_ctx: Context,
     loader_accessor: Arc<dyn AssetAccessor>,
     loader_headers: Arc<[(String, String)]>,
     subtree_url: String,
@@ -278,23 +238,18 @@ fn fetch_implicit_subtree_and_build<R>(
     implicit: ImplicitTiling,
     content_template: String,
     use_add: bool,
-    lod: GeometricErrorEvaluator,
-    loader: TilesetLoader<R>,
+    loader: TilesetLoader<C>,
     attribution: Option<Arc<str>>,
-) -> Task<Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>>
+) -> Task<Result<FactoryResult<C>, Tiles3dError>>
 where
-    R: PrepareRendererResources + 'static,
-    R::WorkerResult: Send + 'static,
-    R::Content: Send + 'static,
-    R::Error: std::error::Error + Send + Sync + 'static,
+    C: Send + 'static,
 {
     loader_accessor
         .get(&subtree_url, &loader_headers, RequestPriority::HIGH)
         .then(
-            &bg_context.clone(),
+            &bg_ctx.clone(),
             move |subtree_io: Result<AssetResponse, std::io::Error>| {
                 parse_subtree_and_build(
-                    bg_context,
                     subtree_io,
                     scheme,
                     subtree_levels,
@@ -304,7 +259,6 @@ where
                     implicit,
                     content_template,
                     use_add,
-                    lod,
                     loader,
                     attribution,
                 )
@@ -312,10 +266,8 @@ where
         )
 }
 
-/// Parse a fetched subtree response and assemble the loader factory result.
 #[allow(clippy::too_many_arguments)]
-fn parse_subtree_and_build<R>(
-    bg_context: Context,
+fn parse_subtree_and_build<C>(
     subtree_io: Result<AssetResponse, std::io::Error>,
     scheme: SubdivisionScheme,
     subtree_levels: u32,
@@ -325,270 +277,481 @@ fn parse_subtree_and_build<R>(
     implicit: ImplicitTiling,
     content_template: String,
     use_add: bool,
-    lod: GeometricErrorEvaluator,
-    loader: TilesetLoader<R>,
+    loader: TilesetLoader<C>,
     attribution: Option<Arc<str>>,
-) -> Result<(SelectionEngineBuilder<R::Content>, Option<Arc<str>>), Tiles3dError>
+) -> Result<FactoryResult<C>, Tiles3dError>
 where
-    R: PrepareRendererResources + 'static,
-    R::WorkerResult: Send + 'static,
-    R::Content: Send + 'static,
-    R::Error: std::error::Error + Send + Sync + 'static,
+    C: Send + 'static,
 {
     let sub_resp = subtree_io.map_err(Tiles3dError::from)?;
     sub_resp.check_status().map_err(Tiles3dError::Http)?;
     let subtree_av = parse_subtree(sub_resp.decompressed_data(), scheme, subtree_levels)
         .map_err(Tiles3dError::Subtree)?;
 
-    let hierarchy: Box<dyn SceneGraph> = match scheme {
+    let (descriptors, root_index) = match scheme {
         SubdivisionScheme::Quadtree => {
             let mut qa = QuadtreeAvailability::new(subtree_levels, available_levels);
             qa.add_subtree(QuadtreeTileID::new(0, 0, 0), subtree_av);
-            Box::new(ImplicitQuadtreeHierarchy::new(
+            let h = ImplicitQuadtreeHierarchy::new(
                 &root_bv,
                 root_geometric_error,
                 &implicit,
                 qa,
                 &content_template,
                 use_add,
-            ))
+            );
+            h.to_descriptors()
         }
         SubdivisionScheme::Octree => {
             let mut oa = OctreeAvailability::new(subtree_levels, available_levels);
             oa.add_subtree(OctreeTileID::new(0, 0, 0, 0), subtree_av);
-            Box::new(ImplicitOctreeHierarchy::new(
+            let h = ImplicitOctreeHierarchy::new(
                 &root_bv,
                 root_geometric_error,
                 &implicit,
                 oa,
                 &content_template,
                 use_add,
-            ))
+            );
+            h.to_descriptors()
         }
     };
-    Ok((
-        SelectionEngineBuilder::new(bg_context, hierarchy, lod, loader),
-        attribution,
-    ))
+
+    // Attach implicit context for on-demand child-subtree loading.
+    let implicit_ctx = ImplicitCtx {
+        root_bv: Arc::new(root_bv),
+        root_geometric_error,
+        implicit_tiling: Arc::new(implicit),
+        content_url_template: Arc::from(content_template.as_str()),
+        use_add,
+    };
+    let loader = loader.with_implicit_ctx(implicit_ctx);
+
+    Ok((descriptors, root_index, loader, attribution))
 }
 
-/// Pure decode + prepare pipeline for a single 3D Tiles tile.
+/// Persistent context needed to load child subtrees for an implicit tileset.
 ///
-/// Owns the [`PrepareRendererResources`] implementation and exposes the two
-/// pipeline phases as named methods.  Separated from [`TilesetLoader`] so that
-/// the decode logic can be tested without a network accessor — pass raw bytes
-/// directly to [`TileContentDecoder::worker`].
-///
-/// # Phases
-///
-/// 1. [`worker`] — called on a background thread: detects format, decodes
-///    bytes, calls `PrepareRendererResources::prepare_in_load_thread`.
-/// 2. [`main`] — called on the main thread: calls
-///    `PrepareRendererResources::prepare_in_main_thread` and wraps the result
-///    in [`LoadedContent`].
-///
-/// [`worker`]: TileContentDecoder::worker
-/// [`main`]: TileContentDecoder::main
-pub struct TileContentDecoder<R>
-where
-    R: PrepareRendererResources,
-{
-    preparer: Arc<R>,
+/// Stored inside [`LoaderInner::Http`] when the tileset uses implicit tiling.
+/// It is Arc-cloned for each subtree-load task.
+#[derive(Clone)]
+pub(crate) struct ImplicitCtx {
+    pub root_bv: Arc<BoundingVolume>,
+    pub root_geometric_error: f64,
+    pub implicit_tiling: Arc<ImplicitTiling>,
+    pub content_url_template: Arc<str>,
+    pub use_add: bool,
 }
 
-/// Intermediate result of the worker-thread decode phase.
-pub enum TileDecoded<W> {
-    /// Tile content ready for main-thread GPU upload.
-    Decoded { result: W, byte_size: usize },
-    /// No renderable content (empty body, unknown format).
-    Empty,
-}
+// ── Content loading ──────────────────────────────────────────────────────────
 
-impl<R> TileContentDecoder<R>
-where
-    R: PrepareRendererResources,
-    R::WorkerResult: Send + 'static,
-    R::Error: std::error::Error + Send + Sync + 'static,
-{
-    /// Create a decoder backed by `preparer`.
-    pub fn new(preparer: Arc<R>) -> Self {
-        Self { preparer }
-    }
-
-    /// Worker-thread phase.
-    ///
-    /// Detects the tile format from `url` and `response.data`, decodes the
-    /// bytes, and calls `PrepareRendererResources::prepare_in_load_thread`.
-    ///
-    /// JSON tiles (external tileset references) are **not** handled here —
-    /// they are intercepted by [`TilesetLoader::load`] before calling this
-    /// method.
-    ///
-    /// Returns:
-    /// - `TileDecoded::Decoded` — tile content ready for main-thread upload.
-    /// - `TileDecoded::Empty` — no renderable content.
-    pub fn worker(
-        &self,
-        _node_id: NodeId,
-        url: &str,
-        response: AssetResponse,
-    ) -> Result<TileDecoded<R::WorkerResult>, Tiles3dError> {
-        if response.decompressed_data().is_empty() {
-            return Ok(TileDecoded::Empty);
-        }
-        let format = TileFormat::detect(url, response.decompressed_data());
-        let byte_size = response.decompressed_data().len();
-        match decode_tile(response.decompressed_data(), &format) {
-            Some(model) => {
-                let result = self
-                    .preparer
-                    .prepare_in_load_thread(model)
-                    .map_err(|e| Tiles3dError::Decode(Box::new(e)))?;
-                Ok(TileDecoded::Decoded { result, byte_size })
-            }
-            None => Ok(TileDecoded::Empty),
-        }
-    }
-
-    /// Main-thread phase.
-    ///
-    /// Calls `PrepareRendererResources::prepare_in_main_thread` and returns
-    /// a [`NodeContent`] containing the prepared GPU resource.
-    pub fn main(
-        &self,
-        decode_out: TileDecoded<R::WorkerResult>,
-    ) -> Result<NodeContent<R::Content>, Tiles3dError>
-    where
-        R::Content: Send + 'static,
-    {
-        match decode_out {
-            TileDecoded::Decoded { result, byte_size } => Ok(NodeContent::renderable(
-                self.preparer.prepare_in_main_thread(result),
-                byte_size,
-            )),
-            TileDecoded::Empty => Ok(NodeContent::empty()),
-        }
-    }
-}
-
-/// Async content loader for 3D Tiles tile content.
+/// Unified content loader for 3D Tiles.
 ///
-/// Issues one HTTP request per tile and drives [`TileContentDecoder`] through
-/// its two phases (worker then main).  All decode and prepare logic lives in
-/// [`TileContentDecoder`]; this struct is responsible only for request
-/// lifecycle: URL resolution, fetch, and cancellation.
-pub struct TilesetLoader<R>
-where
-    R: PrepareRendererResources,
-{
-    accessor: Arc<dyn AssetAccessor>,
-    /// Absolute base URL of the root tileset (resolves relative content keys).
-    base_url: Arc<str>,
-    headers: Arc<[(String, String)]>,
-    decoder: Arc<TileContentDecoder<R>>,
+/// Handles both HTTP-fetched tiles and procedural ellipsoid content.
+pub struct TilesetLoader<C: Send + 'static> {
+    inner: LoaderInner<C>,
 }
 
-impl<R> TilesetLoader<R>
-where
-    R: PrepareRendererResources,
-{
-    pub(crate) fn new(
+enum LoaderInner<C: Send + 'static> {
+    Http {
+        accessor: Arc<dyn AssetAccessor>,
+        base_url: Arc<str>,
+        headers: Arc<[(String, String)]>,
+        pipeline: Arc<ContentPipeline<C>>,
+        /// Present when the tileset is an implicit tileset; used to fetch
+        /// child subtrees when a `__subtree__:…` synthetic key is loaded.
+        implicit_ctx: Option<ImplicitCtx>,
+    },
+    Ellipsoid {
+        ellipsoid: Ellipsoid,
+        pipeline: Arc<ContentPipeline<C>>,
+    },
+}
+
+impl<C: Send + 'static> TilesetLoader<C> {
+    /// Create an HTTP-based loader.
+    pub(crate) fn http(
         accessor: Arc<dyn AssetAccessor>,
         base_url: impl Into<Arc<str>>,
         headers: impl Into<Arc<[(String, String)]>>,
-        preparer: Arc<R>,
+        pipeline: Arc<ContentPipeline<C>>,
     ) -> Self {
         Self {
-            accessor,
-            base_url: base_url.into(),
-            headers: headers.into(),
-            decoder: Arc::new(TileContentDecoder::new(preparer)),
+            inner: LoaderInner::Http {
+                accessor,
+                base_url: base_url.into(),
+                headers: headers.into(),
+                pipeline,
+                implicit_ctx: None,
+            },
         }
     }
-}
 
-impl<R> ContentLoader<R::Content> for TilesetLoader<R>
-where
-    R: PrepareRendererResources + 'static,
-    R::WorkerResult: Send + 'static,
-    R::Content: Send + 'static,
-    R::Error: std::error::Error + Send + Sync + 'static,
-{
-    type Error = Tiles3dError;
+    /// Attach implicit-tiling context so [`TilesetLoader::load`] can fetch
+    /// child subtrees on demand.
+    pub(crate) fn with_implicit_ctx(mut self, ctx: ImplicitCtx) -> Self {
+        if let LoaderInner::Http {
+            ref mut implicit_ctx,
+            ..
+        } = self.inner
+        {
+            *implicit_ctx = Some(ctx);
+        }
+        self
+    }
 
-    fn load(
+    /// Create a procedural ellipsoid loader.
+    pub(crate) fn ellipsoid(ellipsoid: Ellipsoid, pipeline: Arc<ContentPipeline<C>>) -> Self {
+        Self {
+            inner: LoaderInner::Ellipsoid {
+                ellipsoid,
+                pipeline,
+            },
+        }
+    }
+
+    /// Load content for the given node.
+    ///
+    /// Called by kiban when the selection algorithm requests a load.
+    pub fn load(
         &self,
-        bg_context: &Context,
-        main_context: &Context,
-        node_id: NodeId,
+        bg_ctx: &Context,
+        _node_id: NodeId,
         key: &ContentKey,
         parent_world_transform: glam::DMat4,
         cancel: CancellationToken,
-    ) -> Task<Result<NodeContent<R::Content>, Self::Error>> {
-        let main_context = main_context.clone();
-        let url: Arc<str> = resolve_url(&self.base_url, &key.0).into();
-        let decoder = Arc::clone(&self.decoder);
-        let accessor_clone = Arc::clone(&self.accessor);
-        let headers_clone = Arc::clone(&self.headers);
-        let priority = RequestPriority(128);
-        self.accessor
-            .get(&url, &self.headers, priority)
-            .with_cancellation(&cancel)
-            .then(
-                bg_context,
-                move |io_result: Result<AssetResponse, std::io::Error>| -> Task<Result<NodeContent<R::Content>, Tiles3dError>> {
-                    let response = match io_result {
-                        Ok(r) => r,
+    ) -> Task<Result<LoadResult<C>, Tiles3dError>> {
+        match &self.inner {
+            LoaderInner::Http {
+                accessor,
+                base_url,
+                headers,
+                pipeline,
+                implicit_ctx,
+            } => {
+                // Detect synthetic subtree-fetch keys emitted by
+                // ImplicitQuadtreeHierarchy::expand_node().
+                if let Some(rel_url) = key.0.strip_prefix("__subtree__:") {
+                    if let Some(ctx) = implicit_ctx {
+                        return load_implicit_sub_subtree(
+                            Arc::clone(accessor),
+                            Arc::clone(base_url),
+                            Arc::clone(headers),
+                            ctx.clone(),
+                            bg_ctx,
+                            rel_url,
+                            cancel,
+                        );
+                    }
+                }
+                load_http(
+                    Arc::clone(accessor),
+                    Arc::clone(base_url),
+                    Arc::clone(headers),
+                    Arc::clone(pipeline),
+                    bg_ctx,
+                    key,
+                    parent_world_transform,
+                    cancel,
+                )
+            }
+            LoaderInner::Ellipsoid {
+                ellipsoid,
+                pipeline,
+            } => load_ellipsoid(ellipsoid.clone(), Arc::clone(pipeline), bg_ctx, key),
+        }
+    }
+
+    /// Try to expand a node's latent children (quadtree subdivision for ellipsoid tiles).
+    ///
+    /// Returns `ExpandResult::Children(...)` with 4 quadtree child descriptors
+    /// for ellipsoid tiles, or `ExpandResult::None` for HTTP-loaded tilesets
+    /// (which don't support procedural expansion).
+    pub fn expand(&self, node_data: &selekt::NodeData) -> ExpandResult {
+        let LoaderInner::Ellipsoid { ellipsoid, .. } = &self.inner else {
+            return ExpandResult::None;
+        };
+
+        let Some(parent_rect) = node_data.globe_rectangle else {
+            return ExpandResult::None;
+        };
+
+        // Compute the geometric error level from the parent's LOD value.
+        // Parent error = max_err * 2\pi / (root_tiles_x * 2^level)
+        // For children at level+1, error halves.
+        let child_error = node_data.lod.value * 0.5;
+
+        // Don't expand below a very small geometric error (roughly level 30).
+        if child_error < 1e-7 {
+            return ExpandResult::None;
+        }
+
+        let parent_transform = node_data.world_transform;
+        // Parent origin in ECEF = translation column of parent's world_transform.
+        let parent_ecef = glam::DVec3::new(
+            parent_transform.col(3).x,
+            parent_transform.col(3).y,
+            parent_transform.col(3).z,
+        );
+
+        let mid_lon = (parent_rect.west + parent_rect.east) * 0.5;
+        let mid_lat = (parent_rect.south + parent_rect.north) * 0.5;
+
+        let child_rects = [
+            GlobeRectangle::new(parent_rect.west, parent_rect.south, mid_lon, mid_lat), // SW
+            GlobeRectangle::new(mid_lon, parent_rect.south, parent_rect.east, mid_lat), // SE
+            GlobeRectangle::new(parent_rect.west, mid_lat, mid_lon, parent_rect.north), // NW
+            GlobeRectangle::new(mid_lon, mid_lat, parent_rect.east, parent_rect.north), // NE
+        ];
+
+        let descriptors: Vec<NodeDescriptor> = child_rects
+            .iter()
+            .map(|rect| {
+                let center_lon = (rect.west + rect.east) * 0.5;
+                let center_lat = (rect.south + rect.north) * 0.5;
+                let origin =
+                    ellipsoid.cartographic_to_ecef(Cartographic::new(center_lon, center_lat, 0.0));
+                let rel = origin - parent_ecef;
+                let world_transform = parent_transform * glam::DMat4::from_translation(rel);
+
+                let content_key = ContentKey(format!(
+                    "{},{},{},{},{}",
+                    rect.west, rect.south, rect.east, rect.north, child_error,
+                ));
+
+                NodeDescriptor {
+                    bounds: crate::hierarchy::region_to_sphere_bounds(
+                        rect.west, rect.south, rect.east, rect.north, 0.0, 0.0,
+                    ),
+                    lod: selekt::LodDescriptor {
+                        value: child_error,
+                        family: crate::evaluator::GEOMETRIC_ERROR_FAMILY,
+                    },
+                    refinement: selekt::RefinementMode::Replace,
+                    kind: selekt::NodeKind::Renderable,
+                    content_keys: vec![content_key],
+                    world_transform,
+                    might_have_latent_children: true,
+                    child_indices: vec![],
+                    content_bounds: None,
+                    viewer_request_volume: None,
+                    lod_metric_override: None,
+                    globe_rectangle: Some(*rect),
+                    unconditionally_refined: false,
+                    content_max_age: None,
+                }
+            })
+            .collect();
+
+        ExpandResult::Children(descriptors)
+    }
+}
+
+fn load_http<C: Send + 'static>(
+    accessor: Arc<dyn AssetAccessor>,
+    base_url: Arc<str>,
+    headers: Arc<[(String, String)]>,
+    pipeline: Arc<ContentPipeline<C>>,
+    bg_ctx: &Context,
+    key: &ContentKey,
+    parent_world_transform: glam::DMat4,
+    cancel: CancellationToken,
+) -> Task<Result<LoadResult<C>, Tiles3dError>> {
+    let url: Arc<str> = resolve_url(&base_url, &key.0).into();
+    let accessor_clone = Arc::clone(&accessor);
+    let headers_clone = Arc::clone(&headers);
+    let pipeline_clone = Arc::clone(&pipeline);
+    let priority = RequestPriority(128);
+    accessor
+        .get(&url, &headers, priority)
+        .with_cancellation(&cancel)
+        .then(
+            bg_ctx,
+            move |io_result: Result<AssetResponse, std::io::Error>| -> Task<Result<LoadResult<C>, Tiles3dError>> {
+                let response = match io_result {
+                    Ok(r) => r,
+                    Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
+                };
+                if let Err(code) = response.check_status() {
+                    return orkester::resolved(Err(Tiles3dError::Http(code)));
+                }
+                let data = response.decompressed_data();
+                if data.is_empty() {
+                    return orkester::resolved(Ok(LoadResult::Empty));
+                }
+
+                // Detect external tileset reference (JSON content).
+                if TileFormat::detect(&url, data) == TileFormat::Json {
+                    let byte_size = data.len();
+                    let tileset: Tileset = match serde_json::from_slice(data) {
+                        Ok(t) => t,
                         Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
                     };
-                    if let Err(code) = response.check_status() {
-                        return orkester::resolved(Err(Tiles3dError::Http(code)));
+                    let mut child_hierarchy = ExplicitTilesetHierarchy::from_tileset_with_root_transform(
+                        &tileset,
+                        parent_world_transform,
+                    );
+                    if child_hierarchy.node_count() == 0 {
+                        return orkester::resolved(Ok(LoadResult::Empty));
                     }
-                    let data = response.decompressed_data();
-                    if data.is_empty() {
-                        return orkester::resolved(Ok(NodeContent::empty()));
-                    }
+                    // Resolve relative content keys against the external tileset URL.
+                    child_hierarchy.resolve_content_keys(&url);
+                    let (descriptors, root_index) = child_hierarchy.to_descriptors();
+                    return orkester::resolved(Ok(LoadResult::SubScene {
+                        descriptors,
+                        root_index,
+                        byte_size,
+                    }));
+                }
 
-                    // Detect external tileset reference (JSON content).
-                    if TileFormat::detect(&url, data) == TileFormat::Json {
-                        let byte_size = data.len();
-                        let tileset: Tileset = match serde_json::from_slice(data) {
-                            Ok(t) => t,
-                            Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
-                        };
-                        // Build a sub-scene: the child hierarchy + a new loader
-                        // with the child's URL as the base for relative content keys.
-                        // Pass the reference node's world transform so that sub-tileset
-                        // tile transforms are accumulated on top of it (mirrors cesium-native
-                        // passing tileTransform to parseTilesetJson for external tilesets).
-                        let child_hierarchy = ExplicitTilesetHierarchy::from_tileset_with_root_transform(&tileset, parent_world_transform);
-                        if child_hierarchy.node_count() == 0 {
-                            return orkester::resolved(Ok(NodeContent::empty()));
-                        }
-                        let child_loader = TilesetLoader {
-                            accessor: accessor_clone,
-                            base_url: Arc::clone(&url),
-                            headers: headers_clone,
-                            decoder: Arc::clone(&decoder),
-                        };
-                        let scene_ref = SceneRef {
-                            graph: Box::new(child_hierarchy),
-                            loader: Box::new(child_loader),
-                            byte_size,
-                        };
-                        return orkester::resolved(Ok(NodeContent::scene_ref(scene_ref)));
-                    }
-
-                    // Normal tile: decode on worker, upload on main thread.
-                    let out = match decoder.worker(node_id, &url, response) {
-                        Ok(o) => o,
-                        Err(e) => return orkester::resolved(Err(e)),
-                    };
-                    orkester::resolved(Ok(out))
-                        .then(&main_context, move |worker_out: Result<TileDecoded<R::WorkerResult>, Tiles3dError>| {
-                            decoder.main(worker_out?)
+                // Normal tile: detect format, decode to GltfModel, hand to pipeline.
+                let byte_size = data.len();
+                let format = TileFormat::detect(&url, data);
+                match decode_tile(response.decompressed_data(), &format) {
+                    Some(model) => {
+                        pipeline_clone.run(model).map(move |result| {
+                            match result {
+                                Ok(content) => Ok(LoadResult::Renderable { content, byte_size }),
+                                Err(e) => Err(Tiles3dError::Decode(e)),
+                            }
                         })
-                },
-            )
+                    }
+                    None => orkester::resolved(Ok(LoadResult::Empty)),
+                }
+            },
+        )
+}
+
+/// Load a child subtree file and return its tiles as a `LoadResult::SubScene`.
+///
+/// `rel_url` is the relative subtree URL (everything after `"__subtree__:"`).
+/// It is resolved against `base_url` to obtain the absolute fetch URL.
+fn load_implicit_sub_subtree<C: Send + 'static>(
+    accessor: Arc<dyn AssetAccessor>,
+    base_url: Arc<str>,
+    headers: Arc<[(String, String)]>,
+    ctx: ImplicitCtx,
+    bg_ctx: &Context,
+    rel_url: &str,
+    cancel: CancellationToken,
+) -> Task<Result<LoadResult<C>, Tiles3dError>> {
+    let subtree_root = parse_subtree_tile_from_url(&ctx.implicit_tiling.subtrees.uri, rel_url);
+    let subtree_url: Arc<str> = resolve_url(&base_url, rel_url).into();
+
+    accessor
+        .get(&subtree_url, &headers, RequestPriority::HIGH)
+        .with_cancellation(&cancel)
+        .then(
+            bg_ctx,
+            move |io_result: Result<AssetResponse, std::io::Error>| {
+                let response = match io_result {
+                    Ok(r) => r,
+                    Err(e) => return orkester::resolved(Err(Tiles3dError::from(e))),
+                };
+                if let Err(code) = response.check_status() {
+                    return orkester::resolved(Err(Tiles3dError::Http(code)));
+                }
+
+                let Some(subtree_root) = subtree_root else {
+                    return orkester::resolved(Ok(LoadResult::Empty));
+                };
+
+                let subtree_levels = ctx.implicit_tiling.subtree_levels;
+                let subtree_av = match parse_subtree(
+                    response.decompressed_data(),
+                    tiles3d::SubdivisionScheme::Quadtree,
+                    subtree_levels,
+                ) {
+                    Ok(av) => av,
+                    Err(e) => return orkester::resolved(Err(Tiles3dError::Subtree(e))),
+                };
+
+                let byte_size = response.decompressed_data().len();
+                let h = ImplicitQuadtreeHierarchy::new_for_subtree(
+                    subtree_root,
+                    &ctx.root_bv,
+                    ctx.root_geometric_error,
+                    &ctx.implicit_tiling,
+                    subtree_av,
+                    ctx.content_url_template.as_ref(),
+                    ctx.use_add,
+                );
+                let (descriptors, root_index) = h.to_descriptors();
+                orkester::resolved(Ok(LoadResult::SubScene {
+                    descriptors,
+                    root_index,
+                    byte_size,
+                }))
+            },
+        )
+}
+
+/// Recover a [`QuadtreeTileID`] from a resolved subtree URL by matching
+/// against the URI template's `{level}`, `{x}`, `{y}` placeholders.
+///
+/// Returns `None` when the URL cannot be parsed.
+fn parse_subtree_tile_from_url(template: &str, rel_url: &str) -> Option<QuadtreeTileID> {
+    let mut level: Option<u32> = None;
+    let mut x_coord: Option<u32> = None;
+    let mut y_coord: Option<u32> = None;
+
+    let mut url_rest = rel_url;
+    let mut tmpl_rest = template;
+    for (placeholder, dest) in [
+        ("{level}", &mut level),
+        ("{x}", &mut x_coord),
+        ("{y}", &mut y_coord),
+    ] {
+        let Some(ph_idx) = tmpl_rest.find(placeholder) else {
+            break;
+        };
+        let literal_prefix = &tmpl_rest[..ph_idx];
+        let Some(stripped) = url_rest.strip_prefix(literal_prefix) else {
+            return None;
+        };
+        url_rest = stripped;
+        let end = url_rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(url_rest.len());
+        *dest = url_rest[..end].parse().ok();
+        url_rest = &url_rest[end..];
+        tmpl_rest = &tmpl_rest[ph_idx + placeholder.len()..];
     }
+
+    Some(QuadtreeTileID::new(level?, x_coord?, y_coord?))
+}
+
+fn load_ellipsoid<C: Send + 'static>(
+    ellipsoid: Ellipsoid,
+    pipeline: Arc<ContentPipeline<C>>,
+    bg_ctx: &Context,
+    key: &ContentKey,
+) -> Task<Result<LoadResult<C>, Tiles3dError>> {
+    // Parse "west,south,east,north[,geometric_error]" from the content key.
+    let parts: Vec<f64> = key.0.split(',').filter_map(|s| s.parse().ok()).collect();
+    if parts.len() < 4 {
+        return orkester::resolved(Ok(LoadResult::Empty));
+    }
+    let (west, south, east, north) = (parts[0], parts[1], parts[2], parts[3]);
+    let skirt_height = if parts.len() >= 5 {
+        parts[4] * 5.0
+    } else {
+        0.0
+    };
+    let byte_size = crate::ellipsoid_content_loader::total_byte_size();
+
+    bg_ctx.run(move || -> Task<Result<LoadResult<C>, Tiles3dError>> {
+        let model = crate::ellipsoid_content_loader::build_model(
+            &ellipsoid,
+            west,
+            south,
+            east,
+            north,
+            skirt_height,
+        );
+        pipeline.run(model).map(move |result| match result {
+            Ok(content) => Ok(LoadResult::Renderable { content, byte_size }),
+            Err(e) => Err(Tiles3dError::Decode(e)),
+        })
+    })
 }

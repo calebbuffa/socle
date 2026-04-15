@@ -2,11 +2,9 @@
 //! - External URI resolution (filesystem)
 //! - `resolve_uri` URL helper
 //! - `binary_chunk_byte_alignment` GLB option
-//! - `SkirtMeshMetadata` roundtrip
 //! - Mipmap generation
 //! - Async `read_uri` via `AssetAccessor`
 
-use moderu::SkirtMeshMetadata;
 use moderu_io::reader::{GltfOk, GltfReader, GltfReaderOptions, ImageProcessingOptions};
 use moderu_io::writer::{GltfWriter, GltfWriterOptions};
 use std::fs;
@@ -229,76 +227,16 @@ fn glb_custom_alignment_8() {
     }
 }
 
-// ---- SkirtMeshMetadata roundtrip -------------------------------------------
-
-#[test]
-fn skirt_mesh_metadata_roundtrip() {
-    let meta = SkirtMeshMetadata {
-        no_skirt_indices_begin: 0,
-        no_skirt_indices_count: 360,
-        no_skirt_vertices_begin: 0,
-        no_skirt_vertices_count: 289,
-        mesh_center: [1234567.8, -9876543.2, 45678.9],
-        skirt_west_height: 100.5,
-        skirt_south_height: 200.0,
-        skirt_east_height: 150.75,
-        skirt_north_height: 175.25,
-    };
-
-    let extras = meta.to_extras();
-
-    // Confirm a round-trip through JSON preserves all values exactly.
-    let json = serde_json::to_string(&extras).expect("serialize extras");
-    let parsed_value: serde_json::Value = serde_json::from_str(&json).expect("deserialize extras");
-    let restored = SkirtMeshMetadata::parse_from_extras(&parsed_value).expect("parse_from_extras");
-
-    assert_eq!(restored.no_skirt_indices_begin, meta.no_skirt_indices_begin);
-    assert_eq!(restored.no_skirt_indices_count, meta.no_skirt_indices_count);
-    assert_eq!(
-        restored.no_skirt_vertices_begin,
-        meta.no_skirt_vertices_begin
-    );
-    assert_eq!(
-        restored.no_skirt_vertices_count,
-        meta.no_skirt_vertices_count
-    );
-    assert_eq!(restored.mesh_center, meta.mesh_center);
-    assert_eq!(restored.skirt_west_height, meta.skirt_west_height);
-    assert_eq!(restored.skirt_south_height, meta.skirt_south_height);
-    assert_eq!(restored.skirt_east_height, meta.skirt_east_height);
-    assert_eq!(restored.skirt_north_height, meta.skirt_north_height);
-}
-
-#[test]
-fn skirt_mesh_metadata_missing_key_returns_none() {
-    let incomplete = serde_json::json!({
-        "skirtMeshMetadata": {
-            "noSkirtRange": [0, 100, 0, 80]
-            // missing meshCenter and skirt heights
-        }
-    });
-    assert!(
-        SkirtMeshMetadata::parse_from_extras(&incomplete).is_none(),
-        "parse_from_extras should return None for incomplete data"
-    );
-}
-
-#[test]
-fn skirt_mesh_metadata_no_key_returns_none() {
-    let empty = serde_json::json!({});
-    assert!(SkirtMeshMetadata::parse_from_extras(&empty).is_none());
-}
-
 // ---- Mipmap generation ------------------------------------------------------
 
 #[cfg(feature = "image")]
 mod mipmap_tests {
-    use moderu::Image;
+    use moderu::ImageData;
     use moderu_codec::image::generate_mipmaps;
 
-    fn solid_rgba(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Image {
+    fn solid_rgba(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> ImageData {
         let data = vec![r, g, b, a].repeat((width * height) as usize);
-        Image {
+        ImageData {
             data,
             width,
             height,
@@ -351,7 +289,7 @@ mod mipmap_tests {
 
     #[test]
     fn rejects_non_rgba8() {
-        let mut img = Image {
+        let mut img = ImageData {
             data: vec![0u8; 4 * 8],
             width: 4,
             height: 2,

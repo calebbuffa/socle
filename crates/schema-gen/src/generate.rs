@@ -720,7 +720,10 @@ pub fn render_module(
         .values()
         .any(|c| c.kind == "enum" && !c.numeric_values.is_empty());
     if needs_deserializer {
-        let _ = writeln!(out, "use serde::{{Serialize, Deserialize, Deserializer}};");
+        let _ = writeln!(
+            out,
+            "use serde::{{Serialize, Deserialize, Serializer, Deserializer}};"
+        );
     } else {
         let _ = writeln!(out, "use serde::{{Deserialize, Serialize}};");
     }
@@ -759,10 +762,7 @@ fn render_custom_type(name: &str, config: &crate::config::CustomTypeConfig) -> S
 
         // Derive macros for enum.
         if is_numeric {
-            let _ = writeln!(
-                out,
-                "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]"
-            );
+            let _ = writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]");
         } else {
             let _ = writeln!(
                 out,
@@ -773,9 +773,8 @@ fn render_custom_type(name: &str, config: &crate::config::CustomTypeConfig) -> S
         let _ = writeln!(out, "pub enum {} {{", name);
 
         if is_numeric {
-            for (idx, variant) in config.variants.iter().enumerate() {
+            for variant in config.variants.iter() {
                 let pascal_case = variant.to_upper_camel_case();
-                let _ = writeln!(out, "    #[serde(rename = \"{}\")]", idx);
                 let _ = writeln!(out, "    {},", pascal_case);
             }
         } else {
@@ -791,8 +790,41 @@ fn render_custom_type(name: &str, config: &crate::config::CustomTypeConfig) -> S
 
         let _ = writeln!(out, "}}");
 
-        // Add custom deserialize impl for numeric enums
+        // Add custom Serialize and Deserialize impls for numeric enums
         if is_numeric {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "impl Serialize for {} {{", name);
+            let _ = writeln!(
+                out,
+                "    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>"
+            );
+            let _ = writeln!(out, "    where");
+            let _ = writeln!(out, "        S: Serializer,");
+            let _ = writeln!(out, "    {{");
+            let _ = writeln!(out, "        let value: u32 = match self {{");
+
+            for variant in config.variants.iter() {
+                let pascal_case = variant.to_upper_camel_case();
+                let numeric_value = if !config.numeric_values.is_empty() {
+                    config.numeric_values.get(variant).copied().unwrap_or(0)
+                } else {
+                    config
+                        .variants
+                        .iter()
+                        .position(|v| v == variant)
+                        .unwrap_or(0) as u32
+                };
+                let _ = writeln!(
+                    out,
+                    "            Self::{} => {},",
+                    pascal_case, numeric_value
+                );
+            }
+
+            let _ = writeln!(out, "        }};");
+            let _ = writeln!(out, "        serializer.serialize_u32(value)");
+            let _ = writeln!(out, "    }}");
+            let _ = writeln!(out, "}}");
             let _ = writeln!(out);
             let _ = writeln!(out, "impl<'de> Deserialize<'de> for {} {{", name);
             let _ = writeln!(

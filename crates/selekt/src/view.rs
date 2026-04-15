@@ -36,10 +36,19 @@ pub struct ViewState {
     /// Multiplier applied to the raw LOD metric before passing to `LodEvaluator`.
     /// Use values > 1.0 to over-load (sharper detail); < 1.0 to under-load.
     pub lod_metric_multiplier: f32,
+    /// Reference ellipsoid for geodetic computations (ECEF → cartographic).
+    ///
+    /// When set, enables `render_nodes_under_camera` to convert the ECEF
+    /// position to cartographic and test geographic containment against tile
+    /// bounding regions.
+    pub ellipsoid: Option<terra::Ellipsoid>,
 }
 
 impl ViewState {
     /// Create a perspective view state.
+    ///
+    /// If `ellipsoid` is provided, `position_cartographic` is computed from
+    /// the ECEF `position`. Pass `Some(&Ellipsoid::wgs84())` for geospatial data.
     pub fn perspective(
         position: Vec3,
         direction: Vec3,
@@ -55,7 +64,19 @@ impl ViewState {
             up,
             projection: Projection::Perspective { fov_x, fov_y },
             lod_metric_multiplier: 1.0,
+            ellipsoid: None,
         }
+    }
+
+    /// Set the reference ellipsoid for geodetic computations.
+    pub fn with_ellipsoid(mut self, ellipsoid: terra::Ellipsoid) -> Self {
+        self.ellipsoid = Some(ellipsoid);
+        self
+    }
+
+    /// Convert the ECEF position to cartographic using the stored ellipsoid.
+    pub fn position_cartographic(&self) -> Option<terra::Cartographic> {
+        self.ellipsoid.as_ref()?.ecef_to_cartographic(self.position)
     }
 
     /// Create an orthographic view state.
@@ -77,6 +98,7 @@ impl ViewState {
                 half_height,
             },
             lod_metric_multiplier: 1.0,
+            ellipsoid: None,
         }
     }
 
@@ -148,6 +170,7 @@ impl ViewState {
             up,
             projection,
             lod_metric_multiplier: 1.0,
+            ellipsoid: None,
         }
     }
 }

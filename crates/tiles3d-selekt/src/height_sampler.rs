@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use glam::DVec3;
 use orkester::Task;
-use selekt::{NodeId, SceneGraph};
+use selekt::{NodeId, NodeStore};
 use terra::{Cartographic, Ellipsoid};
 
 /// Optional height sampling for terrain queries.
@@ -59,8 +59,8 @@ struct HierarchySnapshot {
 }
 
 impl HierarchySnapshot {
-    fn from_hierarchy(h: &dyn SceneGraph) -> Self {
-        let root = h.root();
+    fn from_node_store(store: &NodeStore) -> Self {
+        let root = store.root();
         // BFS to collect all reachable nodes.
         let mut queue: VecDeque<NodeId> = VecDeque::new();
         queue.push_back(root);
@@ -73,8 +73,8 @@ impl HierarchySnapshot {
                 nodes.resize_with(idx + 1, || None);
             }
             if nodes[idx].is_none() {
-                let bounds = h.bounds(id).clone();
-                let children: Vec<NodeId> = h.children(id).to_vec();
+                let bounds = store.bounds(id).clone();
+                let children: Vec<NodeId> = store.children(id).to_vec();
                 for &child in &children {
                     queue.push_back(child);
                 }
@@ -145,8 +145,7 @@ unsafe impl Sync for HierarchySnapshot {}
 
 /// Approximate height sampler that uses bounding-volume ray traversal.
 ///
-/// Create from a [`SelectionEngine`](selekt::SelectionEngine) (or any
-/// [`SceneGraph`]) and use as a [`HeightSampler`].
+/// Create from a [`NodeStore`] and use as a [`HeightSampler`].
 ///
 /// # Accuracy
 ///
@@ -159,8 +158,8 @@ unsafe impl Sync for HierarchySnapshot {}
 /// # Example
 ///
 /// ```ignore
-/// let sampler = ApproximateHeightSampler::from_hierarchy(
-///     tileset.hierarchy().unwrap(),
+/// let sampler = ApproximateHeightSampler::from_node_store(
+///     &node_store,
 ///     Ellipsoid::wgs84(),
 /// );
 /// let task = sampler.sample_heights(positions);
@@ -172,14 +171,14 @@ pub struct ApproximateHeightSampler {
 }
 
 impl ApproximateHeightSampler {
-    /// Build from any [`SceneGraph`] reference.
+    /// Build from a [`NodeStore`] reference.
     ///
     /// Snapshots the entire hierarchy immediately (BFS walk, allocates one
     /// `SpatialBounds` clone per node). The sampler is then independent of
-    /// the engine's lifetime.
-    pub fn from_hierarchy(hierarchy: &dyn SceneGraph, ellipsoid: Ellipsoid) -> Self {
+    /// the store's lifetime.
+    pub fn from_node_store(store: &NodeStore, ellipsoid: Ellipsoid) -> Self {
         Self {
-            snapshot: Arc::new(HierarchySnapshot::from_hierarchy(hierarchy)),
+            snapshot: Arc::new(HierarchySnapshot::from_node_store(store)),
             ellipsoid,
         }
     }

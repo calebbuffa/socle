@@ -113,7 +113,7 @@ let pool = orkester::ThreadPool::new(4);
 let bg = pool.context();
 
 let engine = SelectionEngineBuilder::new(hierarchy, lod, loader)
-    .with_main_context(main_queue.context())
+    .with_main_ctx(main_queue.context())
     .build();
 
 let view_group = engine.add_view_group(1.0);
@@ -137,7 +137,7 @@ let engine_task = bg.run(move || {
     let hierarchy = MyHierarchy::fetch_from_network(&url)?;
     Ok::<_, MyError>(
         SelectionEngineBuilder::new(hierarchy, lod, loader)
-            .with_main_context(main_queue.context())
+            .with_main_ctx(main_queue.context())
             .build()
     )
 });
